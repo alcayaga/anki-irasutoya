@@ -299,10 +299,10 @@ class IrasutoyaDialog(QDialog):
             pass
         QTimer.singleShot(0, callback)
 
-    def closeEvent(self, event):
+    def done(self, result: int):
         self._search_generation += 1
         self._thumb_executor.shutdown(wait=False, cancel_futures=True)
-        super().closeEvent(event)
+        super().done(result)
 
     def keyPressEvent(self, event):
         """Enable keyboard arrow navigation across the thumbnail gallery and Enter to apply."""
@@ -896,12 +896,14 @@ class IrasutoyaDialog(QDialog):
         def background_apply():
             try:
                 img_bytes = self.client.download_image(best_img.image_url)
-                filename = make_safe_media_filename(query, best_img.title)
-                stored_filename = mw.col.media.write_data(filename, img_bytes)
-
-                self.first_note[target_field] = f'<img src="{stored_filename}">'
+                if not img_bytes:
+                    raise ValueError("Received empty image data from server")
 
                 def on_success():
+                    filename = make_safe_media_filename(query, best_img.title)
+                    stored_filename = mw.col.media.write_data(filename, img_bytes)
+                    self.first_note[target_field] = f'<img src="{stored_filename}">'
+
                     import aqt.operations.note
                     op = aqt.operations.note.update_notes(parent=self.browser, notes=[self.first_note])
                     op.success(lambda _: tooltip(f"Added '{best_img.title}' to {target_field}.", parent=self.browser))

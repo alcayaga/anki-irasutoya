@@ -27,8 +27,8 @@ def get_config() -> Dict[str, Any]:
     try:
         from aqt import mw
         if mw and hasattr(mw, "addonManager") and mw.addonManager:
-            # When loaded as an Anki addon, __name__ is the package name
-            addon_cfg = mw.addonManager.getConfig(__name__)
+            addon_pkg = __name__.split(".")[0]
+            addon_cfg = mw.addonManager.getConfig(addon_pkg)
             if addon_cfg:
                 cfg.update(addon_cfg)
         else:
@@ -50,7 +50,8 @@ def save_config(config: Dict[str, Any]) -> None:
     try:
         from aqt import mw
         if mw and hasattr(mw, "addonManager") and mw.addonManager:
-            mw.addonManager.writeConfig(__name__, config)
+            addon_pkg = __name__.split(".")[0]
+            mw.addonManager.writeConfig(addon_pkg, config)
     except Exception:
         pass
 

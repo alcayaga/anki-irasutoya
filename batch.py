@@ -38,9 +38,9 @@ def make_safe_media_filename(query: str, title: str) -> str:
     combined = f"irasutoya_{query}_{title}".strip()
     safe = re.sub(r'[\\/*?:"<>| \t\n\r]+', '_', combined)
     safe = re.sub(r'_+', '_', safe).strip('_')
-    if not safe.lower().endswith(".png"):
-        safe += ".png"
-    return safe[:64] + ".png" if len(safe) > 64 else safe
+    if safe.lower().endswith(".png"):
+        safe = safe[:-4]
+    return safe[:60] + ".png"
 
 
 def process_note_record(

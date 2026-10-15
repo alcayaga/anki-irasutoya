@@ -23,6 +23,17 @@ class TestBatchLogic(unittest.TestCase):
         self.assertNotIn("/", fn)
         self.assertNotIn(":", fn)
 
+        # Long filename truncation
+        fn_long = make_safe_media_filename("very_long_query_term_" * 4, "very_long_title_" * 4)
+        self.assertTrue(fn_long.endswith(".png"))
+        self.assertNotIn(".pn.png", fn_long)
+        self.assertLessEqual(len(fn_long), 64)
+
+        # Pre-existing .png in title
+        fn_ext = make_safe_media_filename("dog", "dog_image.png")
+        self.assertTrue(fn_ext.endswith(".png"))
+        self.assertNotIn(".png.png", fn_ext)
+
     def test_process_note_skip_when_not_empty(self):
         note = {"Expression": "猫", "DefinitionPicture": "<div>existing_img.png</div>"}
         client = MockIrasutoyaClient()
