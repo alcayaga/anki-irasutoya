@@ -1,0 +1,8 @@
+{
+  "last_source_field": "Expression",
+  "last_target_field": "DefinitionPicture",
+  "last_overwrite_mode": "skip",
+  "thumbnail_delay_ms": 50,
+  "full_image_delay_ms": 300,
+  "image_size": "s800"
+}
