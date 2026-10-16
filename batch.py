@@ -201,7 +201,12 @@ def run_batch_fill(
 
         return stats, pending_writes
 
-    def commit_task(col: any, pending_writes: List[Tuple[any, str, bytes]], stats: BatchStats) -> List[any]:
+    def commit_task(
+        col: any,
+        pending_writes: List[Tuple[any, str, bytes]],
+        stats: BatchStats,
+        processed_tracker: List[int]
+    ) -> List[any]:
         """Write media files and assign target field on freshly loaded notes within collection op."""
         notes_to_save = []
         for old_note, filename, img_bytes in pending_writes:
@@ -209,12 +214,15 @@ def run_batch_fill(
                 fresh_note = col.get_note(old_note.id)
             except Exception:
                 stats.skipped += 1
+                processed_tracker[0] += 1
                 continue
             if target_field not in fresh_note:
                 stats.skipped += 1
+                processed_tracker[0] += 1
                 continue
             if overwrite_mode == "skip" and fresh_note[target_field].strip():
                 stats.skipped += 1
+                processed_tracker[0] += 1
                 continue
             try:
                 stored_filename = col.media.write_data(filename, img_bytes)
@@ -224,6 +232,7 @@ def run_batch_fill(
             except Exception as e:
                 logger.exception("Failed to write media for note %s: %s", old_note.id, e)
                 stats.errors += 1
+            processed_tracker[0] += 1
         return notes_to_save
 
     def on_fetch_done(result: Tuple[BatchStats, List[Tuple[any, str, bytes]]]) -> None:
@@ -234,6 +243,8 @@ def run_batch_fill(
             if on_finish:
                 on_finish(stats)
             return
+
+        processed_tracker = [0]
 
         def on_saved(saved_notes: List[any]) -> None:
             """Update notes with full undo support and calculate final added count."""
@@ -257,12 +268,20 @@ def run_batch_fill(
             op.failure(_fail)
             op.run_in_background()
 
+        def on_commit_failure(err: Exception) -> None:
+            """Handle failure of commit QueryOp, accounting for unprocessed writes."""
+            logger.exception("Batch commit operation failed: %s", err)
+            unprocessed = len(pending_writes) - processed_tracker[0]
+            if unprocessed > 0:
+                stats.errors += unprocessed
+            show_summary_and_callback(stats)
+
         commit_op = QueryOp(
             parent=parent_window,
-            op=lambda col: commit_task(col, pending_writes, stats),
+            op=lambda col: commit_task(col, pending_writes, stats, processed_tracker),
             success=on_saved
         )
-        commit_op.failure(lambda _: show_summary_and_callback(stats))
+        commit_op.failure(on_commit_failure)
         commit_op.run_in_background()
 
     def show_summary_and_callback(final_stats: BatchStats) -> None:
