@@ -1,6 +1,7 @@
 """Client for searching and downloading illustrations from Irasutoya (いらすとや)."""
 from dataclasses import dataclass
 import html
+from html.parser import HTMLParser
 import json
 import logging
 import re
@@ -9,9 +10,35 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import List, Optional
+from typing import List, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+class _BloggerContentParser(HTMLParser):
+    """HTML parser to reliably extract (href, src, alt) image tuples from Blogger content."""
+
+    def __init__(self) -> None:
+        """Initialize parser state and items list."""
+        super().__init__(convert_charrefs=True)
+        self.items: List[Tuple[str, str, str]] = []
+        self._current_href: Optional[str] = None
+
+    def handle_starttag(self, tag: str, attrs: Sequence[Tuple[str, Optional[str]]]) -> None:
+        """Track active anchor href and capture nested img src and alt attributes."""
+        tag_lower = tag.lower()
+        attr_dict = {k.lower(): (v or "") for k, v in attrs}
+        if tag_lower == "a":
+            self._current_href = attr_dict.get("href")
+        elif tag_lower == "img" and self._current_href:
+            src = attr_dict.get("src", "")
+            alt = attr_dict.get("alt", "")
+            self.items.append((self._current_href, src, alt))
+
+    def handle_endtag(self, tag: str) -> None:
+        """Clear active anchor when </a> is closed."""
+        if tag.lower() == "a":
+            self._current_href = None
 
 
 @dataclass
@@ -139,12 +166,6 @@ class IrasutoyaClient:
         images: List[IrasutoyaImage] = []
         seen_urls = set()
 
-        a_pattern = re.compile(r"<a\b([^>]*)>(.*?)</a>", re.IGNORECASE | re.DOTALL)
-        img_pattern = re.compile(r"<img\b([^>]*)>", re.IGNORECASE)
-        attr_href = re.compile(r"(?<![\w-])href=[\"\']([^\'\"\s]+)[\"\']", re.IGNORECASE)
-        attr_src = re.compile(r"(?<![\w-])src=[\"\']([^\'\"\s]+)[\"\']", re.IGNORECASE)
-        attr_alt = re.compile(r"(?<![\w-])alt=[\"\']([^\'\"]*)[\"\']", re.IGNORECASE)
-
         for entry in entries:
             post_title = html.unescape(entry.get("title", {}).get("$t", "").strip())
             summary = html.unescape(entry.get("summary", {}).get("$t", "").strip())
@@ -152,15 +173,14 @@ class IrasutoyaClient:
 
             found_in_post = False
 
-            # 1. Search for <a> links wrapping <img>
-            for a_match in a_pattern.finditer(content_html):
-                a_attrs = a_match.group(1)
-                a_inner = a_match.group(2)
+            parser = _BloggerContentParser()
+            try:
+                parser.feed(content_html)
+            except Exception as e:
+                logger.warning("Failed to parse entry HTML: %s", e)
 
-                href_m = attr_href.search(a_attrs)
-                if not href_m:
-                    continue
-                href = href_m.group(1)
+            # 1. Search for <a> links wrapping <img>
+            for href, src, alt in parser.items:
                 parsed_href = urllib.parse.urlparse(href)
                 if parsed_href.scheme != "https":
                     continue
@@ -168,18 +188,6 @@ class IrasutoyaClient:
                     continue
                 if not re.search(r"\.(png|jpe?g)$", parsed_href.path, re.IGNORECASE):
                     continue
-
-                img_m = img_pattern.search(a_inner)
-                src = ""
-                alt = ""
-                if img_m:
-                    img_attrs = img_m.group(1)
-                    src_m = attr_src.search(img_attrs)
-                    if src_m:
-                        src = src_m.group(1)
-                    alt_m = attr_alt.search(img_attrs)
-                    if alt_m:
-                        alt = html.unescape(alt_m.group(1))
 
                 high_res = self._upgrade_image_url(href, image_size)
                 if high_res in seen_urls:
@@ -210,12 +218,11 @@ class IrasutoyaClient:
 
             # 2. Fallback to post thumbnail if no images found in content
             if not found_in_post:
-                thumb = entry.get("media$thumbnail", {}).get("url", "")
-                if thumb:
+                thumb_raw = entry.get("media$thumbnail", {}).get("url", "")
+                if thumb_raw:
+                    thumb = html.unescape(thumb_raw).strip()
                     parsed_thumb = urllib.parse.urlparse(thumb)
-                    if parsed_thumb.scheme != "https":
-                        continue
-                    if self._is_allowed_image_host(parsed_thumb.hostname or ""):
+                    if parsed_thumb.scheme == "https" and self._is_allowed_image_host(parsed_thumb.hostname or ""):
                         high_res = self._upgrade_image_url(thumb, image_size)
                         if high_res not in seen_urls:
                             seen_urls.add(high_res)

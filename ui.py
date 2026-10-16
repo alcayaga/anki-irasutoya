@@ -935,11 +935,11 @@ class IrasutoyaDialog(QDialog):
             if gen != self._search_generation:
                 return
             if delay_sec > 0:
-                now = time.time()
+                now = time.monotonic()
                 elapsed = now - self._last_thumb_request_time
                 if elapsed < delay_sec:
                     time.sleep(delay_sec - elapsed)
-            self._last_thumb_request_time = time.time()
+            self._last_thumb_request_time = time.monotonic()
         if gen != self._search_generation:
             return
         try:

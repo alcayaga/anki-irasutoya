@@ -262,6 +262,40 @@ class TestIrasutoyaClient(unittest.TestCase):
         # Should fallback to high_res converted to thumbnail s120-c
         self.assertEqual(results[0].thumb_url, "https://1.bp.blogspot.com/s120-c/photo.png")
 
+    def test_parse_entries_handles_whitespace_and_misleading_title_attribute(self):
+        """Verify HTMLParser handles attributes with whitespace and ignores fake href in title."""
+        sample_entry = [
+            {
+                "title": {"$t": "Attribute Edge Case"},
+                "content": {
+                    "$t": (
+                        '<a title="Click here href=\'https://evil.com/fake.png\' for info" '
+                        '   href  =  "https://1.bp.blogspot.com/real.png?v=1&amp;w=2" >'
+                        '  <span><img src  =  "https://1.bp.blogspot.com/real_thumb.png" alt="Card Image"></span>'
+                        '</a>'
+                    )
+                }
+            }
+        ]
+        results = self.client.parse_entries(sample_entry)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].title, "Card Image")
+        self.assertEqual(results[0].image_url, "https://1.bp.blogspot.com/real.png?v=1&w=2")
+        self.assertEqual(results[0].thumb_url, "https://1.bp.blogspot.com/real_thumb.png")
+
+    def test_parse_entries_thumbnail_decodes_html_entities(self):
+        """Verify fallback thumbnail URL is properly HTML decoded."""
+        fallback_entry = [
+            {
+                "title": {"$t": "Entity Thumbnail"},
+                "content": {"$t": "text only"},
+                "media$thumbnail": {"url": "https://1.bp.blogspot.com/thumb.png?a=1&amp;b=2"}
+            }
+        ]
+        results = self.client.parse_entries(fallback_entry)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].thumb_url, "https://1.bp.blogspot.com/thumb.png?a=1&b=2")
+
 
 if __name__ == "__main__":
     unittest.main()
