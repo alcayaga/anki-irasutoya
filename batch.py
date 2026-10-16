@@ -233,9 +233,8 @@ def run_batch_fill(
                 continue
 
             try:
-                pace_request()
                 images, matched_cand, best_img = client.search_with_fallbacks(
-                    candidates, max_results=12, image_size=image_size
+                    candidates, max_results=12, image_size=image_size, pace_callback=pace_request
                 )
                 if not best_img or not matched_cand:
                     stats.not_found += 1

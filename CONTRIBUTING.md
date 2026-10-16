@@ -50,10 +50,11 @@ We enforce strict separation between **Hermetic Unit Tests** and **Live Integrat
 - **Hermetic & Independent**: Tests must not assume Anki is running or that AnkiConnect is accessible.
 - **Mocking Strategy**: Use stubbed responses or mock clients (such as `MockIrasutoyaClient`) to verify logic deterministically in milliseconds.
 - **Coverage**:
-  - `test_text_utils.py`: Text cleaning, middle dot preservation, numeral conversion, katakana loanwords, vowel elongation, heuristic deinflection, candidate tiers.
-  - `test_client.py`: High-res URL upgrades, standalone vs anchor `<img>` tags, HTML unescaping, archetype relevance scoring, fallback queries.
-  - `test_batch_logic.py`: Skip/overwrite logic, safe filename generation, fallback audit tagging (`irasutoya::fallback_reading`).
-  - `test_config.py`: Fallback defaults and schema access.
+  - `tests/test_text_utils.py`: Text cleaning, middle dot preservation, numeral conversion, katakana loanwords, vowel elongation, heuristic deinflection, candidate tiers.
+  - `tests/test_client.py`: High-res URL upgrades, standalone vs anchor `<img>` tags, HTML unescaping, archetype relevance scoring, fallback queries.
+  - `tests/test_batch_logic.py`: Skip/overwrite logic, safe filename generation, fallback audit tagging (`irasutoya::fallback_reading`).
+  - `tests/test_config.py`: Fallback defaults and schema access.
+  - `tests/test_ui_mode.py`: Visual picker dialogs, preview tables, and Apple HIG components.
 
 #### Running Unit Tests
 

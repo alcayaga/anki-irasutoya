@@ -10,7 +10,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import List, Optional, Sequence, Tuple
+from typing import Callable, List, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -251,6 +251,10 @@ class IrasutoyaClient:
                     if (
                         parsed_src.scheme == "https"
                         and self._is_allowed_image_host(parsed_src.hostname or "")
+                        and (
+                            re.search(r"\.(png|jpe?g|webp)($|\?)", parsed_src.path, re.IGNORECASE)
+                            or re.search(r"/s\d+(-c)?/", parsed_src.path)
+                        )
                     ):
                         candidate_url = src
 
@@ -311,7 +315,8 @@ class IrasutoyaClient:
         candidates: Sequence[Tuple[str, str, int]],
         max_results: int = 12,
         image_size: str = "s800",
-        orderby: Optional[str] = "relevance"
+        orderby: Optional[str] = "relevance",
+        pace_callback: Optional[Callable[[], None]] = None,
     ) -> Tuple[List[IrasutoyaImage], Optional[Tuple[str, str, int]], Optional[IrasutoyaImage]]:
         """Query candidate terms in sequence until images are found.
         
@@ -320,12 +325,15 @@ class IrasutoyaClient:
             max_results: Maximum posts to fetch per query.
             image_size: Target image resolution code.
             orderby: Blogger ordering parameter.
+            pace_callback: Optional callback invoked before each network query to pace requests.
         
         Returns:
             (ranked_images, matched_candidate, best_image)
         """
         for cand in candidates:
             term = cand[0]
+            if pace_callback is not None:
+                pace_callback()
             try:
                 images = self.search(term, max_results=max_results, image_size=image_size, orderby=orderby)
             except Exception as e:

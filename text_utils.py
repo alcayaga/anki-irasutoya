@@ -83,7 +83,7 @@ def convert_to_kanji_numerals(text: str) -> Optional[str]:
         '2人' -> '二人'
         '1つ' -> '一つ'
     """
-    m = re.match(r"^(\d{1,2})(" + COUNTER_PATTERN + r".*)$", text)
+    m = re.match(r"^(\d{1,2})((?:" + COUNTER_PATTERN + r").*)$", text)
     if m:
         num, rest = m.groups()
         if num in KANJI_NUMS:

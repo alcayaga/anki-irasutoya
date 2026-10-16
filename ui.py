@@ -870,8 +870,11 @@ class IrasutoyaDialog(QDialog):
         self._clear_gallery()
 
         image_size = self.config.get(CONFIG_KEY_IMAGE_SIZE, "s800")
-        source_field = self.source_field_combo.currentText() if hasattr(self, "source_field_combo") else None
-        cleaned_source = clean_search_query(self.first_note.get(source_field, "")) if (self.first_note and source_field) else ""
+        source_field = self.combo_source.currentText() if hasattr(self, "combo_source") else ""
+        cleaned_source = (
+            clean_search_query(self.first_note[source_field])
+            if (self.first_note and source_field and source_field in self.first_note) else ""
+        )
         note_to_pass = self.first_note if (query and query == cleaned_source) else None
         candidates = generate_search_candidates(query, note=note_to_pass, allow_tier2=True)
 
