@@ -128,6 +128,19 @@ class TestIrasutoyaClient(unittest.TestCase):
         with self.assertRaises(urllib.error.URLError):
             handler.redirect_request(None, None, 302, "Found", {}, "file:///etc/passwd")
 
+    def test_parse_entries_rejects_non_image_extension_urls(self):
+        """Verify that links ending with .png.html or other non-image suffixes are not treated as images."""
+        sample_entry = [
+            {
+                "title": {"$t": "HTML Link Post"},
+                "content": {
+                    "$t": '<a href="https://example.com/photo.png.html"><img src="thumb.jpg"></a>'
+                }
+            }
+        ]
+        results = self.client.parse_entries(sample_entry)
+        self.assertEqual(len(results), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

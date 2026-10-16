@@ -137,7 +137,7 @@ class IrasutoyaClient:
                 if not href_m:
                     continue
                 href = href_m.group(1)
-                if not re.search(r"\.(png|jpe?g)", href, re.IGNORECASE):
+                if not re.search(r"\.(png|jpe?g)$", urllib.parse.urlparse(href).path, re.IGNORECASE):
                     continue
 
                 img_m = img_pattern.search(a_inner)
