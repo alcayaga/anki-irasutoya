@@ -36,6 +36,8 @@ class BatchStats:
         if self.errors > 0:
             msg += f", Errors: {self.errors}"
         if self.canceled:
+            if self.added > 0:
+                return f"Canceled. Partial results committed: {msg}"
             return f"Canceled. {msg}"
         return f"Finished! {msg}"
 
@@ -124,7 +126,10 @@ def run_batch_fill(
         return
 
     config = get_config()
-    delay_ms = config.get(CONFIG_KEY_FULL_DELAY, 300)
+    try:
+        delay_ms = float(config.get(CONFIG_KEY_FULL_DELAY, 300))
+    except (TypeError, ValueError):
+        delay_ms = 300.0
     delay_sec = max(0.05, delay_ms / 1000.0)
     image_size = config.get(CONFIG_KEY_IMAGE_SIZE, "s800")
     client = IrasutoyaClient()
@@ -169,6 +174,7 @@ def run_batch_fill(
             # Dismissing progress window or pressing Esc triggers closeEvent, setting wantCancel
             if hasattr(mw.progress, "want_cancel") and mw.progress.want_cancel():
                 stats.canceled = True
+                stats.skipped += len(items) - idx
                 break
 
             current_count = idx + 1
@@ -300,11 +306,11 @@ def run_batch_fill(
         if on_finish:
             on_finish(final_stats)
 
-    def on_notes_read(items: List[Tuple[any, str, bool]]) -> None:
+    def on_notes_read(data: Tuple[List[Tuple[any, str, bool]], int, int]) -> None:
         """Launch background network downloads worker without collection lock."""
         fetch_op = QueryOp(
             parent=parent_window,
-            op=lambda _: fetch_images_worker(items),
+            op=lambda _: fetch_images_worker(data),
             success=on_fetch_done
         )
         fetch_op.without_collection().with_progress(

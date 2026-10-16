@@ -27,7 +27,7 @@ def get_config() -> Dict[str, Any]:
     try:
         from aqt import mw
         if mw and hasattr(mw, "addonManager") and mw.addonManager:
-            addon_pkg = __name__.split(".")[0]
+            addon_pkg = mw.addonManager.addonFromModule(__name__) or __name__.split(".")[0]
             addon_cfg = mw.addonManager.getConfig(addon_pkg)
             if addon_cfg:
                 cfg.update(addon_cfg)
@@ -50,7 +50,7 @@ def save_config(config: Dict[str, Any]) -> None:
     try:
         from aqt import mw
         if mw and hasattr(mw, "addonManager") and mw.addonManager:
-            addon_pkg = __name__.split(".")[0]
+            addon_pkg = mw.addonManager.addonFromModule(__name__) or __name__.split(".")[0]
             mw.addonManager.writeConfig(addon_pkg, config)
     except Exception:
         pass

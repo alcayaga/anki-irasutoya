@@ -640,7 +640,7 @@ class IrasutoyaDialog(QDialog):
                 else:
                     count_skip += 1
             except Exception:
-                pass
+                count_skip += 1
 
         # Update Summary Chips
         if hasattr(self, "chip_fill") and hasattr(self, "chip_other"):
@@ -666,7 +666,10 @@ class IrasutoyaDialog(QDialog):
         # Update Smart CTA button
         active_total = count_fill + (count_overwrite if is_overwrite else 0)
         if hasattr(self, "btn_batch"):
-            if active_total == 0:
+            if source_field and target_field and source_field == target_field:
+                self.btn_batch.setText("Source and Target Fields Must Differ")
+                self.btn_batch.setEnabled(False)
+            elif active_total == 0:
                 self.btn_batch.setText("Nothing to Fill (All Skipped)")
                 self.btn_batch.setEnabled(False)
             else:
@@ -682,6 +685,16 @@ class IrasutoyaDialog(QDialog):
             try:
                 note = self._get_cached_note(nid)
                 if not note:
+                    item_src = QTableWidgetItem(" (Failed to load)")
+                    item_tgt = QTableWidgetItem("Unavailable")
+                    item_act = QTableWidgetItem("Will Skip")
+                    item_src.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+                    item_tgt.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                    item_act.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                    item_act.setForeground(QColor("#8E8E93"))
+                    self.table_preview.setItem(row_idx, 0, item_src)
+                    self.table_preview.setItem(row_idx, 1, item_tgt)
+                    self.table_preview.setItem(row_idx, 2, item_act)
                     continue
 
                 if not target_field or target_field not in note or not source_field or source_field not in note:
@@ -731,7 +744,16 @@ class IrasutoyaDialog(QDialog):
                 self.table_preview.setItem(row_idx, 1, item_tgt)
                 self.table_preview.setItem(row_idx, 2, item_act)
             except Exception:
-                pass
+                item_src = QTableWidgetItem(" (Error)")
+                item_tgt = QTableWidgetItem("Unavailable")
+                item_act = QTableWidgetItem("Will Skip")
+                item_src.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+                item_tgt.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                item_act.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                item_act.setForeground(QColor("#8E8E93"))
+                self.table_preview.setItem(row_idx, 0, item_src)
+                self.table_preview.setItem(row_idx, 1, item_tgt)
+                self.table_preview.setItem(row_idx, 2, item_act)
 
         total = len(self.note_ids)
         if total > max_preview:
@@ -877,7 +899,10 @@ class IrasutoyaDialog(QDialog):
     def _populate_gallery(self, images: List[IrasutoyaImage], gen: int) -> None:
         """Render image cards into the gallery grid and stream thumbnails in parallel."""
         cols = 3
-        thumb_delay_ms = self.config.get(CONFIG_KEY_THUMB_DELAY, 50)
+        try:
+            thumb_delay_ms = int(self.config.get(CONFIG_KEY_THUMB_DELAY, 50))
+        except (TypeError, ValueError):
+            thumb_delay_ms = 50
 
         for idx, img in enumerate(images):
             card = ImageCardWidget(
@@ -978,7 +1003,7 @@ class IrasutoyaDialog(QDialog):
 
                 def on_success() -> None:
                     """Commit media and update note field within a QueryOp on the collection."""
-                    if not self.isVisible():
+                    if not self.isVisible() or not self._applying:
                         self._applying = False
                         return
 
@@ -999,7 +1024,8 @@ class IrasutoyaDialog(QDialog):
                         def on_update_success(_: any) -> None:
                             """Notify success and close dialog."""
                             tooltip(f"Added '{best_img.title}' to {target_field}.", parent=self.browser)
-                            self.accept()
+                            if self.isVisible():
+                                self.accept()
 
                         def on_update_failure(err: Exception) -> None:
                             """Restore button state and display warning on update failure."""
@@ -1054,9 +1080,13 @@ class IrasutoyaDialog(QDialog):
 
     def _start_batch(self) -> None:
         """Save preferences and launch background batch process."""
-        self._save_preferences()
         source_field = self.combo_source.currentText()
         target_field = self.combo_target.currentText()
+        if source_field == target_field:
+            showWarning("Source and target fields cannot be the same.", parent=self)
+            return
+
+        self._save_preferences()
         overwrite_mode = "overwrite" if hasattr(self, "radio_overwrite") and self.radio_overwrite.isChecked() else "skip"
 
         self.accept()

@@ -2,7 +2,7 @@
 
 Enrich your Anki flashcards with illustrations from [いらすとや (Irasutoya)](https://www.irasutoya.com/) directly from the Anki Browser.
 
-![Anki](https://img.shields.io/badge/Anki-24%2B-blue)
+![Anki](https://img.shields.io/badge/Anki-23.10%2B-blue)
 ![License](https://img.shields.io/badge/license-AGPL--3.0-blue)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)
 

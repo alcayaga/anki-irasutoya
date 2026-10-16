@@ -23,26 +23,35 @@ class IrasutoyaImage:
     description: str = ""
 
 
-class InsecureRedirectError(urllib.error.URLError):
-    """Raised when an HTTP redirect targets a non-HTTPS destination."""
-
-
-class _HttpsOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Enforce HTTPS-only redirects to prevent SSRF protocol downgrade."""
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        """Validate redirect target URL is HTTPS."""
-        if urllib.parse.urlparse(newurl).scheme != "https":
-            raise InsecureRedirectError(f"Refusing non-HTTPS redirect: {newurl}")
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
-
-
 ALLOWED_IMAGE_HOSTS = (
     "bp.blogspot.com",
     "googleusercontent.com",
-    "blogger.com",
     "irasutoya.com",
 )
+
+
+def is_allowed_image_host(host: str) -> bool:
+    """Validate if hostname belongs to an allowlisted image domain."""
+    host = host.lower()
+    return any(host == allowed or host.endswith(f".{allowed}") for allowed in ALLOWED_IMAGE_HOSTS)
+
+
+class InsecureRedirectError(urllib.error.URLError):
+    """Raised when an HTTP redirect targets a non-HTTPS or untrusted destination."""
+
+
+class _HttpsOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Enforce HTTPS-only and trusted host redirects to prevent SSRF and protocol downgrades."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        """Validate redirect target URL is HTTPS and points to an allowlisted host."""
+        parsed = urllib.parse.urlparse(newurl)
+        if parsed.scheme != "https":
+            raise InsecureRedirectError(f"Refusing non-HTTPS redirect: {newurl}")
+        host = (parsed.hostname or "").lower()
+        if not is_allowed_image_host(host):
+            raise InsecureRedirectError(f"Refusing redirect to untrusted host: {host}")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 class IrasutoyaClient:
@@ -151,7 +160,10 @@ class IrasutoyaClient:
                 if not href_m:
                     continue
                 href = href_m.group(1)
-                if not re.search(r"\.(png|jpe?g)$", urllib.parse.urlparse(href).path, re.IGNORECASE):
+                parsed_href = urllib.parse.urlparse(href)
+                if not self._is_allowed_image_host(parsed_href.hostname or ""):
+                    continue
+                if not re.search(r"\.(png|jpe?g)$", parsed_href.path, re.IGNORECASE):
                     continue
 
                 img_m = img_pattern.search(a_inner)
@@ -188,18 +200,20 @@ class IrasutoyaClient:
             if not found_in_post:
                 thumb = entry.get("media$thumbnail", {}).get("url", "")
                 if thumb:
-                    high_res = self._upgrade_image_url(thumb, image_size)
-                    if high_res not in seen_urls:
-                        seen_urls.add(high_res)
-                        images.append(
-                            IrasutoyaImage(
-                                title=post_title,
-                                image_url=high_res,
-                                thumb_url=self._to_thumbnail_url(thumb, "s120-c"),
-                                post_title=post_title,
-                                description=summary
+                    parsed_thumb = urllib.parse.urlparse(thumb)
+                    if self._is_allowed_image_host(parsed_thumb.hostname or ""):
+                        high_res = self._upgrade_image_url(thumb, image_size)
+                        if high_res not in seen_urls:
+                            seen_urls.add(high_res)
+                            images.append(
+                                IrasutoyaImage(
+                                    title=post_title,
+                                    image_url=high_res,
+                                    thumb_url=self._to_thumbnail_url(thumb, "s120-c"),
+                                    post_title=post_title,
+                                    description=summary
+                                )
                             )
-                        )
 
         return images
 
@@ -216,8 +230,7 @@ class IrasutoyaClient:
     @staticmethod
     def _is_allowed_image_host(host: str) -> bool:
         """Validate hostname against permitted image host domains."""
-        host = host.lower()
-        return any(host == allowed or host.endswith(f".{allowed}") for allowed in ALLOWED_IMAGE_HOSTS)
+        return is_allowed_image_host(host)
 
     def download_image(self, url: str, timeout: int = 15) -> bytes:
         """Download raw image binary data from an allowlisted HTTPS URL."""

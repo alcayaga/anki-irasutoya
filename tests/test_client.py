@@ -44,11 +44,11 @@ class TestIrasutoyaClient(unittest.TestCase):
                 "content": {
                     "$t": (
                         '<div class="separator">'
-                        '<a href="https://example.com/s400/cat_white.png">'
-                        '<img alt="白猫のイラスト" src="https://example.com/s200/cat_white.png" />'
+                        '<a href="https://1.bp.blogspot.com/s400/cat_white.png">'
+                        '<img alt="白猫のイラスト" src="https://1.bp.blogspot.com/s200/cat_white.png" />'
                         '</a>'
-                        '<a href="https://example.com/s400/cat_black.png">'
-                        '<img alt="黒猫のイラスト" src="https://example.com/s200/cat_black.png" />'
+                        '<a href="https://1.bp.blogspot.com/s400/cat_black.png">'
+                        '<img alt="黒猫のイラスト" src="https://1.bp.blogspot.com/s200/cat_black.png" />'
                         '</a>'
                         '</div>'
                     )
@@ -59,12 +59,12 @@ class TestIrasutoyaClient(unittest.TestCase):
         images = self.client.parse_entries(sample_entries, image_size="s800")
         self.assertEqual(len(images), 2)
         self.assertEqual(images[0].title, "白猫のイラスト")
-        self.assertEqual(images[0].image_url, "https://example.com/s800/cat_white.png")
-        self.assertEqual(images[0].thumb_url, "https://example.com/s120-c/cat_white.png")
+        self.assertEqual(images[0].image_url, "https://1.bp.blogspot.com/s800/cat_white.png")
+        self.assertEqual(images[0].thumb_url, "https://1.bp.blogspot.com/s120-c/cat_white.png")
         self.assertEqual(images[0].post_title, "猫のイラスト")
 
         self.assertEqual(images[1].title, "黒猫のイラスト")
-        self.assertEqual(images[1].image_url, "https://example.com/s800/cat_black.png")
+        self.assertEqual(images[1].image_url, "https://1.bp.blogspot.com/s800/cat_black.png")
 
     def test_parse_entries_thumbnail_fallback(self):
         """Test fallback to post thumbnail when entry content lacks explicit <a><img> links."""
@@ -74,7 +74,7 @@ class TestIrasutoyaClient(unittest.TestCase):
                 "summary": {"$t": "リンゴです。"},
                 "content": {"$t": "<div>テキストのみ</div>"},
                 "media$thumbnail": {
-                    "url": "https://example.com/s72-c/apple.png"
+                    "url": "https://1.bp.blogspot.com/s72-c/apple.png"
                 }
             }
         ]
@@ -82,8 +82,8 @@ class TestIrasutoyaClient(unittest.TestCase):
         images = self.client.parse_entries(sample_entries, image_size="s800")
         self.assertEqual(len(images), 1)
         self.assertEqual(images[0].title, "リンゴのイラスト")
-        self.assertEqual(images[0].image_url, "https://example.com/s800/apple.png")
-        self.assertEqual(images[0].thumb_url, "https://example.com/s120-c/apple.png")
+        self.assertEqual(images[0].image_url, "https://1.bp.blogspot.com/s800/apple.png")
+        self.assertEqual(images[0].thumb_url, "https://1.bp.blogspot.com/s120-c/apple.png")
 
     def test_search_mocked(self):
         """Test searching with stubbed HTTP response to ensure deterministic execution."""
@@ -95,8 +95,8 @@ class TestIrasutoyaClient(unittest.TestCase):
                         "summary": {"$t": "美味しいりんごのイラスト"},
                         "content": {
                             "$t": (
-                                '<a href="https://example.com/s400/apple.png">'
-                                '<img alt="赤色のりんご" src="https://example.com/s200/apple.png" />'
+                                '<a href="https://1.bp.blogspot.com/s400/apple.png">'
+                                '<img alt="赤色のりんご" src="https://1.bp.blogspot.com/s200/apple.png" />'
                                 '</a>'
                             )
                         }
@@ -109,8 +109,8 @@ class TestIrasutoyaClient(unittest.TestCase):
         results = self.client.search("りんご", max_results=2)
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].title, "赤色のりんご")
-        self.assertEqual(results[0].image_url, "https://example.com/s800/apple.png")
-        self.assertEqual(results[0].thumb_url, "https://example.com/s120-c/apple.png")
+        self.assertEqual(results[0].image_url, "https://1.bp.blogspot.com/s800/apple.png")
+        self.assertEqual(results[0].thumb_url, "https://1.bp.blogspot.com/s120-c/apple.png")
 
     def test_download_image_scheme_validation(self):
         """Verify non-HTTPS or non-allowlisted image download URLs are rejected with ValueError."""
@@ -126,15 +126,18 @@ class TestIrasutoyaClient(unittest.TestCase):
         self.assertTrue(self.client._is_allowed_image_host("www.irasutoya.com"))
         self.assertFalse(self.client._is_allowed_image_host("evilgoogleusercontent.com"))
         self.assertFalse(self.client._is_allowed_image_host("not-irasutoya.com"))
+        self.assertFalse(self.client._is_allowed_image_host("blogger.com"))
 
     def test_https_only_redirect_handler(self):
-        """Verify that HTTPRedirectHandler rejects non-HTTPS redirect targets."""
-        from client import _HttpsOnlyRedirectHandler
+        """Verify that HTTPRedirectHandler rejects non-HTTPS or untrusted redirect targets."""
+        from client import _HttpsOnlyRedirectHandler, InsecureRedirectError
         handler = _HttpsOnlyRedirectHandler()
-        with self.assertRaises(urllib.error.URLError):
+        with self.assertRaises(InsecureRedirectError):
             handler.redirect_request(None, None, 302, "Found", {}, "http://insecure.target/img.png")
-        with self.assertRaises(urllib.error.URLError):
+        with self.assertRaises(InsecureRedirectError):
             handler.redirect_request(None, None, 302, "Found", {}, "file:///etc/passwd")
+        with self.assertRaises(InsecureRedirectError):
+            handler.redirect_request(None, None, 302, "Found", {}, "https://evil-untrusted-site.com/image.png")
 
     def test_parse_entries_rejects_non_image_extension_urls(self):
         """Verify that links ending with .png.html or other non-image suffixes are not treated as images."""
@@ -142,12 +145,34 @@ class TestIrasutoyaClient(unittest.TestCase):
             {
                 "title": {"$t": "HTML Link Post"},
                 "content": {
-                    "$t": '<a href="https://example.com/photo.png.html"><img src="thumb.jpg"></a>'
+                    "$t": '<a href="https://1.bp.blogspot.com/photo.png.html"><img src="thumb.jpg"></a>'
                 }
             }
         ]
         results = self.client.parse_entries(sample_entry)
         self.assertEqual(len(results), 0)
+
+    def test_parse_entries_mixed_hosts(self):
+        """Verify that entries containing untrusted image hosts filter out the untrusted URLs."""
+        sample_entry = [
+            {
+                "title": {"$t": "Mixed Host Post"},
+                "content": {
+                    "$t": (
+                        '<a href="https://evil-site.com/bad.png">'
+                        '<img alt="Bad image" src="https://evil-site.com/bad_thumb.png">'
+                        '</a>'
+                        '<a href="https://1.bp.blogspot.com/good.png">'
+                        '<img alt="Good image" src="https://1.bp.blogspot.com/good_thumb.png">'
+                        '</a>'
+                    )
+                }
+            }
+        ]
+        results = self.client.parse_entries(sample_entry)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].title, "Good image")
+        self.assertEqual(results[0].image_url, "https://1.bp.blogspot.com/good.png")
 
 
 if __name__ == "__main__":
