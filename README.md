@@ -15,9 +15,17 @@ Enrich your Anki flashcards with illustrations from [いらすとや (Irasutoya)
   - Polished macOS-native aesthetics with smooth rounded controls and vivid system accent buttons.
   - Dedicated white canvas background for thumbnail previews, ensuring transparent PNG illustrations with dark clothing, hair, or outlines remain crisp in dark mode.
   - Vector down-chevron dropdowns with seamless borders.
+- **Smart Search & Candidate Fallback Pipeline**:
+  - **Japanese Script Normalization**: Automatically normalizes Unicode NFKC, converts loanwords to Katakana (`とまと` $\rightarrow$ `トマト`), expands shortened Katakana vowel marks (`メンバ` $\rightarrow$ `メンバー`), preserves middle dots in compound loanwords (`メッセージ・カード`), and transforms numeric counters to Kanji (`1杯` $\rightarrow$ `一杯`, `2人` $\rightarrow$ `二人`).
+  - **Automatic Note Reading Field Discovery**: In Batch Mode, automatically inspects reading fields on the note (`ExpressionReading`, `Reading`, `Word Reading`, `Kana`, or furigana brackets) if the primary Kanji query yields zero illustrations.
+  - **Tiered Confidence Strategy & Audit Tagging**:
+    - **Tier 1 (Safe Syntactic Transforms)**: Applied automatically with zero homophone risk.
+    - **Tier 2 (Semantic & Reading Fallbacks)**: If an image is matched via a phonetic reading fallback in Batch Mode, the note is automatically tagged with `irasutoya::fallback_reading` for effortless one-click auditability in the Anki Browser.
+  - **Archetype & Relevance Scoring Engine**: Uses Blogger `orderby=relevance` and a scoring engine that favors canonical, standalone illustrations over negative situations, multi-figure scenarios, or incidental mentions (e.g. `本` selects a clean book rather than tax paperwork).
 - **Dual Mode**:
   - **Single Card Interactive Gallery**:
     - Real-time thumbnail gallery with titles and selection checkmark badge.
+    - **Visual Transparency & 1-Click Suggestion Chips**: Subtle Google-style notification banner informs you when fallback results are shown, with clickable chips to toggle variations instantly.
     - Full **keyboard navigation**: use Arrow Keys (`←`, `→`, `↑`, `↓`) to browse illustrations and press `Enter` to apply.
     - Native `(✕)` clear button in search input.
     - Double-click any illustration to apply immediately.
@@ -32,7 +40,7 @@ Enrich your Anki flashcards with illustrations from [いらすとや (Irasutoya)
   - Choose any **Target Field** (e.g. `DefinitionPicture`, `Picture`, `Image`, `Illustration`).
   - Automatically remembers your field selections across sessions in `config.json`.
 - **Smart Query Sanitization**:
-  - Automatically strips HTML markup, Anki sound tags (`[sound:...]`), furigana brackets (`食べる[たべる]` -> `食べる`), parenthesized readings (`（ねこ）`), and extracts the primary keyword from multi-definition fields (`・`, `/`, `;`, `,`).
+  - Automatically strips HTML markup, Anki sound tags (`[sound:...]`), furigana brackets (`食べる[たべる]` -> `食べる`), parenthesized readings (`（ねこ）`), and extracts the primary keyword from multi-definition fields (`/`, `;`, `,`).
 - **Decoupled Pacing & Server Politeness**:
   - Rapid parallel thumbnail streaming (50ms delay) for instantaneous visual picking.
   - Steady polite delay (300ms) for batch full-resolution downloads to respect Irasutoya's servers and prevent HTTP 429 throttling.
@@ -80,19 +88,31 @@ Restart Anki after linking.
 
 ---
 
-## Testing
+## Testing & Evaluation
 
-Run unit tests via Python:
+### Hermetic Unit Tests
 
-```bash
-python3 -m unittest discover -s tests -p "test_*.py" -v
-```
-
-Or run with Anki's bundled packages:
+Run fast, offline unit tests without network or Anki dependencies:
 
 ```bash
-PYTHONPATH="/Applications/Anki.app/Contents/Resources/app_packages:." python3 -m unittest discover -s tests -p "test_*.py" -v
+python3 -m unittest discover tests -v
 ```
+
+Or run with Anki's bundled packages (includes PyQt6 GUI tests):
+
+```bash
+PYTHONPATH="/Applications/Anki.app/Contents/Resources/app_packages:." python3 -m unittest discover tests -v
+```
+
+### Live Deck Search Benchmark CLI
+
+Evaluate and measure real search recall improvements against your actual Anki decks via AnkiConnect (read-only, non-destructive):
+
+```bash
+python3 scripts/eval_deck_search.py --deck "Mining" --sort "FreqSort" --limit 50 --verbose
+```
+
+For detailed developer setup, testing philosophies, and contribution standards, please refer to [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 

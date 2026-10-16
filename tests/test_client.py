@@ -296,6 +296,93 @@ class TestIrasutoyaClient(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].thumb_url, "https://1.bp.blogspot.com/thumb.png?a=1&b=2")
 
+    def test_parse_entries_standalone_img(self):
+        """Test parsing Blogger feed entry where images are standalone <img> tags without wrapping <a>."""
+        sample_entries = [
+            {
+                "title": {"$t": "犬のイラスト"},
+                "summary": {"$t": "可愛い犬のイラストです。"},
+                "content": {
+                    "$t": (
+                        '<div class="separator">'
+                        '<img alt="柴犬のイラスト" src="https://1.bp.blogspot.com/s400/shiba.png" />'
+                        '</div>'
+                    )
+                }
+            }
+        ]
+        images = self.client.parse_entries(sample_entries, image_size="s800")
+        self.assertEqual(len(images), 1)
+        self.assertEqual(images[0].title, "柴犬のイラスト")
+        self.assertEqual(images[0].image_url, "https://1.bp.blogspot.com/s800/shiba.png")
+        self.assertEqual(images[0].thumb_url, "https://1.bp.blogspot.com/s120-c/shiba.png")
+
+    def test_score_candidate_image(self):
+        """Test archetype scoring engine penalties and boosts."""
+        from client import score_candidate_image
+
+        img_exact = IrasutoyaImage(
+            title="本",
+            image_url="https://example.com/book.png",
+            thumb_url="https://example.com/thumb.png",
+            post_title="本のイラスト"
+        )
+        score_exact = score_candidate_image(img_exact, "本")
+
+        img_tax = IrasutoyaImage(
+            title="確定申告で税金を払う人のイラスト",
+            image_url="https://example.com/tax.png",
+            thumb_url="https://example.com/thumb.png",
+            post_title="税金・確定申告のイラスト"
+        )
+        score_tax = score_candidate_image(img_tax, "本")
+
+        self.assertGreater(score_exact, score_tax)
+        self.assertGreater(score_exact, 100)
+        self.assertLess(score_tax, 50)
+
+    def test_select_best_image(self):
+        """Test selecting the highest scoring image among candidates."""
+        from client import select_best_image
+
+        img_bad = IrasutoyaImage(
+            title="本を投げ捨てる問題児のイラスト",
+            image_url="https://example.com/bad.png",
+            thumb_url="https://example.com/thumb.png",
+            post_title="トラブルのイラスト"
+        )
+        img_good = IrasutoyaImage(
+            title="開いた本のイラスト",
+            image_url="https://example.com/good.png",
+            thumb_url="https://example.com/thumb.png",
+            post_title="本のイラスト"
+        )
+        best = select_best_image([img_bad, img_good], "本")
+        self.assertEqual(best, img_good)
+
+    def test_search_with_fallbacks(self):
+        """Test candidate fallback execution when primary returns 0 results."""
+        client = IrasutoyaClient()
+
+        def mock_search(q, max_results=3, image_size="s800", orderby="relevance"):
+            if q == "そのまま":
+                return [IrasutoyaImage("そのままのイラスト", "https://example.com/img.png", "https://example.com/t.png", "そのまま")]
+            return []
+
+        client.search = mock_search
+
+        candidates = [
+            ("其の儘", "primary", 1),
+            ("そのまま", "note_reading_Reading", 2)
+        ]
+        images, matched_cand, best_img = client.search_with_fallbacks(candidates)
+        self.assertEqual(len(images), 1)
+        self.assertIsNotNone(matched_cand)
+        self.assertEqual(matched_cand[0], "そのまま")
+        self.assertEqual(matched_cand[2], 2)
+        self.assertIsNotNone(best_img)
+        self.assertEqual(best_img.title, "そのままのイラスト")
+
 
 if __name__ == "__main__":
     unittest.main()

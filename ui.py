@@ -4,7 +4,7 @@ import logging
 import os
 import threading
 import time
-from typing import Dict, List, Optional, Sequence, Set
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 import urllib.parse
 
 from aqt import mw
@@ -37,7 +37,7 @@ from aqt.qt import (
 from aqt.utils import tooltip, showWarning
 
 try:
-    from .client import IrasutoyaClient, IrasutoyaImage
+    from .client import IrasutoyaClient, IrasutoyaImage, score_candidate_image, select_best_image
     from .config import (
         get_config,
         update_user_preferences,
@@ -48,10 +48,10 @@ try:
         CONFIG_KEY_FULL_DELAY,
         CONFIG_KEY_IMAGE_SIZE,
     )
-    from .text_utils import clean_search_query
+    from .text_utils import clean_search_query, generate_search_candidates
     from .batch import run_batch_fill, make_safe_media_filename
 except ImportError:
-    from client import IrasutoyaClient, IrasutoyaImage
+    from client import IrasutoyaClient, IrasutoyaImage, score_candidate_image, select_best_image
     from config import (
         get_config,
         update_user_preferences,
@@ -62,10 +62,11 @@ except ImportError:
         CONFIG_KEY_FULL_DELAY,
         CONFIG_KEY_IMAGE_SIZE,
     )
-    from text_utils import clean_search_query
+    from text_utils import clean_search_query, generate_search_candidates
     from batch import run_batch_fill, make_safe_media_filename
 
 logger = logging.getLogger(__name__)
+
 
 ICONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons")
 CHEVRON_ICON_PATH = os.path.join(ICONS_DIR, "chevron_down.svg").replace("\\", "/")
@@ -790,6 +791,14 @@ class IrasutoyaDialog(QDialog):
 
         main_layout.addLayout(search_box_layout)
 
+        # Suggestion Chips Row
+        self.chips_widget = QWidget(self)
+        self.chips_layout = QHBoxLayout(self.chips_widget)
+        self.chips_layout.setContentsMargins(0, 0, 0, 0)
+        self.chips_layout.setSpacing(6)
+        self.chips_widget.setVisible(False)
+        main_layout.addWidget(self.chips_widget)
+
         # Status Label
         self.status_label = QLabel("Search for an illustration or click 'Search' above.", self)
         self.status_label.setStyleSheet("color: #98989D; font-size: 12px;")
@@ -845,7 +854,7 @@ class IrasutoyaDialog(QDialog):
                 self._do_search()
 
     def _do_search(self) -> None:
-        """Fetch search results from Irasutoya for the query in the input box asynchronously."""
+        """Fetch search results from Irasutoya with fallback candidate generation asynchronously."""
         query = self.query_input.text().strip()
         if not query:
             self.status_label.setStyleSheet("color: #FF453A; font-size: 12px;")
@@ -861,20 +870,30 @@ class IrasutoyaDialog(QDialog):
         self._clear_gallery()
 
         image_size = self.config.get(CONFIG_KEY_IMAGE_SIZE, "s800")
+        candidates = generate_search_candidates(query, note=self.first_note, allow_tier2=True)
 
         def background_search() -> None:
-            """Fetch search results on a background thread."""
+            """Fetch search results on a background thread using fallback queries."""
             try:
-                images = self.client.search(query, max_results=12, image_size=image_size)
+                images, matched_cand, best_img = self.client.search_with_fallbacks(
+                    candidates, max_results=12, image_size=image_size
+                )
             except Exception as e:
                 logger.exception("Search failed: %s", e)
-                images = []
-            self._run_on_main(lambda: self._on_search_finished(current_gen, query, images))
+                images, matched_cand, best_img = [], None, None
+            self._run_on_main(lambda: self._on_search_finished(current_gen, query, candidates, matched_cand, images))
 
         threading.Thread(target=background_search, daemon=True).start()
 
-    def _on_search_finished(self, gen: int, query: str, images: List[IrasutoyaImage]) -> None:
-        """Process completed search results on the main thread and populate gallery."""
+    def _on_search_finished(
+        self,
+        gen: int,
+        query: str,
+        candidates: List[Tuple[str, str, int]],
+        matched_cand: Optional[Tuple[str, str, int]],
+        images: List[IrasutoyaImage]
+    ) -> None:
+        """Process completed search results on the main thread, display fallbacks, and populate gallery."""
         if gen != self._search_generation:
             return
 
@@ -882,11 +901,74 @@ class IrasutoyaDialog(QDialog):
         if not images:
             self.status_label.setStyleSheet("color: #FF453A; font-size: 12px;")
             self.status_label.setText(f"No illustrations found for '{query}'.")
+            self._update_suggestion_chips(candidates, active_term=None)
             return
 
-        self.status_label.setStyleSheet("color: #98989D; font-size: 12px;")
-        self.status_label.setText(f"Found {len(images)} illustrations. Click one to select.")
+        if matched_cand and matched_cand[0] != query:
+            self.status_label.setStyleSheet("color: #0A84FF; font-size: 12px; font-weight: 500;")
+            self.status_label.setText(
+                f"ℹ️ No direct results for '{query}'. Showing results for '{matched_cand[0]}' ({matched_cand[1]})."
+            )
+        else:
+            self.status_label.setStyleSheet("color: #98989D; font-size: 12px;")
+            self.status_label.setText(f"Found {len(images)} illustrations. Click one to select.")
+
+        self._update_suggestion_chips(candidates, active_term=(matched_cand[0] if matched_cand else query))
         self._populate_gallery(images, gen)
+
+    def _update_suggestion_chips(
+        self,
+        candidates: List[Tuple[str, str, int]],
+        active_term: Optional[str] = None
+    ) -> None:
+        """Render one-click suggestion chips for query variations."""
+        if not hasattr(self, "chips_layout"):
+            return
+
+        while self.chips_layout.count():
+            item = self.chips_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        # Only display chips if there are alternative candidates
+        alt_candidates = [c for c in candidates if len(candidates) > 1]
+        if not alt_candidates:
+            self.chips_widget.setVisible(False)
+            return
+
+        lbl = QLabel("Try:", self)
+        lbl.setStyleSheet("color: #8E8E93; font-size: 11px; font-weight: 500;")
+        self.chips_layout.addWidget(lbl)
+
+        # Show up to 4 top candidate chips
+        for cand_term, reason, tier in alt_candidates[:4]:
+            is_active = (cand_term == active_term)
+            btn = QPushButton(f"{cand_term}", self)
+            btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            if is_active:
+                btn.setStyleSheet(
+                    "background-color: rgba(10, 132, 255, 0.18); "
+                    "border: 1px solid #0A84FF; border-radius: 10px; "
+                    "padding: 2px 8px; font-size: 11px; font-weight: 600; color: #0A84FF;"
+                )
+            else:
+                btn.setStyleSheet(
+                    "background-color: rgba(120, 120, 128, 0.15); "
+                    "border: 1px solid rgba(120, 120, 128, 0.2); border-radius: 10px; "
+                    "padding: 2px 8px; font-size: 11px; color: palette(text);"
+                )
+            btn.clicked.connect(lambda _, t=cand_term: self._on_chip_clicked(t))
+            self.chips_layout.addWidget(btn)
+
+        self.chips_layout.addStretch()
+        self.chips_widget.setVisible(True)
+
+    def _on_chip_clicked(self, term: str) -> None:
+        """Handle clicking a suggestion chip to switch search query."""
+        if hasattr(self, "query_input"):
+            self.query_input.setText(term)
+            self._do_search()
+
 
     def _clear_gallery(self) -> None:
         """Remove all cards from the gallery."""

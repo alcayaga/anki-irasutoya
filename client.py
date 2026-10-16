@@ -21,16 +21,16 @@ class _BloggerContentParser(HTMLParser):
     def __init__(self) -> None:
         """Initialize parser state and items list."""
         super().__init__(convert_charrefs=True)
-        self.items: List[Tuple[str, str, str]] = []
+        self.items: List[Tuple[Optional[str], str, str]] = []
         self._current_href: Optional[str] = None
 
     def handle_starttag(self, tag: str, attrs: Sequence[Tuple[str, Optional[str]]]) -> None:
-        """Track active anchor href and capture nested img src and alt attributes."""
+        """Track active anchor href and capture nested or standalone img src and alt attributes."""
         tag_lower = tag.lower()
         attr_dict = {k.lower(): (v or "") for k, v in attrs}
         if tag_lower == "a":
             self._current_href = attr_dict.get("href")
-        elif tag_lower == "img" and self._current_href:
+        elif tag_lower == "img":
             src = attr_dict.get("src", "")
             alt = attr_dict.get("alt", "")
             self.items.append((self._current_href, src, alt))
@@ -39,6 +39,7 @@ class _BloggerContentParser(HTMLParser):
         """Clear active anchor when </a> is closed."""
         if tag.lower() == "a":
             self._current_href = None
+
 
 
 @dataclass
@@ -62,6 +63,50 @@ def is_allowed_image_host(host: str) -> bool:
     """Validate if hostname belongs to an allowlisted image domain."""
     host = host.lower()
     return any(host == allowed or host.endswith(f".{allowed}") for allowed in ALLOWED_IMAGE_HOSTS)
+
+
+def score_candidate_image(img: IrasutoyaImage, query: str) -> float:
+    """Evaluate image semantic match quality and archetypal fit for flashcard learning."""
+    score = 0.0
+    clean_q = query.strip()
+    title = img.title.strip()
+    post_title = img.post_title.strip()
+
+    # 1. Exact canonical matches
+    if title == f"{clean_q}のイラスト" or post_title == f"{clean_q}のイラスト":
+        score += 100.0
+    elif title == f"かわいい{clean_q}のイラスト" or post_title == f"かわいい{clean_q}のイラスト":
+        score += 90.0
+    elif title == clean_q or post_title == clean_q:
+        score += 85.0
+    elif title.startswith(f"{clean_q}の") or post_title.startswith(f"{clean_q}の"):
+        score += 60.0
+
+    # 2. Query in image title (Avoids multi-image mismatch like picking Cat for Dog)
+    if clean_q in title:
+        score += 40.0
+    elif clean_q in post_title:
+        score += 15.0
+    else:
+        score -= 50.0  # Heavy penalty: image itself doesn't mention the query
+
+    # 3. Penalize situational clutter and favor clean archetypes
+    score -= len(title) * 0.8  # Shorter, direct titles are more archetypal
+
+    # 4. Filter out non-illustration assets (lines, borders, text, templates)
+    for noise in ["ライン素材", "背景", "フレーム", "枠", "文字", "テンプレート", "壁紙"]:
+        if noise in title and noise not in clean_q:
+            score -= 60.0
+
+    return score
+
+
+def select_best_image(images: Sequence[IrasutoyaImage], query: str) -> Optional[IrasutoyaImage]:
+    """Select the highest-ranked archetypal image from candidate images."""
+    if not images:
+        return None
+    return max(images, key=lambda img: score_candidate_image(img, query))
+
 
 
 class InsecureRedirectError(urllib.error.URLError):
@@ -132,7 +177,8 @@ class IrasutoyaClient:
         self,
         query: str,
         max_results: int = 12,
-        image_size: str = "s800"
+        image_size: str = "s800",
+        orderby: Optional[str] = "relevance"
     ) -> List[IrasutoyaImage]:
         """Search Irasutoya for a given query keyword.
         
@@ -140,6 +186,7 @@ class IrasutoyaClient:
             query: The keyword to search for (e.g. '猫' or '走る').
             max_results: Maximum posts to fetch from Blogger feed.
             image_size: Resolution replacement, e.g. 's800' or 's0' (original size).
+            orderby: Sort order for Blogger feed ('relevance', 'updated', etc.).
         
         Returns:
             A list of IrasutoyaImage objects.
@@ -148,12 +195,14 @@ class IrasutoyaClient:
         if not clean_q:
             return []
 
-        params = urllib.parse.urlencode({
+        params: dict = {
             "alt": "json",
             "q": clean_q,
             "max-results": max_results,
-        })
-        url = f"{self.BASE_URL}/feeds/posts/default?{params}"
+        }
+        if orderby:
+            params["orderby"] = orderby
+        url = f"{self.BASE_URL}/feeds/posts/default?{urllib.parse.urlencode(params)}"
 
         raw_data = self._make_request(url)
         data = json.loads(raw_data.decode("utf-8"))
@@ -179,17 +228,36 @@ class IrasutoyaClient:
             except Exception as e:
                 logger.warning("Failed to parse entry HTML: %s", e)
 
-            # 1. Search for <a> links wrapping <img>
+            # 1. Search for <a> links wrapping <img> or standalone <img> tags
             for href, src, alt in parser.items:
-                parsed_href = urllib.parse.urlparse(href)
-                if parsed_href.scheme != "https":
-                    continue
-                if not self._is_allowed_image_host(parsed_href.hostname or ""):
-                    continue
-                if not re.search(r"\.(png|jpe?g)$", parsed_href.path, re.IGNORECASE):
+                candidate_url = None
+
+                # Check href first if present
+                if href:
+                    parsed_href = urllib.parse.urlparse(href)
+                    if (
+                        parsed_href.scheme == "https"
+                        and self._is_allowed_image_host(parsed_href.hostname or "")
+                        and (
+                            re.search(r"\.(png|jpe?g|webp)($|\?)", parsed_href.path, re.IGNORECASE)
+                            or re.search(r"/s\d+(-c)?/", parsed_href.path)
+                        )
+                    ):
+                        candidate_url = href
+
+                # If href is not an image URL or missing, check src
+                if not candidate_url and src:
+                    parsed_src = urllib.parse.urlparse(src)
+                    if (
+                        parsed_src.scheme == "https"
+                        and self._is_allowed_image_host(parsed_src.hostname or "")
+                    ):
+                        candidate_url = src
+
+                if not candidate_url:
                     continue
 
-                high_res = self._upgrade_image_url(href, image_size)
+                high_res = self._upgrade_image_url(candidate_url, image_size)
                 if high_res in seen_urls:
                     continue
                 seen_urls.add(high_res)
@@ -237,6 +305,41 @@ class IrasutoyaClient:
                             )
 
         return images
+
+    def search_with_fallbacks(
+        self,
+        candidates: Sequence[Tuple[str, str, int]],
+        max_results: int = 12,
+        image_size: str = "s800",
+        orderby: Optional[str] = "relevance"
+    ) -> Tuple[List[IrasutoyaImage], Optional[Tuple[str, str, int]], Optional[IrasutoyaImage]]:
+        """Query candidate terms in sequence until images are found.
+        
+        Args:
+            candidates: Sequence of (term, reason_label, tier).
+            max_results: Maximum posts to fetch per query.
+            image_size: Target image resolution code.
+            orderby: Blogger ordering parameter.
+        
+        Returns:
+            (ranked_images, matched_candidate, best_image)
+        """
+        for cand in candidates:
+            term = cand[0]
+            try:
+                images = self.search(term, max_results=max_results, image_size=image_size, orderby=orderby)
+            except Exception as e:
+                logger.warning("Search failed for candidate '%s': %s", term, e)
+                images = []
+
+            if images:
+                # Rank images by archetype score
+                ranked = sorted(images, key=lambda img: score_candidate_image(img, term), reverse=True)
+                best = ranked[0]
+                return ranked, cand, best
+
+        return [], None, None
+
 
     @staticmethod
     def _to_thumbnail_url(url: str, size: str = "s120-c") -> str:
