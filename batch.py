@@ -154,9 +154,20 @@ def run_batch_fill(
         items, load_errors, missing_field_skips = data
         stats = BatchStats(total=total, errors=load_errors, skipped=missing_field_skips)
         pending_writes = []
+        last_request_time = 0.0
+
+        def pace_request() -> None:
+            """Ensure polite delay between consecutive HTTP network requests."""
+            nonlocal last_request_time
+            if last_request_time > 0:
+                elapsed = time.time() - last_request_time
+                if elapsed < delay_sec:
+                    time.sleep(delay_sec - elapsed)
+            last_request_time = time.time()
 
         for idx, (note, query_hint, has_target) in enumerate(items):
-            if mw.progress.want_cancel():
+            # Dismissing progress window or pressing Esc triggers closeEvent, setting wantCancel
+            if hasattr(mw.progress, "want_cancel") and mw.progress.want_cancel():
                 stats.canceled = True
                 break
 
@@ -178,16 +189,15 @@ def run_batch_fill(
                 stats.skipped += 1
                 continue
 
-            if idx > 0:
-                time.sleep(delay_sec)
-
             try:
+                pace_request()
                 images = client.search(query_hint, max_results=3, image_size=image_size)
                 if not images:
                     stats.not_found += 1
                     continue
 
                 best_img = images[0]
+                pace_request()
                 img_bytes = client.download_image(best_img.image_url)
                 if not img_bytes:
                     stats.not_found += 1

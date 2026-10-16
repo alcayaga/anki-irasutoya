@@ -113,11 +113,19 @@ class TestIrasutoyaClient(unittest.TestCase):
         self.assertEqual(results[0].thumb_url, "https://example.com/s120-c/apple.png")
 
     def test_download_image_scheme_validation(self):
-        """Verify non-HTTPS image download URLs are rejected with ValueError."""
+        """Verify non-HTTPS or non-allowlisted image download URLs are rejected with ValueError."""
         with self.assertRaises(ValueError):
             self.client.download_image("file:///etc/passwd")
         with self.assertRaises(ValueError):
             self.client.download_image("http://example.com/insecure.png")
+        with self.assertRaises(ValueError):
+            self.client.download_image("https://evil-untrusted-domain.com/cat.png")
+        # Allowed host should not fail host validation check
+        self.assertTrue(self.client._is_allowed_image_host("blogger.googleusercontent.com"))
+        self.assertTrue(self.client._is_allowed_image_host("1.bp.blogspot.com"))
+        self.assertTrue(self.client._is_allowed_image_host("www.irasutoya.com"))
+        self.assertFalse(self.client._is_allowed_image_host("evilgoogleusercontent.com"))
+        self.assertFalse(self.client._is_allowed_image_host("not-irasutoya.com"))
 
     def test_https_only_redirect_handler(self):
         """Verify that HTTPRedirectHandler rejects non-HTTPS redirect targets."""

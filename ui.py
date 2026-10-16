@@ -987,6 +987,8 @@ class IrasutoyaDialog(QDialog):
                     def commit_single(col: any) -> any:
                         """Write media and assign field to fresh note."""
                         fresh_note = col.get_note(self.first_note.id)
+                        if target_field not in fresh_note:
+                            raise KeyError(f"Field '{target_field}' no longer exists on this note")
                         stored_filename = col.media.write_data(filename, img_bytes)
                         encoded_src = urllib.parse.quote(stored_filename)
                         fresh_note[target_field] = f'<img src="{encoded_src}">'

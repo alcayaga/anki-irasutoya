@@ -23,14 +23,26 @@ class IrasutoyaImage:
     description: str = ""
 
 
+class InsecureRedirectError(urllib.error.URLError):
+    """Raised when an HTTP redirect targets a non-HTTPS destination."""
+
+
 class _HttpsOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
     """Enforce HTTPS-only redirects to prevent SSRF protocol downgrade."""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         """Validate redirect target URL is HTTPS."""
         if urllib.parse.urlparse(newurl).scheme != "https":
-            raise urllib.error.URLError(f"Refusing non-HTTPS redirect: {newurl}")
+            raise InsecureRedirectError(f"Refusing non-HTTPS redirect: {newurl}")
         return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+ALLOWED_IMAGE_HOSTS = (
+    "bp.blogspot.com",
+    "googleusercontent.com",
+    "blogger.com",
+    "irasutoya.com",
+)
 
 
 class IrasutoyaClient:
@@ -57,6 +69,8 @@ class IrasutoyaClient:
             try:
                 with self._opener.open(req, timeout=timeout) as resp:
                     return resp.read()
+            except InsecureRedirectError:
+                raise
             except urllib.error.HTTPError as e:
                 last_error = e
                 if e.code == 429 and attempt < max_retries:
@@ -199,8 +213,18 @@ class IrasutoyaClient:
         """Replaces Blogger thumbnail dimension codes like /s72-c/ or /s300/ with /s800/ or /s0/."""
         return re.sub(r"/s\d+(-c)?/", f"/{image_size}/", url)
 
+    @staticmethod
+    def _is_allowed_image_host(host: str) -> bool:
+        """Validate hostname against permitted image host domains."""
+        host = host.lower()
+        return any(host == allowed or host.endswith(f".{allowed}") for allowed in ALLOWED_IMAGE_HOSTS)
+
     def download_image(self, url: str, timeout: int = 15) -> bytes:
-        """Download raw image binary data from a direct HTTPS URL."""
-        if urllib.parse.urlparse(url).scheme != "https":
+        """Download raw image binary data from an allowlisted HTTPS URL."""
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme != "https":
             raise ValueError(f"Refusing non-HTTPS image URL: {url}")
+        host = (parsed.hostname or "").lower()
+        if not self._is_allowed_image_host(host):
+            raise ValueError(f"Refusing image download from untrusted host: {host}")
         return self._make_request(url, timeout=timeout)
