@@ -140,4 +140,4 @@ To avoid false positive image matches during automated Batch operations (the **"
 - **Type Annotations**: Provide explicit type hints for public functions and class members.
 - **Preserve Documentation**: Maintain docstrings and inline commentary.
 - **Defensive Parsing**: Use `html.unescape()` when extracting image URLs or titles from Blogger feeds to avoid broken `&amp;` attributes.
-- **Security**: Strictly validate URLs against trusted domains (`*.bp.blogspot.com`, `blogger.googleusercontent.com`) and enforce HTTPS.
+- **Security**: Strictly validate URLs against trusted domains (`bp.blogspot.com`, `*.googleusercontent.com`, `irasutoya.com`) and enforce HTTPS.

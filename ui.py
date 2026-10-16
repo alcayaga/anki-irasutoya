@@ -779,11 +779,12 @@ class IrasutoyaDialog(QDialog):
         initial_query = ""
         source_field = self.combo_source.currentText()
         if self.first_note and source_field in self.first_note:
-            self._card_source_term = clean_search_query(self.first_note[source_field])
+            raw_val = self.first_note[source_field]
+            self._card_source_term = clean_search_query(raw_val)
             initial_query = self._card_source_term
-            if self._card_source_term:
+            if raw_val:
                 self._card_candidates = generate_search_candidates(
-                    self._card_source_term, note=self.first_note, allow_tier2=True
+                    raw_val, note=self.first_note, allow_tier2=True
                 )
 
         self.query_input = QLineEdit(initial_query, self)
@@ -856,11 +857,12 @@ class IrasutoyaDialog(QDialog):
     def _on_source_field_changed(self, new_field: str) -> None:
         """Update query input when source field selection changes in single note mode."""
         if hasattr(self, "query_input") and self.first_note and new_field in self.first_note:
-            new_query = clean_search_query(self.first_note[new_field])
+            raw_val = self.first_note[new_field]
+            new_query = clean_search_query(raw_val)
             self._card_source_term = new_query
             self._card_candidates = (
-                generate_search_candidates(new_query, note=self.first_note, allow_tier2=True)
-                if new_query else []
+                generate_search_candidates(raw_val, note=self.first_note, allow_tier2=True)
+                if raw_val else []
             )
             self.query_input.setText(new_query)
             if new_query:

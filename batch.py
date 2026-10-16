@@ -119,6 +119,12 @@ def process_note_record(
         if not img_bytes:
             return "not_found", None
 
+        filename = make_safe_media_filename(matched_cand[0], best_img.title)
+        stored_filename = write_media_func(filename, img_bytes)
+        encoded_src = urllib.parse.quote(stored_filename)
+
+        note[target_field] = f'<img src="{encoded_src}">'
+
         # If resolved via Tier 2 reading fallback, tag the note for auditability
         if matched_cand[2] == 2:
             if hasattr(note, "add_tag"):
@@ -127,11 +133,6 @@ def process_note_record(
                 if FALLBACK_AUDIT_TAG not in note.tags:
                     note.tags.append(FALLBACK_AUDIT_TAG)
 
-        filename = make_safe_media_filename(matched_cand[0], best_img.title)
-        stored_filename = write_media_func(filename, img_bytes)
-        encoded_src = urllib.parse.quote(stored_filename)
-
-        note[target_field] = f'<img src="{encoded_src}">'
         return "added", note
     except Exception as e:
         logger.exception("Error processing note with query '%s': %s", primary_query, e)

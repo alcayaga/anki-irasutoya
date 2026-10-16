@@ -82,7 +82,8 @@ def fetch_deck_notes(
     anki_url: str = "http://localhost:8765"
 ) -> List[Dict[str, Any]]:
     """Fetch and sort notes from the specified deck via AnkiConnect."""
-    card_ids = anki_invoke("findCards", anki_url=anki_url, query=f'deck:"{deck_name}"')
+    escaped_deck = deck_name.replace('"', '\\"')
+    card_ids = anki_invoke("findCards", anki_url=anki_url, query=f'deck:"{escaped_deck}"')
     if not card_ids:
         print(f"Warning: No cards found in deck '{deck_name}'.")
         return []
