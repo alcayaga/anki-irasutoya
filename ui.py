@@ -773,10 +773,18 @@ class IrasutoyaDialog(QDialog):
         search_label = QLabel("Search Query:", self)
         search_label.setStyleSheet("font-weight: 500; font-size: 12px;")
         search_box_layout.addWidget(search_label)
+        self._card_source_term: str = ""
+        self._card_candidates: List[Tuple[str, str, int]] = []
 
         initial_query = ""
-        if self.first_note and self.combo_source.currentText() in self.first_note:
-            initial_query = clean_search_query(self.first_note[self.combo_source.currentText()])
+        source_field = self.combo_source.currentText()
+        if self.first_note and source_field in self.first_note:
+            self._card_source_term = clean_search_query(self.first_note[source_field])
+            initial_query = self._card_source_term
+            if self._card_source_term:
+                self._card_candidates = generate_search_candidates(
+                    self._card_source_term, note=self.first_note, allow_tier2=True
+                )
 
         self.query_input = QLineEdit(initial_query, self)
         self.query_input.setPlaceholderText("Enter word or illustration topic...")
@@ -849,6 +857,11 @@ class IrasutoyaDialog(QDialog):
         """Update query input when source field selection changes in single note mode."""
         if hasattr(self, "query_input") and self.first_note and new_field in self.first_note:
             new_query = clean_search_query(self.first_note[new_field])
+            self._card_source_term = new_query
+            self._card_candidates = (
+                generate_search_candidates(new_query, note=self.first_note, allow_tier2=True)
+                if new_query else []
+            )
             self.query_input.setText(new_query)
             if new_query:
                 self._do_search()
@@ -870,24 +883,33 @@ class IrasutoyaDialog(QDialog):
         self._clear_gallery()
 
         image_size = self.config.get(CONFIG_KEY_IMAGE_SIZE, "s800")
-        source_field = self.combo_source.currentText() if hasattr(self, "combo_source") else ""
-        cleaned_source = (
-            clean_search_query(self.first_note[source_field])
-            if (self.first_note and source_field and source_field in self.first_note) else ""
-        )
-        note_to_pass = self.first_note if (query and query == cleaned_source) else None
-        candidates = generate_search_candidates(query, note=note_to_pass, allow_tier2=True)
+        card_terms = [c[0] for c in getattr(self, "_card_candidates", [])]
+        is_card_term = bool(self._card_source_term and (query == self._card_source_term or query in card_terms))
+
+        if is_card_term:
+            display_chips = self._card_candidates
+            restore_term = None
+            if query == self._card_source_term:
+                search_candidates = self._card_candidates
+            else:
+                search_candidates = generate_search_candidates(query, note=self.first_note, allow_tier2=True)
+        else:
+            search_candidates = generate_search_candidates(query, note=None, allow_tier2=True)
+            display_chips = search_candidates
+            restore_term = self._card_source_term if (self._card_source_term and self._card_source_term != query) else None
 
         def background_search() -> None:
             """Fetch search results on a background thread using fallback queries."""
             try:
                 images, matched_cand, best_img = self.client.search_with_fallbacks(
-                    candidates, max_results=12, image_size=image_size
+                    search_candidates, max_results=12, image_size=image_size
                 )
             except Exception as e:
                 logger.exception("Search failed: %s", e)
                 images, matched_cand, best_img = [], None, None
-            self._run_on_main(lambda: self._on_search_finished(current_gen, query, candidates, matched_cand, images))
+            self._run_on_main(lambda: self._on_search_finished(
+                current_gen, query, display_chips, matched_cand, images, restore_term
+            ))
 
         threading.Thread(target=background_search, daemon=True).start()
 
@@ -895,19 +917,22 @@ class IrasutoyaDialog(QDialog):
         self,
         gen: int,
         query: str,
-        candidates: List[Tuple[str, str, int]],
+        display_chips: List[Tuple[str, str, int]],
         matched_cand: Optional[Tuple[str, str, int]],
-        images: List[IrasutoyaImage]
+        images: List[IrasutoyaImage],
+        restore_term: Optional[str] = None
     ) -> None:
         """Process completed search results on the main thread, display fallbacks, and populate gallery."""
         if gen != self._search_generation:
             return
 
         self.btn_search.setEnabled(True)
+        active_term = matched_cand[0] if (matched_cand and images) else query
+
         if not images:
             self.status_label.setStyleSheet("color: #FF453A; font-size: 12px;")
             self.status_label.setText(f"No illustrations found for '{query}'.")
-            self._update_suggestion_chips(candidates, active_term=None)
+            self._update_suggestion_chips(display_chips, active_term=active_term, restore_term=restore_term)
             return
 
         if matched_cand and matched_cand[0] != query:
@@ -919,13 +944,14 @@ class IrasutoyaDialog(QDialog):
             self.status_label.setStyleSheet("color: #98989D; font-size: 12px;")
             self.status_label.setText(f"Found {len(images)} illustrations. Click one to select.")
 
-        self._update_suggestion_chips(candidates, active_term=(matched_cand[0] if matched_cand else query))
+        self._update_suggestion_chips(display_chips, active_term=active_term, restore_term=restore_term)
         self._populate_gallery(images, gen)
 
     def _update_suggestion_chips(
         self,
         candidates: List[Tuple[str, str, int]],
-        active_term: Optional[str] = None
+        active_term: Optional[str] = None,
+        restore_term: Optional[str] = None
     ) -> None:
         """Render one-click suggestion chips for query variations."""
         if not hasattr(self, "chips_layout"):
@@ -936,9 +962,9 @@ class IrasutoyaDialog(QDialog):
             if item.widget():
                 item.widget().deleteLater()
 
-        # Only display chips if there are alternative candidates
-        alt_candidates = candidates if len(candidates) > 1 else []
-        if not alt_candidates:
+        # Only display chips if there are alternative candidates or a restore button
+        has_alternatives = len(candidates) > 1
+        if not has_alternatives and not restore_term:
             self.chips_widget.setVisible(False)
             return
 
@@ -946,8 +972,21 @@ class IrasutoyaDialog(QDialog):
         lbl.setStyleSheet("color: #8E8E93; font-size: 11px; font-weight: 500;")
         self.chips_layout.addWidget(lbl)
 
-        # Show up to 4 top candidate chips
-        for cand_term, reason, tier in alt_candidates[:4]:
+        # Prepend restore chip if searching an external custom query
+        if restore_term:
+            btn_restore = QPushButton(f"↩ {restore_term}", self)
+            btn_restore.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            btn_restore.setToolTip(f"Reset search to card term '{restore_term}'")
+            btn_restore.setStyleSheet(
+                "background-color: rgba(10, 132, 255, 0.12); "
+                "border: 1px dashed #0A84FF; border-radius: 10px; "
+                "padding: 2px 8px; font-size: 11px; font-weight: 500; color: #0A84FF;"
+            )
+            btn_restore.clicked.connect(lambda _, t=restore_term: self._on_chip_clicked(t))
+            self.chips_layout.addWidget(btn_restore)
+
+        # Show up to 5 top candidate chips
+        for cand_term, reason, tier in candidates[:5]:
             is_active = (cand_term == active_term)
             btn = QPushButton(f"{cand_term}", self)
             btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
