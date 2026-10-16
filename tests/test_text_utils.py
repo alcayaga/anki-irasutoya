@@ -48,6 +48,132 @@ class TestTextUtils(unittest.TestCase):
         raw = "<div><b>勉強</b>[べんきょう]（する） / study [sound:audio123.mp3]</div>"
         self.assertEqual(clean_search_query(raw), "勉強")
 
+    def test_nfkc_normalization(self):
+        """Test NFKC normalization of full-width numbers and characters."""
+        self.assertEqual(clean_search_query("１杯"), "1杯")
+        self.assertEqual(clean_search_query("２人"), "2人")
+        self.assertEqual(clean_search_query("ＡＩ"), "AI")
+        self.assertEqual(clean_search_query("ｶﾒﾗ"), "カメラ")
+
+    def test_extract_furigana_terms(self):
+        """Test extracting surface kanji and bracketed readings."""
+        from text_utils import extract_furigana_terms
+        self.assertEqual(extract_furigana_terms("林檎[りんご]"), ("林檎", "りんご"))
+        self.assertEqual(extract_furigana_terms("動[うご]かす"), ("動かす", "うごかす"))
+        self.assertEqual(extract_furigana_terms("１杯[いっぱい]"), ("1杯", "いっぱい"))
+        self.assertEqual(extract_furigana_terms("猫"), ("猫", None))
+        self.assertEqual(extract_furigana_terms(""), ("", None))
+        self.assertEqual(extract_furigana_terms(None), ("", None))
+
+    def test_kana_conversions(self):
+        """Test Hiragana and Katakana bidirectional character conversions."""
+        from text_utils import to_katakana, to_hiragana
+        self.assertEqual(to_katakana("とまと"), "トマト")
+        self.assertEqual(to_katakana("ぱん"), "パン")
+        self.assertEqual(to_katakana("かめら"), "カメラ")
+        self.assertEqual(to_hiragana("リンゴ"), "りんご")
+        self.assertEqual(to_hiragana("コーヒー"), "こーひー")
+
+    def test_expand_katakana_chouon(self):
+        """Test expanding Katakana terms missing trailing vowel elongation marks."""
+        from text_utils import expand_katakana_chouon
+        self.assertEqual(expand_katakana_chouon("メンバ"), ["メンバー"])
+        self.assertEqual(expand_katakana_chouon("サーバ"), ["サーバー"])
+        self.assertEqual(expand_katakana_chouon("フォルダ"), ["フォルダー"])
+        self.assertEqual(expand_katakana_chouon("コーヒー"), [])  # Already has ー
+        self.assertEqual(expand_katakana_chouon("パン"), [])      # Not an omission ending
+        self.assertEqual(expand_katakana_chouon("猫"), [])       # Not Katakana
+
+    def test_convert_to_kanji_numerals(self):
+        """Test converting Arabic numerals with Japanese counters into Kanji numerals."""
+        from text_utils import convert_to_kanji_numerals
+        self.assertEqual(convert_to_kanji_numerals("1杯"), "一杯")
+        self.assertEqual(convert_to_kanji_numerals("2人"), "二人")
+        self.assertEqual(convert_to_kanji_numerals("3つ"), "三つ")
+        self.assertEqual(convert_to_kanji_numerals("1本"), "一本")
+        self.assertIsNone(convert_to_kanji_numerals("abc"))
+        self.assertIsNone(convert_to_kanji_numerals("9999"))
+
+    def test_preserve_middle_dot_compound_loanwords(self):
+        """Test preserving middle dots in compound loanwords while splitting definitions."""
+        self.assertEqual(clean_search_query("メッセージ・カード"), "メッセージ・カード")
+        self.assertEqual(clean_search_query("オート・ロック"), "オート・ロック")
+        self.assertEqual(clean_search_query("猫・ねこ"), "猫")
+        self.assertEqual(clean_search_query("猫・ネコ・キャット"), "猫")
+        self.assertEqual(clean_search_query("メッセージ・カード・手紙"), "メッセージ・カード")
+
+    def test_deinflect_japanese(self):
+        """Test heuristic deinflection of verb and compound forms."""
+        from text_utils import deinflect_japanese
+        self.assertIn("帰る", deinflect_japanese("帰ってくる"))
+        self.assertIn("走る", deinflect_japanese("走っている"))
+        self.assertIn("結果", deinflect_japanese("その結果"))
+        self.assertIn("方", deinflect_japanese("方がいい"))
+
+    def test_generate_search_candidates(self):
+        """Test candidate generation priority, tiers, and note field inspection."""
+        from text_utils import generate_search_candidates
+        
+        # Test 1: Direct furigana in primary term (Primary is Tier 1, readings are Tier 2 for audit)
+        cands1 = generate_search_candidates("林檎[りんご]")
+        terms1 = [c[0] for c in cands1]
+        self.assertIn("林檎", terms1)
+        self.assertIn("りんご", terms1)
+        self.assertIn("リンゴ", terms1)
+        self.assertEqual(cands1[0], ("林檎", "primary", 1))
+        self.assertEqual(cands1[1], ("りんご", "same_field_reading", 2))
+        self.assertEqual(cands1[2], ("リンゴ", "same_field_reading_katakana", 2))
+
+        # Test 2: Separate note reading field (Tier 2)
+        note = {
+            "Expression": "其の儘",
+            "ExpressionReading": "そのまま"
+        }
+        cands2 = generate_search_candidates("其の儘", note=note, allow_tier2=True)
+        self.assertEqual(cands2[0], ("其の儘", "primary", 1))
+        # Note reading should be present as Tier 2
+        reading_cand = next(c for c in cands2 if c[0] == "そのまま")
+        self.assertEqual(reading_cand[2], 2)
+        self.assertIn("note_reading", reading_cand[1])
+
+        # Test 3: Numeral counter expansion
+        cands3 = generate_search_candidates("１杯")
+        terms3 = [c[0] for c in cands3]
+        self.assertIn("1杯", terms3)
+        self.assertIn("一杯", terms3)
+
+        # Test 4: Katakana elongation (Tier 2)
+        cands4 = generate_search_candidates("メンバ")
+        terms4 = [c[0] for c in cands4]
+        self.assertIn("メンバー", terms4)
+        self.assertEqual(cands4[1], ("メンバー", "katakana_chouon", 2))
+
+        # Test 5: Separate reading field containing bracketed furigana
+        note_furigana = {
+            "Expression": "其の儘",
+            "Reading": "其[そ]の儘[まま]"
+        }
+        cands5 = generate_search_candidates("其の儘", note=note_furigana, allow_tier2=True)
+        terms5 = [c[0] for c in cands5]
+        self.assertIn("そのまま", terms5)
+        self.assertIn("ソノママ", terms5)
+
+        # Test 6: Mixed-script verb (e.g. 食べる) does not produce pseudo-katakana (食ベル)
+        cands_taberu = generate_search_candidates("食べる")
+        terms_taberu = [c[0] for c in cands_taberu]
+        self.assertNotIn("食ベル", terms_taberu)
+
+        # Pure Hiragana loanword (とまと) converts to Katakana (トマト)
+        cands_tomato = generate_search_candidates("とまと")
+        terms_tomato = [c[0] for c in cands_tomato]
+        self.assertIn("トマト", terms_tomato)
+
+        # Test 7: Non-string furigana field value safely handled
+        note_non_str = {"Expression": "本", "Furigana": 12345}
+        cands_non_str = generate_search_candidates("本", note=note_non_str, allow_tier2=True)
+        self.assertEqual(cands_non_str[0], ("本", "primary", 1))
+
 
 if __name__ == "__main__":
     unittest.main()
+

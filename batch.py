@@ -7,15 +7,31 @@ import urllib.parse
 from typing import Callable, List, Optional, Sequence, Tuple
 
 try:
-    from .client import IrasutoyaClient, IrasutoyaImage
+    from .client import (
+        IrasutoyaClient,
+        IrasutoyaImage,
+        select_best_image,
+        score_candidate_image,
+        is_decorative_asset,
+        is_image_relevant,
+    )
     from .config import get_config, CONFIG_KEY_FULL_DELAY, CONFIG_KEY_IMAGE_SIZE
-    from .text_utils import clean_search_query
+    from .text_utils import clean_search_query, generate_search_candidates, BATCH_MAX_CANDIDATES
 except ImportError:
-    from client import IrasutoyaClient, IrasutoyaImage
+    from client import (
+        IrasutoyaClient,
+        IrasutoyaImage,
+        select_best_image,
+        score_candidate_image,
+        is_decorative_asset,
+        is_image_relevant,
+    )
     from config import get_config, CONFIG_KEY_FULL_DELAY, CONFIG_KEY_IMAGE_SIZE
-    from text_utils import clean_search_query
+    from text_utils import clean_search_query, generate_search_candidates, BATCH_MAX_CANDIDATES
 
 logger = logging.getLogger(__name__)
+
+FALLBACK_AUDIT_TAG = "irasutoya::fallback_reading"
 
 
 @dataclass
@@ -23,6 +39,8 @@ class BatchStats:
     """Statistics tracking the outcome of a batch fill operation."""
     total: int = 0
     added: int = 0
+    direct_matches: int = 0
+    fallback_matches: int = 0
     skipped: int = 0
     not_found: int = 0
     errors: int = 0
@@ -32,7 +50,11 @@ class BatchStats:
     @property
     def summary_message(self) -> str:
         """Formatted human-readable summary of the batch operation."""
-        msg = f"Added: {self.added}, Skipped: {self.skipped}, Not found: {self.not_found}"
+        if self.fallback_matches > 0:
+            msg = f"Added: {self.added} ({self.direct_matches} direct, {self.fallback_matches} via fallback), Skipped: {self.skipped}, Not found: {self.not_found}"
+        else:
+            msg = f"Added: {self.added}, Skipped: {self.skipped}, Not found: {self.not_found}"
+
         if self.errors > 0:
             msg += f", Errors: {self.errors}"
         if self.canceled:
@@ -59,9 +81,10 @@ def process_note_record(
     overwrite_mode: str,
     client: IrasutoyaClient,
     write_media_func: Callable[[str, bytes], str],
-    image_size: str = "s800"
+    image_size: str = "s800",
+    allow_tier2: bool = True
 ) -> Tuple[str, Optional[any]]:
-    """Process a single note: check condition, search Irasutoya, download and set image.
+    """Process a single note: check condition, search Irasutoya with fallbacks, download and set image.
     
     Returns:
         (status, modified_note_or_none)
@@ -81,29 +104,66 @@ def process_note_record(
         return "skipped_not_empty", None
 
     raw_source = note[source_field]
-    query = clean_search_query(raw_source)
-    if not query:
+    candidates = generate_search_candidates(raw_source, note=note, allow_tier2=allow_tier2, allow_deinflection=False)
+    if not candidates:
         return "skipped_empty_query", None
 
+    primary_query = candidates[0][0]
+    batch_candidates = candidates[:BATCH_MAX_CANDIDATES]
+
     try:
-        images = client.search(query, max_results=3, image_size=image_size)
-        if not images:
+        if hasattr(client, "search_with_fallbacks"):
+            images, matched_cand, best_img = client.search_with_fallbacks(
+                batch_candidates, max_results=12, image_size=image_size
+            )
+        else:
+            matched_cand = None
+            best_img = None
+            for cand in batch_candidates:
+                imgs = client.search(cand[0], max_results=3, image_size=image_size)
+                valid_imgs = [
+                    img for img in imgs
+                    if not is_decorative_asset(img, cand[0]) and is_image_relevant(img, cand[0])
+                ]
+                if valid_imgs:
+                    matched_cand = cand
+                    best_img = select_best_image(valid_imgs, cand[0]) or valid_imgs[0]
+                    break
+
+        if not best_img or not matched_cand:
             return "not_found", None
 
-        best_img = images[0]
+
         img_bytes = client.download_image(best_img.image_url)
         if not img_bytes:
             return "not_found", None
 
-        filename = make_safe_media_filename(query, best_img.title)
+        filename = make_safe_media_filename(matched_cand[0], best_img.title)
         stored_filename = write_media_func(filename, img_bytes)
         encoded_src = urllib.parse.quote(stored_filename)
 
         note[target_field] = f'<img src="{encoded_src}">'
+
+        # If resolved via Tier 2 reading fallback, tag the note for auditability;
+        # otherwise remove any stale fallback tag from an earlier batch run if overwritten directly
+        if matched_cand[2] == 2:
+            if hasattr(note, "add_tag"):
+                note.add_tag(FALLBACK_AUDIT_TAG)
+            elif hasattr(note, "tags") and isinstance(note.tags, list):
+                if FALLBACK_AUDIT_TAG not in note.tags:
+                    note.tags.append(FALLBACK_AUDIT_TAG)
+        else:
+            if hasattr(note, "remove_tag"):
+                note.remove_tag(FALLBACK_AUDIT_TAG)
+            elif hasattr(note, "tags") and isinstance(note.tags, list):
+                if FALLBACK_AUDIT_TAG in note.tags:
+                    note.tags.remove(FALLBACK_AUDIT_TAG)
+
         return "added", note
     except Exception as e:
-        logger.exception("Error processing note with query '%s': %s", query, e)
+        logger.exception("Error processing note with query '%s': %s", primary_query, e)
         return "error", None
+
 
 
 def run_batch_fill(
@@ -134,8 +194,8 @@ def run_batch_fill(
     image_size = config.get(CONFIG_KEY_IMAGE_SIZE, "s800")
     client = IrasutoyaClient()
 
-    def read_notes_task(col: any) -> Tuple[List[Tuple[any, str, bool]], int, int]:
-        """Read note terms in a short collection-backed task and track load errors and missing field skips."""
+    def read_notes_task(col: any) -> Tuple[List[Tuple[any, List[Tuple[str, str, int]], bool]], int, int]:
+        """Read note terms in a short collection-backed task and generate candidate search queries."""
         items = []
         load_errors = 0
         missing_field_skips = 0
@@ -146,19 +206,21 @@ def run_batch_fill(
                     missing_field_skips += 1
                     continue
                 raw_val = note[source_field]
-                query_hint = clean_search_query(raw_val)
+                candidates = generate_search_candidates(raw_val, note=note, allow_tier2=True, allow_deinflection=False)
                 has_target = bool(note[target_field].strip())
-                items.append((note, query_hint, has_target))
+                items.append((note, candidates, has_target))
             except Exception as e:
                 logger.exception("Failed to load note %s: %s", nid, e)
                 load_errors += 1
         return items, load_errors, missing_field_skips
 
-    def fetch_images_worker(data: Tuple[List[Tuple[any, str, bool]], int, int]) -> Tuple[BatchStats, List[Tuple[any, str, bytes]]]:
-        """Download images and pace requests outside the collection lock."""
+    def fetch_images_worker(
+        data: Tuple[List[Tuple[any, List[Tuple[str, str, int]], bool]], int, int]
+    ) -> Tuple[BatchStats, List[Tuple[any, str, bytes, bool]]]:
+        """Download images and pace requests outside the collection lock using fallback search."""
         items, load_errors, missing_field_skips = data
         stats = BatchStats(total=total, errors=load_errors, skipped=missing_field_skips)
-        pending_writes = []
+        pending_writes: List[Tuple[any, str, bytes, bool]] = []
         last_request_time = 0.0
 
         def pace_request() -> None:
@@ -170,7 +232,7 @@ def run_batch_fill(
                     time.sleep(delay_sec - elapsed)
             last_request_time = time.time()
 
-        for idx, (note, query_hint, has_target) in enumerate(items):
+        for idx, (note, candidates, has_target) in enumerate(items):
             # Dismissing progress window or pressing Esc triggers closeEvent, setting wantCancel
             if hasattr(mw.progress, "want_cancel") and mw.progress.want_cancel():
                 stats.canceled = True
@@ -178,10 +240,11 @@ def run_batch_fill(
                 break
 
             current_count = idx + 1
+            primary_label = candidates[0][0] if candidates else "..."
             # Update progress UI on main thread binding loop variables
             mw.taskman.run_on_main(
-                lambda q=query_hint, c=current_count: mw.progress.update(
-                    label=f"Fetching Irasutoya: {q or '...'} ({c}/{total})...",
+                lambda q=primary_label, c=current_count: mw.progress.update(
+                    label=f"Fetching Irasutoya: {q} ({c}/{total})...",
                     value=c,
                     max=total
                 )
@@ -191,41 +254,46 @@ def run_batch_fill(
                 stats.skipped += 1
                 continue
 
-            if not query_hint:
+            if not candidates:
                 stats.skipped += 1
                 continue
 
+            batch_candidates = candidates[:BATCH_MAX_CANDIDATES]
             try:
-                pace_request()
-                images = client.search(query_hint, max_results=3, image_size=image_size)
-                if not images:
+                # pace_request applies before each candidate query to avoid rate limits,
+                # incurring polite pacing delays for up to BATCH_MAX_CANDIDATES queries per note.
+                images, matched_cand, best_img = client.search_with_fallbacks(
+                    batch_candidates, max_results=12, image_size=image_size, pace_callback=pace_request
+                )
+                if not best_img or not matched_cand:
                     stats.not_found += 1
                     continue
 
-                best_img = images[0]
                 pace_request()
                 img_bytes = client.download_image(best_img.image_url)
                 if not img_bytes:
                     stats.not_found += 1
                     continue
 
-                filename = make_safe_media_filename(query_hint, best_img.title)
-                pending_writes.append((note, filename, img_bytes))
+                is_tier2 = bool(matched_cand[2] == 2)
+                filename = make_safe_media_filename(matched_cand[0], best_img.title)
+                pending_writes.append((note, filename, img_bytes, is_tier2))
             except Exception as e:
-                logger.exception("Error during batch download for '%s': %s", query_hint, e)
+                logger.exception("Error during batch download for note %s: %s", getattr(note, "id", "?"), e)
                 stats.errors += 1
 
         return stats, pending_writes
 
     def commit_task(
         col: any,
-        pending_writes: List[Tuple[any, str, bytes]],
+        pending_writes: List[Tuple[any, str, bytes, bool]],
         stats: BatchStats,
         processed_tracker: List[int]
-    ) -> List[any]:
+    ) -> Tuple[List[any], List[bool]]:
         """Write media files and assign target field on freshly loaded notes within collection op."""
         notes_to_save = []
-        for old_note, filename, img_bytes in pending_writes:
+        saved_tiers = []
+        for old_note, filename, img_bytes, is_tier2 in pending_writes:
             try:
                 fresh_note = col.get_note(old_note.id)
             except Exception as e:
@@ -245,12 +313,26 @@ def run_batch_fill(
                 stored_filename = col.media.write_data(filename, img_bytes)
                 encoded_src = urllib.parse.quote(stored_filename)
                 fresh_note[target_field] = f'<img src="{encoded_src}">'
+                if is_tier2:
+                    if hasattr(fresh_note, "add_tag"):
+                        fresh_note.add_tag(FALLBACK_AUDIT_TAG)
+                    elif hasattr(fresh_note, "tags") and isinstance(fresh_note.tags, list):
+                        if FALLBACK_AUDIT_TAG not in fresh_note.tags:
+                            fresh_note.tags.append(FALLBACK_AUDIT_TAG)
+                else:
+                    if hasattr(fresh_note, "remove_tag"):
+                        fresh_note.remove_tag(FALLBACK_AUDIT_TAG)
+                    elif hasattr(fresh_note, "tags") and isinstance(fresh_note.tags, list):
+                        if FALLBACK_AUDIT_TAG in fresh_note.tags:
+                            fresh_note.tags.remove(FALLBACK_AUDIT_TAG)
                 notes_to_save.append(fresh_note)
+                saved_tiers.append(is_tier2)
             except Exception as e:
                 logger.exception("Failed to write media for note %s: %s", old_note.id, e)
                 stats.errors += 1
             processed_tracker[0] += 1
-        return notes_to_save
+        return notes_to_save, saved_tiers
+
 
     def on_fetch_done(result: Tuple[BatchStats, List[Tuple[any, str, bytes]]]) -> None:
         """Handle completion of network downloads and trigger media/note commit."""
@@ -263,8 +345,9 @@ def run_batch_fill(
 
         processed_tracker = [0]
 
-        def on_saved(saved_notes: List[any]) -> None:
+        def on_saved(saved_info: Tuple[List[any], List[bool]]) -> None:
             """Update notes with full undo support and calculate final added count."""
+            saved_notes, saved_tiers = saved_info
             if not saved_notes:
                 show_summary_and_callback(stats)
                 return
@@ -273,6 +356,8 @@ def run_batch_fill(
             def _ok(_: any) -> None:
                 """Handle successful notes update."""
                 stats.added = len(saved_notes)
+                stats.fallback_matches = sum(1 for is_t2 in saved_tiers if is_t2)
+                stats.direct_matches = stats.added - stats.fallback_matches
                 show_summary_and_callback(stats)
 
             def _fail(err: Exception) -> None:

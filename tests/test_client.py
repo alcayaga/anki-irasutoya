@@ -2,7 +2,7 @@
 import json
 import unittest
 import urllib.error
-from client import IrasutoyaClient, IrasutoyaImage
+from client import IrasutoyaClient, IrasutoyaImage, is_decorative_asset, is_image_relevant, select_best_image
 
 
 class TestIrasutoyaClient(unittest.TestCase):
@@ -295,6 +295,204 @@ class TestIrasutoyaClient(unittest.TestCase):
         results = self.client.parse_entries(fallback_entry)
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].thumb_url, "https://1.bp.blogspot.com/thumb.png?a=1&b=2")
+
+    def test_parse_entries_standalone_img(self):
+        """Test parsing Blogger feed entry where images are standalone <img> tags without wrapping <a>."""
+        sample_entries = [
+            {
+                "title": {"$t": "犬のイラスト"},
+                "summary": {"$t": "可愛い犬のイラストです。"},
+                "content": {
+                    "$t": (
+                        '<div class="separator">'
+                        '<img alt="柴犬のイラスト" src="https://1.bp.blogspot.com/s400/shiba.png" />'
+                        '</div>'
+                    )
+                }
+            }
+        ]
+        images = self.client.parse_entries(sample_entries, image_size="s800")
+        self.assertEqual(len(images), 1)
+        self.assertEqual(images[0].title, "柴犬のイラスト")
+        self.assertEqual(images[0].image_url, "https://1.bp.blogspot.com/s800/shiba.png")
+        self.assertEqual(images[0].thumb_url, "https://1.bp.blogspot.com/s120-c/shiba.png")
+
+    def test_parse_entries_falls_back_when_alt_is_placeholder_bullet(self):
+        """Verify that meaningless placeholder alt tags like '■' or '・' fall back to post_title."""
+        sample_entries = [
+            {
+                "title": {"$t": "ネズミを追いかける猫のイラスト"},
+                "content": {
+                    "$t": (
+                        '<div class="separator">'
+                        '<img alt="■" src="https://1.bp.blogspot.com/s400/cat.png" />'
+                        '</div>'
+                    )
+                }
+            }
+        ]
+        images = self.client.parse_entries(sample_entries)
+        self.assertEqual(len(images), 1)
+        self.assertEqual(images[0].title, "ネズミを追いかける猫のイラスト")
+
+    def test_score_candidate_image(self):
+        """Test archetype scoring engine penalties and boosts."""
+        from client import score_candidate_image
+
+        img_exact = IrasutoyaImage(
+            title="本",
+            image_url="https://example.com/book.png",
+            thumb_url="https://example.com/thumb.png",
+            post_title="本のイラスト"
+        )
+        score_exact = score_candidate_image(img_exact, "本")
+
+        img_tax = IrasutoyaImage(
+            title="確定申告で税金を払う人のイラスト",
+            image_url="https://example.com/tax.png",
+            thumb_url="https://example.com/thumb.png",
+            post_title="税金・確定申告のイラスト"
+        )
+        score_tax = score_candidate_image(img_tax, "本")
+
+        self.assertGreater(score_exact, score_tax)
+        self.assertGreater(score_exact, 100)
+        self.assertLess(score_tax, 50)
+
+    def test_select_best_image(self):
+        """Test selecting the highest scoring image among candidates."""
+        from client import select_best_image
+
+        img_bad = IrasutoyaImage(
+            title="本を投げ捨てる問題児のイラスト",
+            image_url="https://example.com/bad.png",
+            thumb_url="https://example.com/thumb.png",
+            post_title="トラブルのイラスト"
+        )
+        img_good = IrasutoyaImage(
+            title="開いた本のイラスト",
+            image_url="https://example.com/good.png",
+            thumb_url="https://example.com/thumb.png",
+            post_title="本のイラスト"
+        )
+        best = select_best_image([img_bad, img_good], "本")
+        self.assertEqual(best, img_good)
+
+    def test_search_with_fallbacks(self):
+        """Test candidate fallback execution when primary returns 0 results."""
+        client = IrasutoyaClient()
+
+        def mock_search(q, max_results=3, image_size="s800", orderby="relevance"):
+            if q == "そのまま":
+                return [IrasutoyaImage("そのままのイラスト", "https://example.com/img.png", "https://example.com/t.png", "そのまま")]
+            return []
+
+        client.search = mock_search
+
+        candidates = [
+            ("其の儘", "primary", 1),
+            ("そのまま", "note_reading_Reading", 2)
+        ]
+        images, matched_cand, best_img = client.search_with_fallbacks(candidates)
+        self.assertEqual(len(images), 1)
+        self.assertIsNotNone(matched_cand)
+        self.assertEqual(matched_cand[0], "そのまま")
+        self.assertEqual(matched_cand[2], 2)
+        self.assertIsNotNone(best_img)
+        self.assertEqual(best_img.title, "そのままのイラスト")
+
+    def test_search_with_fallbacks_propagates_search_exception(self):
+        """Verify search_with_fallbacks propagates network/HTTP errors rather than falling back to Tier 2."""
+        import urllib.error
+        client = IrasutoyaClient()
+
+        def mock_failing_search(q, **kwargs):
+            if q == "其の儘":
+                raise urllib.error.HTTPError("https://example.com", 429, "Too Many Requests", {}, None)
+            return [IrasutoyaImage("そのままのイラスト", "https://example.com/img.png", "https://example.com/t.png", "そのまま")]
+
+        client.search = mock_failing_search
+        candidates = [
+            ("其の儘", "primary", 1),
+            ("そのまま", "note_reading_Reading", 2)
+        ]
+
+        with self.assertRaises(urllib.error.HTTPError):
+            client.search_with_fallbacks(candidates)
+
+    def test_is_decorative_asset(self):
+        """Verify decorative noise detection for frames, borders, and templates."""
+        frame_img = IrasutoyaImage("花のフレーム", "https://example.com/f.png", "https://example.com/t.png", "花")
+        self.assertTrue(is_decorative_asset(frame_img, "花"))
+        # Explicit search for frame should not be treated as unwanted decorative noise
+        self.assertFalse(is_decorative_asset(frame_img, "フレーム"))
+
+        cat_img = IrasutoyaImage("かわいい猫のイラスト", "https://example.com/c.png", "https://example.com/t.png", "猫")
+        self.assertFalse(is_decorative_asset(cat_img, "猫"))
+
+    def test_search_with_fallbacks_skips_decorative_only_results(self):
+        """Verify search_with_fallbacks continues to fallback candidate if initial candidate only yields decorative assets."""
+        client = IrasutoyaClient()
+
+        def mock_search(q, max_results=3, image_size="s800", orderby="relevance"):
+            if q == "追いかける":
+                # Only decorative frame returned
+                return [IrasutoyaImage("フレームのイラスト", "https://example.com/frame.png", "https://example.com/t.png", "フレーム")]
+            if q == "走る":
+                # Actual illustration returned
+                return [IrasutoyaImage("走る人のイラスト", "https://example.com/run.png", "https://example.com/t.png", "走る")]
+            return []
+
+        client.search = mock_search
+        candidates = [
+            ("追いかける", "primary", 1),
+            ("走る", "note_reading", 2),
+        ]
+        images, matched_cand, best_img = client.search_with_fallbacks(candidates)
+        self.assertIsNotNone(matched_cand)
+        self.assertEqual(matched_cand[0], "走る")
+    def test_is_image_relevant(self):
+        """Verify image relevance checking against queries, preventing multi-image post mismatches."""
+        # Relevant: image title directly contains query
+        cat_img = IrasutoyaImage("かわいい猫のイラスト", "https://example.com/c.png", "https://example.com/t.png", "色々な動物のイラスト")
+        self.assertTrue(is_image_relevant(cat_img, "猫"))
+
+        # Unrelated: post matched query but individual image is unrelated
+        dog_in_cat_post = IrasutoyaImage("犬のイラスト", "https://example.com/d.png", "https://example.com/t.png", "猫のイラスト")
+        self.assertFalse(is_image_relevant(dog_in_cat_post, "猫"))
+
+        # Inherited title: image lacked alt so title is identical to post title
+        single_post_img = IrasutoyaImage("猫のイラスト", "https://example.com/c2.png", "https://example.com/t.png", "猫のイラスト")
+        self.assertTrue(is_image_relevant(single_post_img, "猫"))
+
+        # Multi-word query
+        multi_img = IrasutoyaImage("黒い猫のイラスト", "https://example.com/b.png", "https://example.com/t.png", "黒い猫")
+        self.assertTrue(is_image_relevant(multi_img, "黒い 猫"))
+        self.assertFalse(is_image_relevant(multi_img, "白い 猫"))
+
+    def test_search_with_fallbacks_skips_unrelated_images(self):
+        """Verify search_with_fallbacks skips candidates that only return unrelated images from multi-image posts."""
+        client = IrasutoyaClient()
+
+        def mock_search(q, max_results=3, image_size="s800", orderby="relevance"):
+            if q == "猫":
+                # Returns only a dog image from a post that mentioned cat
+                return [IrasutoyaImage("犬のイラスト", "https://example.com/dog.png", "https://example.com/t.png", "猫のイラスト")]
+            if q == "ネコ":
+                # Returns an actual cat illustration
+                return [IrasutoyaImage("ネコのイラスト", "https://example.com/cat.png", "https://example.com/t.png", "ネコのイラスト")]
+            return []
+
+        client.search = mock_search
+        candidates = [
+            ("猫", "primary", 1),
+            ("ネコ", "to_katakana", 1),
+        ]
+        images, matched_cand, best_img = client.search_with_fallbacks(candidates)
+        self.assertIsNotNone(matched_cand)
+        self.assertEqual(matched_cand[0], "ネコ")
+        self.assertIsNotNone(best_img)
+        self.assertEqual(best_img.title, "ネコのイラスト")
 
 
 if __name__ == "__main__":
