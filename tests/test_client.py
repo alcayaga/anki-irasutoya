@@ -1,12 +1,18 @@
+"""Unit tests for the Irasutoya scraper client."""
+import json
 import unittest
 from client import IrasutoyaClient, IrasutoyaImage
 
 
 class TestIrasutoyaClient(unittest.TestCase):
+    """Test suite for IrasutoyaClient URL upgrading, parsing, and searching."""
+
     def setUp(self):
+        """Initialize client instance for tests."""
         self.client = IrasutoyaClient()
 
     def test_upgrade_image_url(self):
+        """Test replacing Blogger image thumbnail codes with high-res dimensions."""
         url1 = "https://blogger.googleusercontent.com/img/b/R29/s72-c/image.png"
         self.assertEqual(
             self.client._upgrade_image_url(url1, "s800"),
@@ -24,10 +30,12 @@ class TestIrasutoyaClient(unittest.TestCase):
         )
 
     def test_empty_query(self):
+        """Test that empty or whitespace-only search queries return an empty list."""
         self.assertEqual(self.client.search(""), [])
         self.assertEqual(self.client.search("   "), [])
 
     def test_parse_entries_multi_image(self):
+        """Test parsing Blogger feed entry with multiple illustration images."""
         sample_entries = [
             {
                 "title": {"$t": "猫のイラスト"},
@@ -58,6 +66,7 @@ class TestIrasutoyaClient(unittest.TestCase):
         self.assertEqual(images[1].image_url, "https://example.com/s800/cat_black.png")
 
     def test_parse_entries_thumbnail_fallback(self):
+        """Test fallback to post thumbnail when entry content lacks explicit <a><img> links."""
         sample_entries = [
             {
                 "title": {"$t": "リンゴのイラスト"},
@@ -75,15 +84,32 @@ class TestIrasutoyaClient(unittest.TestCase):
         self.assertEqual(images[0].image_url, "https://example.com/s800/apple.png")
         self.assertEqual(images[0].thumb_url, "https://example.com/s120-c/apple.png")
 
+    def test_search_mocked(self):
+        """Test searching with stubbed HTTP response to ensure deterministic execution."""
+        sample_feed = {
+            "feed": {
+                "entry": [
+                    {
+                        "title": {"$t": "りんごのイラスト"},
+                        "summary": {"$t": "美味しいりんごのイラスト"},
+                        "content": {
+                            "$t": (
+                                '<a href="https://example.com/s400/apple.png">'
+                                '<img alt="赤色のりんご" src="https://example.com/s200/apple.png" />'
+                                '</a>'
+                            )
+                        }
+                    }
+                ]
+            }
+        }
+        self.client._make_request = lambda url, timeout=10, max_retries=2: json.dumps(sample_feed).encode("utf-8")
 
-    def test_live_search(self):
-        try:
-            results = self.client.search("りんご", max_results=2)
-            self.assertGreater(len(results), 0)
-            self.assertTrue(results[0].image_url.startswith("http"))
-            self.assertTrue(results[0].thumb_url.startswith("http"))
-        except Exception as e:
-            self.skipTest(f"Skipping live search test due to network: {e}")
+        results = self.client.search("りんご", max_results=2)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].title, "赤色のりんご")
+        self.assertEqual(results[0].image_url, "https://example.com/s800/apple.png")
+        self.assertEqual(results[0].thumb_url, "https://example.com/s120-c/apple.png")
 
 
 if __name__ == "__main__":

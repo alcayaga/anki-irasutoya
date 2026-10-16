@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import json
 import logging
 import re
+import socket
 import time
 import urllib.error
 import urllib.parse
@@ -33,6 +34,7 @@ class IrasutoyaClient:
     )
 
     def __init__(self, user_agent: Optional[str] = None):
+        """Initialize the Irasutoya client with custom or default User-Agent."""
         self.user_agent = user_agent or self.DEFAULT_USER_AGENT
 
     def _make_request(self, url: str, timeout: int = 10, max_retries: int = 2) -> bytes:
@@ -53,7 +55,7 @@ class IrasutoyaClient:
                     time.sleep(sleep_time)
                     continue
                 raise
-            except Exception as e:
+            except (urllib.error.URLError, TimeoutError, socket.timeout) as e:
                 last_error = e
                 if attempt < max_retries:
                     time.sleep(1.0)
@@ -91,12 +93,8 @@ class IrasutoyaClient:
         })
         url = f"{self.BASE_URL}/feeds/posts/default?{params}"
 
-        try:
-            raw_data = self._make_request(url)
-            data = json.loads(raw_data.decode("utf-8"))
-        except Exception as e:
-            logger.error("Failed to query Irasutoya feed: %s", e)
-            return []
+        raw_data = self._make_request(url)
+        data = json.loads(raw_data.decode("utf-8"))
 
         entries = data.get("feed", {}).get("entry", [])
         return self.parse_entries(entries, image_size=image_size)
