@@ -201,17 +201,20 @@ def run_batch_fill(
 
         return stats, pending_writes
 
-    def commit_task(col: any, pending_writes: List[Tuple[any, str, bytes]]) -> List[any]:
+    def commit_task(col: any, pending_writes: List[Tuple[any, str, bytes]], stats: BatchStats) -> List[any]:
         """Write media files and assign target field on freshly loaded notes within collection op."""
         notes_to_save = []
         for old_note, filename, img_bytes in pending_writes:
             try:
                 fresh_note = col.get_note(old_note.id)
             except Exception:
+                stats.skipped += 1
                 continue
             if target_field not in fresh_note:
+                stats.skipped += 1
                 continue
             if overwrite_mode == "skip" and fresh_note[target_field].strip():
+                stats.skipped += 1
                 continue
             try:
                 stored_filename = col.media.write_data(filename, img_bytes)
@@ -235,7 +238,6 @@ def run_batch_fill(
         def on_saved(saved_notes: List[any]) -> None:
             """Update notes with full undo support and calculate final added count."""
             stats.added = len(saved_notes)
-            stats.skipped += len(pending_writes) - len(saved_notes)
             if not saved_notes:
                 show_summary_and_callback(stats)
                 return
@@ -245,7 +247,7 @@ def run_batch_fill(
 
         commit_op = QueryOp(
             parent=parent_window,
-            op=lambda col: commit_task(col, pending_writes),
+            op=lambda col: commit_task(col, pending_writes, stats),
             success=on_saved
         )
         commit_op.failure(lambda _: show_summary_and_callback(stats))

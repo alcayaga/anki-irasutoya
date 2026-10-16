@@ -993,12 +993,26 @@ class IrasutoyaDialog(QDialog):
                         return fresh_note
 
                     def on_committed(fresh_note: any) -> None:
-                        """Update notes and close dialog."""
+                        """Update notes and close dialog upon successful commit."""
+                        def on_update_success(_: any) -> None:
+                            """Notify success and close dialog."""
+                            tooltip(f"Added '{best_img.title}' to {target_field}.", parent=self.browser)
+                            self.accept()
+
+                        def on_update_failure(err: Exception) -> None:
+                            """Restore button state and display warning on update failure."""
+                            self._applying = False
+                            if self.isVisible():
+                                self.btn_apply.setEnabled(True)
+                                self.status_label.setStyleSheet("color: #FF453A; font-size: 12px;")
+                                self.status_label.setText(f"Error updating note: {err}")
+                                showWarning(f"Failed to update note: {err}", parent=self)
+
                         import aqt.operations.note
                         op = aqt.operations.note.update_notes(parent=self.browser, notes=[fresh_note])
-                        op.success(lambda _: tooltip(f"Added '{best_img.title}' to {target_field}.", parent=self.browser))
+                        op.success(on_update_success)
+                        op.failure(on_update_failure)
                         op.run_in_background()
-                        self.accept()
 
                     def on_commit_error(err: Exception) -> None:
                         """Handle commit failure and restore button state."""
