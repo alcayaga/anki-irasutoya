@@ -7,6 +7,7 @@ import logging
 import re
 import socket
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -63,6 +64,13 @@ def is_allowed_image_host(host: str) -> bool:
     """Validate if hostname belongs to an allowlisted image domain."""
     host = host.lower()
     return any(host == allowed or host.endswith(f".{allowed}") for allowed in ALLOWED_IMAGE_HOSTS)
+
+
+def is_meaningful_title(text: str) -> bool:
+    """Return True if text contains letters or numbers, filtering placeholder symbols like '■' or '・'."""
+    if not text:
+        return False
+    return any(unicodedata.category(ch).startswith(("L", "N")) for ch in text)
 
 
 def score_candidate_image(img: IrasutoyaImage, query: str) -> float:
@@ -266,7 +274,8 @@ class IrasutoyaClient:
                     continue
                 seen_urls.add(high_res)
 
-                title = alt.strip() if alt.strip() else post_title
+                clean_alt = alt.strip()
+                title = clean_alt if is_meaningful_title(clean_alt) else post_title
                 parsed_src = urllib.parse.urlparse(src) if src else None
                 if (
                     parsed_src

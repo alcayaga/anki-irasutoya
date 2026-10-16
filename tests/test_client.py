@@ -317,6 +317,24 @@ class TestIrasutoyaClient(unittest.TestCase):
         self.assertEqual(images[0].image_url, "https://1.bp.blogspot.com/s800/shiba.png")
         self.assertEqual(images[0].thumb_url, "https://1.bp.blogspot.com/s120-c/shiba.png")
 
+    def test_parse_entries_falls_back_when_alt_is_placeholder_bullet(self):
+        """Verify that meaningless placeholder alt tags like '■' or '・' fall back to post_title."""
+        sample_entries = [
+            {
+                "title": {"$t": "ネズミを追いかける猫のイラスト"},
+                "content": {
+                    "$t": (
+                        '<div class="separator">'
+                        '<img alt="■" src="https://1.bp.blogspot.com/s400/cat.png" />'
+                        '</div>'
+                    )
+                }
+            }
+        ]
+        images = self.client.parse_entries(sample_entries)
+        self.assertEqual(len(images), 1)
+        self.assertEqual(images[0].title, "ネズミを追いかける猫のイラスト")
+
     def test_score_candidate_image(self):
         """Test archetype scoring engine penalties and boosts."""
         from client import score_candidate_image
