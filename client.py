@@ -23,6 +23,16 @@ class IrasutoyaImage:
     description: str = ""
 
 
+class _HttpsOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Enforce HTTPS-only redirects to prevent SSRF protocol downgrade."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        """Validate redirect target URL is HTTPS."""
+        if urllib.parse.urlparse(newurl).scheme != "https":
+            raise urllib.error.URLError(f"Refusing non-HTTPS redirect: {newurl}")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 class IrasutoyaClient:
     """Queries Irasutoya's public Blogger JSON feeds to search and retrieve images."""
     
@@ -36,6 +46,7 @@ class IrasutoyaClient:
     def __init__(self, user_agent: Optional[str] = None):
         """Initialize the Irasutoya client with custom or default User-Agent."""
         self.user_agent = user_agent or self.DEFAULT_USER_AGENT
+        self._opener = urllib.request.build_opener(_HttpsOnlyRedirectHandler)
 
     def _make_request(self, url: str, timeout: int = 10, max_retries: int = 2) -> bytes:
         """Execute HTTP GET with User-Agent, handling rate-limit backoff."""
@@ -44,7 +55,7 @@ class IrasutoyaClient:
 
         for attempt in range(max_retries + 1):
             try:
-                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                with self._opener.open(req, timeout=timeout) as resp:
                     return resp.read()
             except urllib.error.HTTPError as e:
                 last_error = e

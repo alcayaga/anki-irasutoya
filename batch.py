@@ -237,12 +237,24 @@ def run_batch_fill(
 
         def on_saved(saved_notes: List[any]) -> None:
             """Update notes with full undo support and calculate final added count."""
-            stats.added = len(saved_notes)
             if not saved_notes:
                 show_summary_and_callback(stats)
                 return
             op = aqt.operations.note.update_notes(parent=parent_window, notes=saved_notes)
-            op.success(lambda _: show_summary_and_callback(stats))
+
+            def _ok(_: any) -> None:
+                """Handle successful notes update."""
+                stats.added = len(saved_notes)
+                show_summary_and_callback(stats)
+
+            def _fail(err: Exception) -> None:
+                """Handle notes update failure."""
+                logger.exception("Failed to update notes batch: %s", err)
+                stats.errors += len(saved_notes)
+                show_summary_and_callback(stats)
+
+            op.success(_ok)
+            op.failure(_fail)
             op.run_in_background()
 
         commit_op = QueryOp(

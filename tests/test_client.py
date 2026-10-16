@@ -1,6 +1,7 @@
 """Unit tests for the Irasutoya scraper client."""
 import json
 import unittest
+import urllib.error
 from client import IrasutoyaClient, IrasutoyaImage
 
 
@@ -117,6 +118,15 @@ class TestIrasutoyaClient(unittest.TestCase):
             self.client.download_image("file:///etc/passwd")
         with self.assertRaises(ValueError):
             self.client.download_image("http://example.com/insecure.png")
+
+    def test_https_only_redirect_handler(self):
+        """Verify that HTTPRedirectHandler rejects non-HTTPS redirect targets."""
+        from client import _HttpsOnlyRedirectHandler
+        handler = _HttpsOnlyRedirectHandler()
+        with self.assertRaises(urllib.error.URLError):
+            handler.redirect_request(None, None, 302, "Found", {}, "http://insecure.target/img.png")
+        with self.assertRaises(urllib.error.URLError):
+            handler.redirect_request(None, None, 302, "Found", {}, "file:///etc/passwd")
 
 
 if __name__ == "__main__":
