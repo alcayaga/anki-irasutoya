@@ -104,7 +104,6 @@ class TestTextUtils(unittest.TestCase):
         from text_utils import deinflect_japanese
         self.assertIn("帰る", deinflect_japanese("帰ってくる"))
         self.assertIn("走る", deinflect_japanese("走っている"))
-        self.assertIn("読む", deinflect_japanese("読める"))
         self.assertIn("結果", deinflect_japanese("その結果"))
         self.assertIn("方", deinflect_japanese("方がいい"))
 

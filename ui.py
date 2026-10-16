@@ -870,7 +870,10 @@ class IrasutoyaDialog(QDialog):
         self._clear_gallery()
 
         image_size = self.config.get(CONFIG_KEY_IMAGE_SIZE, "s800")
-        candidates = generate_search_candidates(query, note=self.first_note, allow_tier2=True)
+        source_field = self.source_field_combo.currentText() if hasattr(self, "source_field_combo") else None
+        cleaned_source = clean_search_query(self.first_note.get(source_field, "")) if (self.first_note and source_field) else ""
+        note_to_pass = self.first_note if (query and query == cleaned_source) else None
+        candidates = generate_search_candidates(query, note=note_to_pass, allow_tier2=True)
 
         def background_search() -> None:
             """Fetch search results on a background thread using fallback queries."""
@@ -931,7 +934,7 @@ class IrasutoyaDialog(QDialog):
                 item.widget().deleteLater()
 
         # Only display chips if there are alternative candidates
-        alt_candidates = [c for c in candidates if len(candidates) > 1]
+        alt_candidates = candidates if len(candidates) > 1 else []
         if not alt_candidates:
             self.chips_widget.setVisible(False)
             return

@@ -10,12 +10,12 @@ The codebase is organized into cleanly decoupled layers:
 
 | Module | Description | Dependencies |
 | :--- | :--- | :--- |
-| [`text_utils.py`](file:///Users/pablo/GitHub/anki-irasutoya/text_utils.py) | Query sanitization, Japanese script normalization (NFKC, loanword Katakana, chōonpu expansion, Kanji numeral conversion, heuristic deinflection), and Tiered candidate generation. | Standard Library only (`re`, `unicodedata`, `html`). **No Anki/Qt dependency.** |
-| [`client.py`](file:///Users/pablo/GitHub/anki-irasutoya/client.py) | Irasutoya scraper client, Blogger feed HTML parser, high-res URL upgrading, archetype & relevance scoring, and fallback search pipeline. | Standard Library only (`urllib`, `html.parser`, `json`). **No Anki/Qt dependency.** |
-| [`batch.py`](file:///Users/pablo/GitHub/anki-irasutoya/batch.py) | Batch processing worker, preview table data models, rate-limited downloads, and audit tagging (`irasutoya::fallback_reading`). | Anki collection operations & UI abstractions. |
-| [`ui.py`](file:///Users/pablo/GitHub/anki-irasutoya/ui.py) | Apple HIG native modal dialogs, visual thumbnail gallery, suggestion chips, transparency banners, and batch configuration views. | `aqt` (PyQt6). |
-| [`config.py`](file:///Users/pablo/GitHub/anki-irasutoya/config.py) | User configuration management with schema fallback defaults. | `aqt.mw.addonManager`. |
-| [`scripts/eval_deck_search.py`](file:///Users/pablo/GitHub/anki-irasutoya/scripts/eval_deck_search.py) | Standalone CLI tool to evaluate search recall against real Anki decks via AnkiConnect. | Standard Library + `client` + `text_utils`. |
+| [`text_utils.py`](text_utils.py) | Query sanitization, Japanese script normalization (NFKC, loanword Katakana, chōonpu expansion, Kanji numeral conversion, heuristic deinflection), and Tiered candidate generation. | Standard Library only (`re`, `unicodedata`, `html`). **No Anki/Qt dependency.** |
+| [`client.py`](client.py) | Irasutoya scraper client, Blogger feed HTML parser, high-res URL upgrading, archetype & relevance scoring, and fallback search pipeline. | Standard Library only (`urllib`, `html.parser`, `json`). **No Anki/Qt dependency.** |
+| [`batch.py`](batch.py) | Batch processing worker, preview table data models, rate-limited downloads, and audit tagging (`irasutoya::fallback_reading`). | Anki collection operations & UI abstractions. |
+| [`ui.py`](ui.py) | Apple HIG native modal dialogs, visual thumbnail gallery, suggestion chips, transparency banners, and batch configuration views. | `aqt` (PyQt6). |
+| [`config.py`](config.py) | User configuration management with schema fallback defaults. | `aqt.mw.addonManager`. |
+| [`scripts/eval_deck_search.py`](scripts/eval_deck_search.py) | Standalone CLI tool to evaluate search recall against real Anki decks via AnkiConnect. | Standard Library + `client` + `text_utils`. |
 
 ---
 

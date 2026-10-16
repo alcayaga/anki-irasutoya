@@ -132,21 +132,6 @@ def deinflect_japanese(text: str) -> List[str]:
         if text.endswith(aux) and len(text) > len(aux):
             forms.append(text[:-len(aux)])
 
-    # Potential / passive inflections (e.g. 読める -> 読む, 書ける -> 書く, 買える -> 買う)
-    potential_map = {
-        "える": "う",
-        "ける": "く",
-        "げる": "ぐ",
-        "せる": "す",
-        "てる": "つ",
-        "べる": "ぶ",
-        "める": "む",
-        "れる": "る",
-    }
-    for pot_suffix, base_suffix in potential_map.items():
-        if text.endswith(pot_suffix) and len(text) > len(pot_suffix):
-            forms.append(text[:-len(pot_suffix)] + base_suffix)
-
     # Compound determiners (その結果 -> 結果)
     if text.startswith("その") and len(text) > 2:
         forms.append(text[2:])
@@ -223,7 +208,8 @@ def clean_search_query(raw_text: Optional[str]) -> str:
 def generate_search_candidates(
     raw_source: Optional[str],
     note: Optional[Any] = None,
-    allow_tier2: bool = True
+    allow_tier2: bool = True,
+    allow_deinflection: bool = True
 ) -> List[Tuple[str, str, int]]:
     """Generate prioritized search candidate queries with confidence tiers.
     
@@ -293,12 +279,13 @@ def generate_search_candidates(
                             add(to_katakana(f_read), f"note_furigana_katakana_{ff}", 2)
 
         # Deinflection / Compound Headwords
-        base_candidates = [c[0] for c in candidates if c[2] == 1]
-        for base in base_candidates:
-            for deinflected in deinflect_japanese(base):
-                add(deinflected, "deinflected_base", 2)
-                if re.search(r"[\u3040-\u309F]", deinflected):
-                    add(to_katakana(deinflected), "deinflected_katakana", 2)
+        if allow_deinflection:
+            base_candidates = [c[0] for c in candidates if c[2] == 1]
+            for base in base_candidates:
+                for deinflected in deinflect_japanese(base):
+                    add(deinflected, "deinflected_base", 2)
+                    if re.search(r"[\u3040-\u309F]", deinflected):
+                        add(to_katakana(deinflected), "deinflected_katakana", 2)
 
     return candidates
 
