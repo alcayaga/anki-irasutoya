@@ -135,6 +135,10 @@ class TestBatchLogic(unittest.TestCase):
                 if tag not in self.tags:
                     self.tags.append(tag)
 
+            def remove_tag(self, tag):
+                if tag in self.tags:
+                    self.tags.remove(tag)
+
         note = MockNote({"Expression": "其の儘", "Reading": "そのまま", "DefinitionPicture": ""})
         
         reading_img = IrasutoyaImage(
@@ -160,6 +164,44 @@ class TestBatchLogic(unittest.TestCase):
         self.assertIsNotNone(mod)
         self.assertIn("irasutoya::fallback_reading", note.tags)
         self.assertIn(urllib.parse.quote("irasutoya_そのまま_そのままのイラスト.png"), mod["DefinitionPicture"])
+
+    def test_batch_removes_stale_fallback_tag_on_direct_match(self):
+        """Verify direct Tier 1 match removes any stale fallback audit tag from previous runs."""
+        class MockNote(dict):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.tags = ["irasutoya::fallback_reading", "other_tag"]
+
+            def add_tag(self, tag):
+                if tag not in self.tags:
+                    self.tags.append(tag)
+
+            def remove_tag(self, tag):
+                if tag in self.tags:
+                    self.tags.remove(tag)
+
+        note = MockNote({"Expression": "猫", "DefinitionPicture": "<img src='old.png'>"})
+        cat_img = IrasutoyaImage(
+            title="かわいい猫のイラスト",
+            image_url="https://example.com/cat.png",
+            thumb_url="https://example.com/thumb.png",
+            post_title="猫のイラスト"
+        )
+        client = MockIrasutoyaClient(search_mapping={"猫": [cat_img]})
+
+        status, mod = process_note_record(
+            note=note,
+            source_field="Expression",
+            target_field="DefinitionPicture",
+            overwrite_mode="overwrite",
+            client=client,
+            write_media_func=lambda f, d: f,
+            allow_tier2=True
+        )
+
+        self.assertEqual(status, "added")
+        self.assertNotIn("irasutoya::fallback_reading", note.tags)
+        self.assertIn("other_tag", note.tags)
 
     def test_batch_skips_decorative_assets(self):
         """Verify batch processor excludes decorative frames and continues to fallback illustration."""

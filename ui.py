@@ -869,6 +869,8 @@ class IrasutoyaDialog(QDialog):
                 self._do_search()
             else:
                 self._search_generation += 1
+                self.btn_search.setEnabled(True)
+                self.btn_search.setText("Search")
                 self._clear_gallery()
                 self._update_suggestion_chips([], active_term="")
                 self.status_label.setStyleSheet("color: #8E8E93; font-size: 12px;")

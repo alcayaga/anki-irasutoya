@@ -215,12 +215,16 @@ class TestUIMode(unittest.TestCase):
             terms = [c[0] for c in dlg._card_candidates]
             self.assertIn("猫", terms)
 
-            # Test switching to an empty field clears chips and advances search generation
+            # Test switching to an empty field clears chips, advances search generation, and re-enables search button
+            dlg.btn_search.setEnabled(False)
+            dlg.btn_search.setText("Searching...")
             gen_before = dlg._search_generation
             dlg.combo_source.setCurrentText("EmptyField")
             self.assertEqual(dlg._card_source_term, "")
             self.assertEqual(dlg._card_candidates, [])
             self.assertGreater(dlg._search_generation, gen_before)
+            self.assertTrue(dlg.btn_search.isEnabled())
+            self.assertEqual(dlg.btn_search.text(), "Search")
             self.assertEqual(dlg.status_label.text(), "Source field is empty.")
 
 

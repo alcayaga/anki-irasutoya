@@ -2,7 +2,7 @@
 import json
 import unittest
 import urllib.error
-from client import IrasutoyaClient, IrasutoyaImage, is_decorative_asset, select_best_image
+from client import IrasutoyaClient, IrasutoyaImage, is_decorative_asset, is_image_relevant, select_best_image
 
 
 class TestIrasutoyaClient(unittest.TestCase):
@@ -451,8 +451,48 @@ class TestIrasutoyaClient(unittest.TestCase):
         images, matched_cand, best_img = client.search_with_fallbacks(candidates)
         self.assertIsNotNone(matched_cand)
         self.assertEqual(matched_cand[0], "走る")
+    def test_is_image_relevant(self):
+        """Verify image relevance checking against queries, preventing multi-image post mismatches."""
+        # Relevant: image title directly contains query
+        cat_img = IrasutoyaImage("かわいい猫のイラスト", "https://example.com/c.png", "https://example.com/t.png", "色々な動物のイラスト")
+        self.assertTrue(is_image_relevant(cat_img, "猫"))
+
+        # Unrelated: post matched query but individual image is unrelated
+        dog_in_cat_post = IrasutoyaImage("犬のイラスト", "https://example.com/d.png", "https://example.com/t.png", "猫のイラスト")
+        self.assertFalse(is_image_relevant(dog_in_cat_post, "猫"))
+
+        # Inherited title: image lacked alt so title is identical to post title
+        single_post_img = IrasutoyaImage("猫のイラスト", "https://example.com/c2.png", "https://example.com/t.png", "猫のイラスト")
+        self.assertTrue(is_image_relevant(single_post_img, "猫"))
+
+        # Multi-word query
+        multi_img = IrasutoyaImage("黒い猫のイラスト", "https://example.com/b.png", "https://example.com/t.png", "黒い猫")
+        self.assertTrue(is_image_relevant(multi_img, "黒い 猫"))
+        self.assertFalse(is_image_relevant(multi_img, "白い 猫"))
+
+    def test_search_with_fallbacks_skips_unrelated_images(self):
+        """Verify search_with_fallbacks skips candidates that only return unrelated images from multi-image posts."""
+        client = IrasutoyaClient()
+
+        def mock_search(q, max_results=3, image_size="s800", orderby="relevance"):
+            if q == "猫":
+                # Returns only a dog image from a post that mentioned cat
+                return [IrasutoyaImage("犬のイラスト", "https://example.com/dog.png", "https://example.com/t.png", "猫のイラスト")]
+            if q == "ネコ":
+                # Returns an actual cat illustration
+                return [IrasutoyaImage("ネコのイラスト", "https://example.com/cat.png", "https://example.com/t.png", "ネコのイラスト")]
+            return []
+
+        client.search = mock_search
+        candidates = [
+            ("猫", "primary", 1),
+            ("ネコ", "to_katakana", 1),
+        ]
+        images, matched_cand, best_img = client.search_with_fallbacks(candidates)
+        self.assertIsNotNone(matched_cand)
+        self.assertEqual(matched_cand[0], "ネコ")
         self.assertIsNotNone(best_img)
-        self.assertEqual(best_img.title, "走る人のイラスト")
+        self.assertEqual(best_img.title, "ネコのイラスト")
 
 
 if __name__ == "__main__":

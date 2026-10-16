@@ -76,6 +76,38 @@ def is_meaningful_title(text: str) -> bool:
 DECORATIVE_NOISE_KEYWORDS = ("ライン素材", "背景", "フレーム", "枠", "文字", "テンプレート", "壁紙")
 
 
+def is_image_relevant(img: IrasutoyaImage, query: str) -> bool:
+    """Check if the individual image itself is semantically relevant to the query keyword.
+
+    Prevents false-positive matches where a multi-image post matching a query contains
+    unrelated illustrations (e.g. an image titled '犬のイラスト' in a post matching '猫').
+    """
+    clean_q = query.strip()
+    if not clean_q:
+        return False
+    title = img.title.strip()
+    post_title = img.post_title.strip()
+
+    # Image title explicitly mentions the query keyword
+    if clean_q in title:
+        return True
+
+    # If the image inherited the post title (e.g. alt text was omitted or generic),
+    # verify the query appears in that inherited post title
+    if title == post_title and clean_q in post_title:
+        return True
+
+    # Multi-word queries: check if all whitespace-delimited tokens are in the image title
+    tokens = clean_q.split()
+    if len(tokens) > 1:
+        if all(t in title for t in tokens):
+            return True
+        if title == post_title and all(t in post_title for t in tokens):
+            return True
+
+    return False
+
+
 def score_candidate_image(img: IrasutoyaImage, query: str) -> float:
     """Evaluate image semantic match quality and archetypal fit for flashcard learning."""
     score = 0.0
@@ -83,21 +115,26 @@ def score_candidate_image(img: IrasutoyaImage, query: str) -> float:
     title = img.title.strip()
     post_title = img.post_title.strip()
 
-    # 1. Exact canonical matches
-    if title == f"{clean_q}のイラスト" or post_title == f"{clean_q}のイラスト":
-        score += 100.0
-    elif title == f"かわいい{clean_q}のイラスト" or post_title == f"かわいい{clean_q}のイラスト":
-        score += 90.0
-    elif title == clean_q or post_title == clean_q:
-        score += 85.0
-    elif title.startswith(f"{clean_q}の") or post_title.startswith(f"{clean_q}の"):
-        score += 60.0
+    # 1. Exact canonical matches (requires image relevance to avoid multi-image post mismatches)
+    if is_image_relevant(img, clean_q):
+        if title == f"{clean_q}のイラスト" or (title == post_title and post_title == f"{clean_q}のイラスト"):
+            score += 100.0
+        elif title == f"かわいい{clean_q}のイラスト" or (title == post_title and post_title == f"かわいい{clean_q}のイラスト"):
+            score += 90.0
+        elif title == clean_q or (title == post_title and post_title == clean_q):
+            score += 85.0
+        elif title.startswith(f"{clean_q}の") or (title == post_title and post_title.startswith(f"{clean_q}の")):
+            score += 60.0
+        elif post_title == f"{clean_q}のイラスト":
+            score += 50.0
+        elif post_title.startswith(f"{clean_q}の"):
+            score += 30.0
 
     # 2. Query in image title (Avoids multi-image mismatch like picking Cat for Dog)
     if clean_q in title:
         score += 40.0
-    elif clean_q in post_title:
-        score += 15.0
+    elif clean_q in post_title and title == post_title:
+        score += 20.0
     else:
         score -= 50.0  # Heavy penalty: image itself doesn't mention the query
 
@@ -123,8 +160,13 @@ def select_best_image(images: Sequence[IrasutoyaImage], query: str) -> Optional[
     """Select the highest-ranked archetypal image from candidate images, excluding decorative assets."""
     if not images:
         return None
-    illustration_candidates = [img for img in images if not is_decorative_asset(img, query)]
-    pool = illustration_candidates if illustration_candidates else images
+    illustration_candidates = [
+        img for img in images
+        if not is_decorative_asset(img, query) and is_image_relevant(img, query)
+    ]
+    pool = illustration_candidates if illustration_candidates else [
+        img for img in images if not is_decorative_asset(img, query)
+    ] or images
     return max(pool, key=lambda img: score_candidate_image(img, query))
 
 
@@ -357,8 +399,11 @@ class IrasutoyaClient:
                 pace_callback()
             images = self.search(term, max_results=max_results, image_size=image_size, orderby=orderby)
 
-            # Filter out non-illustration/decorative assets unless explicitly queried
-            illustration_candidates = [img for img in images if not is_decorative_asset(img, term)]
+            # Filter out non-illustration/decorative assets and images not relevant to the query term
+            illustration_candidates = [
+                img for img in images
+                if not is_decorative_asset(img, term) and is_image_relevant(img, term)
+            ]
             if illustration_candidates:
                 ranked = sorted(illustration_candidates, key=lambda img: score_candidate_image(img, term), reverse=True)
                 best = ranked[0]

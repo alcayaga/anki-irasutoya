@@ -13,6 +13,7 @@ try:
         select_best_image,
         score_candidate_image,
         is_decorative_asset,
+        is_image_relevant,
     )
     from .config import get_config, CONFIG_KEY_FULL_DELAY, CONFIG_KEY_IMAGE_SIZE
     from .text_utils import clean_search_query, generate_search_candidates, BATCH_MAX_CANDIDATES
@@ -23,6 +24,7 @@ except ImportError:
         select_best_image,
         score_candidate_image,
         is_decorative_asset,
+        is_image_relevant,
     )
     from config import get_config, CONFIG_KEY_FULL_DELAY, CONFIG_KEY_IMAGE_SIZE
     from text_utils import clean_search_query, generate_search_candidates, BATCH_MAX_CANDIDATES
@@ -119,7 +121,10 @@ def process_note_record(
             best_img = None
             for cand in batch_candidates:
                 imgs = client.search(cand[0], max_results=3, image_size=image_size)
-                valid_imgs = [img for img in imgs if not is_decorative_asset(img, cand[0])]
+                valid_imgs = [
+                    img for img in imgs
+                    if not is_decorative_asset(img, cand[0]) and is_image_relevant(img, cand[0])
+                ]
                 if valid_imgs:
                     matched_cand = cand
                     best_img = select_best_image(valid_imgs, cand[0]) or valid_imgs[0]
@@ -139,13 +144,20 @@ def process_note_record(
 
         note[target_field] = f'<img src="{encoded_src}">'
 
-        # If resolved via Tier 2 reading fallback, tag the note for auditability
+        # If resolved via Tier 2 reading fallback, tag the note for auditability;
+        # otherwise remove any stale fallback tag from an earlier batch run if overwritten directly
         if matched_cand[2] == 2:
             if hasattr(note, "add_tag"):
                 note.add_tag(FALLBACK_AUDIT_TAG)
             elif hasattr(note, "tags") and isinstance(note.tags, list):
                 if FALLBACK_AUDIT_TAG not in note.tags:
                     note.tags.append(FALLBACK_AUDIT_TAG)
+        else:
+            if hasattr(note, "remove_tag"):
+                note.remove_tag(FALLBACK_AUDIT_TAG)
+            elif hasattr(note, "tags") and isinstance(note.tags, list):
+                if FALLBACK_AUDIT_TAG in note.tags:
+                    note.tags.remove(FALLBACK_AUDIT_TAG)
 
         return "added", note
     except Exception as e:
@@ -307,6 +319,12 @@ def run_batch_fill(
                     elif hasattr(fresh_note, "tags") and isinstance(fresh_note.tags, list):
                         if FALLBACK_AUDIT_TAG not in fresh_note.tags:
                             fresh_note.tags.append(FALLBACK_AUDIT_TAG)
+                else:
+                    if hasattr(fresh_note, "remove_tag"):
+                        fresh_note.remove_tag(FALLBACK_AUDIT_TAG)
+                    elif hasattr(fresh_note, "tags") and isinstance(fresh_note.tags, list):
+                        if FALLBACK_AUDIT_TAG in fresh_note.tags:
+                            fresh_note.tags.remove(FALLBACK_AUDIT_TAG)
                 notes_to_save.append(fresh_note)
                 saved_tiers.append(is_tier2)
             except Exception as e:

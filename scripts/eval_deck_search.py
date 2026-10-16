@@ -24,7 +24,14 @@ from typing import Any, Dict, List, Optional, Tuple
 # Ensure parent directory is on sys.path so we can import client and text_utils
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from client import IrasutoyaClient, IrasutoyaImage, score_candidate_image, select_best_image
+from client import (
+    IrasutoyaClient,
+    IrasutoyaImage,
+    score_candidate_image,
+    select_best_image,
+    is_decorative_asset,
+    is_image_relevant,
+)
 from text_utils import (
     clean_search_query,
     generate_search_candidates,
@@ -229,7 +236,11 @@ def run_evaluation(
             leg_found = False
             new_found = False
         else:
-            leg_found = len(leg_results) > 0
+            valid_leg_results = [
+                img for img in leg_results
+                if not is_decorative_asset(img, leg_query) and is_image_relevant(img, leg_query)
+            ]
+            leg_found = len(valid_leg_results) > 0
             new_found = len(new_results) > 0
 
             if leg_found:
@@ -323,7 +334,7 @@ def run_evaluation(
     if primary_improvements > 0:
         print(f"  • Primary Query Wins (Relevance Sorting):{primary_improvements:3d}")
     print(f"  • Tier 1 Syntactic Improvements:         {tier1_improvements:3d}")
-    print(f"  • Tier 2 Reading / Semantic Fallbacks:   {tier2_improvements:3d} (Tagged with 'irasutoya::fallback_reading')")
+    print(f"  • Tier 2 Reading / Semantic Fallbacks:   {tier2_improvements:3d} (Batch mode applies 'irasutoya::fallback_reading')")
     print(f"  • Unmatched (No Illustration Found):      {both_failed:3d}")
     print("-" * 72)
 

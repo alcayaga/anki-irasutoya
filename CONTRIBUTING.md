@@ -128,9 +128,9 @@ To avoid false positive image matches during automated Batch operations (the **"
   - Separate note reading fields (`ExpressionReading`, `Reading`, `Word Reading`, `Kana`).
   - Same-field bracketed furigana readings (`林檎[りんご]` $\rightarrow$ `りんご`, `リンゴ`).
   - Katakana elongation mark expansion (`メンバ` $\rightarrow$ `メンバー`, `サーバ` $\rightarrow$ `サーバー`).
-  - Verb and compound heuristic deinflections (`帰ってくる` $\rightarrow$ `帰る`, `走っている` $\rightarrow$ `走る`).
+  - Verb and compound heuristic deinflections (`帰ってくる` $\rightarrow$ `帰る`, `走っている` $\rightarrow$ `走る`) (available in Single Card Picker UI; disabled in Batch Mode to avoid semantic drift).
   - In **Single Card Visual Picker UI**: Displays a transparent notification banner with clickable suggestion chips to switch queries in 1 click.
-  - In **Batch Mode**: Automatically applies fallback illustrations, and **tags the note with `irasutoya::fallback_reading`** so users can filter and review fallback images at their convenience.
+  - In **Batch Mode**: Automatically applies reading fallbacks, and **tags the note with `irasutoya::fallback_reading`** so users can filter and review fallback images at their convenience (heuristic deinflection is disabled in Batch Mode).
 
 ---
 
