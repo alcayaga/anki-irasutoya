@@ -1,5 +1,6 @@
 """Client for searching and downloading illustrations from Irasutoya (いらすとや)."""
 from dataclasses import dataclass
+import html
 import json
 import logging
 import re
@@ -82,10 +83,10 @@ class IrasutoyaClient:
                 raise
             except urllib.error.HTTPError as e:
                 last_error = e
-                if e.code == 429 and attempt < max_retries:
-                    # Rate limited: wait with exponential backoff
+                if (e.code == 429 or e.code >= 500) and attempt < max_retries:
+                    # Rate limited or transient server error: wait with exponential backoff
                     sleep_time = (attempt + 1) * 2.0
-                    logger.warning("Irasutoya 429 rate limit hit. Backing off for %.1f s...", sleep_time)
+                    logger.warning("Irasutoya HTTP %d error. Backing off for %.1f s...", e.code, sleep_time)
                     time.sleep(sleep_time)
                     continue
                 raise
@@ -140,13 +141,13 @@ class IrasutoyaClient:
 
         a_pattern = re.compile(r"<a\b([^>]*)>(.*?)</a>", re.IGNORECASE | re.DOTALL)
         img_pattern = re.compile(r"<img\b([^>]*)>", re.IGNORECASE)
-        attr_href = re.compile(r"href=[\"\']([^\'\"\s]+)[\"\']", re.IGNORECASE)
-        attr_src = re.compile(r"src=[\"\']([^\'\"\s]+)[\"\']", re.IGNORECASE)
-        attr_alt = re.compile(r"alt=[\"\']([^\'\"]*)[\"\']", re.IGNORECASE)
+        attr_href = re.compile(r"(?<![\w-])href=[\"\']([^\'\"\s]+)[\"\']", re.IGNORECASE)
+        attr_src = re.compile(r"(?<![\w-])src=[\"\']([^\'\"\s]+)[\"\']", re.IGNORECASE)
+        attr_alt = re.compile(r"(?<![\w-])alt=[\"\']([^\'\"]*)[\"\']", re.IGNORECASE)
 
         for entry in entries:
-            post_title = entry.get("title", {}).get("$t", "").strip()
-            summary = entry.get("summary", {}).get("$t", "").strip()
+            post_title = html.unescape(entry.get("title", {}).get("$t", "").strip())
+            summary = html.unescape(entry.get("summary", {}).get("$t", "").strip())
             content_html = entry.get("content", {}).get("$t", "")
 
             found_in_post = False
@@ -161,6 +162,8 @@ class IrasutoyaClient:
                     continue
                 href = href_m.group(1)
                 parsed_href = urllib.parse.urlparse(href)
+                if parsed_href.scheme != "https":
+                    continue
                 if not self._is_allowed_image_host(parsed_href.hostname or ""):
                     continue
                 if not re.search(r"\.(png|jpe?g)$", parsed_href.path, re.IGNORECASE):
@@ -176,7 +179,7 @@ class IrasutoyaClient:
                         src = src_m.group(1)
                     alt_m = attr_alt.search(img_attrs)
                     if alt_m:
-                        alt = alt_m.group(1)
+                        alt = html.unescape(alt_m.group(1))
 
                 high_res = self._upgrade_image_url(href, image_size)
                 if high_res in seen_urls:
@@ -184,7 +187,16 @@ class IrasutoyaClient:
                 seen_urls.add(high_res)
 
                 title = alt.strip() if alt.strip() else post_title
-                thumb = self._to_thumbnail_url(src or high_res, "s120-c")
+                parsed_src = urllib.parse.urlparse(src) if src else None
+                if (
+                    parsed_src
+                    and parsed_src.scheme == "https"
+                    and self._is_allowed_image_host(parsed_src.hostname or "")
+                ):
+                    thumb = self._to_thumbnail_url(src, "s120-c")
+                else:
+                    thumb = self._to_thumbnail_url(high_res, "s120-c")
+
                 images.append(
                     IrasutoyaImage(
                         title=title,
@@ -201,6 +213,8 @@ class IrasutoyaClient:
                 thumb = entry.get("media$thumbnail", {}).get("url", "")
                 if thumb:
                     parsed_thumb = urllib.parse.urlparse(thumb)
+                    if parsed_thumb.scheme != "https":
+                        continue
                     if self._is_allowed_image_host(parsed_thumb.hostname or ""):
                         high_res = self._upgrade_image_url(thumb, image_size)
                         if high_res not in seen_urls:
@@ -220,12 +234,12 @@ class IrasutoyaClient:
     @staticmethod
     def _to_thumbnail_url(url: str, size: str = "s120-c") -> str:
         """Scale a Blogger image URL to a tiny thumbnail format."""
-        return re.sub(r"/s\d+(-c)?/", f"/{size}/", url)
+        return re.sub(r"/s\d+(-c)?/(?=[^/]+$)", f"/{size}/", url)
 
     @staticmethod
     def _upgrade_image_url(url: str, image_size: str = "s800") -> str:
         """Replaces Blogger thumbnail dimension codes like /s72-c/ or /s300/ with /s800/ or /s0/."""
-        return re.sub(r"/s\d+(-c)?/", f"/{image_size}/", url)
+        return re.sub(r"/s\d+(-c)?/(?=[^/]+$)", f"/{image_size}/", url)
 
     @staticmethod
     def _is_allowed_image_host(host: str) -> bool:

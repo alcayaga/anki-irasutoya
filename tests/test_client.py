@@ -30,6 +30,17 @@ class TestIrasutoyaClient(unittest.TestCase):
             "https://blogger.googleusercontent.com/img/b/R29/s800/cat.jpg"
         )
 
+        # Ensure preceding path segments like /s100/ are preserved
+        url_multi = "https://blogger.googleusercontent.com/img/b/s100/s72-c/image.png"
+        self.assertEqual(
+            self.client._upgrade_image_url(url_multi, "s800"),
+            "https://blogger.googleusercontent.com/img/b/s100/s800/image.png"
+        )
+        self.assertEqual(
+            self.client._to_thumbnail_url(url_multi, "s120-c"),
+            "https://blogger.googleusercontent.com/img/b/s100/s120-c/image.png"
+        )
+
     def test_empty_query(self):
         """Test that empty or whitespace-only search queries return an empty list."""
         self.assertEqual(self.client.search(""), [])
@@ -173,6 +184,83 @@ class TestIrasutoyaClient(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].title, "Good image")
         self.assertEqual(results[0].image_url, "https://1.bp.blogspot.com/good.png")
+
+    def test_parse_entries_rejects_http_links(self):
+        """Verify that HTTP (non-HTTPS) image links and thumbnails are rejected during feed parsing."""
+        sample_entry = [
+            {
+                "title": {"$t": "Insecure Link Post"},
+                "content": {
+                    "$t": (
+                        '<a href="http://1.bp.blogspot.com/insecure.png">'
+                        '<img alt="Insecure" src="http://1.bp.blogspot.com/insecure_thumb.png">'
+                        '</a>'
+                        '<a href="https://1.bp.blogspot.com/secure.png">'
+                        '<img alt="Secure" src="https://1.bp.blogspot.com/secure_thumb.png">'
+                        '</a>'
+                    )
+                }
+            }
+        ]
+        results = self.client.parse_entries(sample_entry)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].title, "Secure")
+        self.assertEqual(results[0].image_url, "https://1.bp.blogspot.com/secure.png")
+
+        # Test thumbnail fallback with HTTP
+        fallback_entry = [
+            {
+                "title": {"$t": "Insecure Thumbnail"},
+                "content": {"$t": "text only"},
+                "media$thumbnail": {"url": "http://1.bp.blogspot.com/thumb.png"}
+            }
+        ]
+        self.assertEqual(len(self.client.parse_entries(fallback_entry)), 0)
+
+    def test_parse_entries_unescapes_html_and_respects_attribute_boundaries(self):
+        """Verify that HTML entities are unescaped and attributes like data-src don't match."""
+        sample_entry = [
+            {
+                "title": {"$t": "Fish &amp; Chips"},
+                "summary": {"$t": "Delicious &lt;snack&gt; &amp; meal"},
+                "content": {
+                    "$t": (
+                        '<a data-href="https://1.bp.blogspot.com/fake.png" href="https://1.bp.blogspot.com/real.png">'
+                        '<img data-src="https://1.bp.blogspot.com/fake_thumb.png" '
+                        'src="https://1.bp.blogspot.com/real_thumb.png" '
+                        'data-alt="Fake &amp; Old" '
+                        'alt="Tom &amp; Jerry&#39;s Boat">'
+                        '</a>'
+                    )
+                }
+            }
+        ]
+        results = self.client.parse_entries(sample_entry)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].title, "Tom & Jerry's Boat")
+        self.assertEqual(results[0].post_title, "Fish & Chips")
+        self.assertEqual(results[0].description, "Delicious <snack> & meal")
+        self.assertEqual(results[0].image_url, "https://1.bp.blogspot.com/real.png")
+        self.assertEqual(results[0].thumb_url, "https://1.bp.blogspot.com/real_thumb.png")
+
+    def test_parse_entries_thumbnail_untrusted_src_fallback(self):
+        """Verify that if img src is untrusted or non-https, thumbnail falls back to high_res."""
+        sample_entry = [
+            {
+                "title": {"$t": "Fallback Test"},
+                "content": {
+                    "$t": (
+                        '<a href="https://1.bp.blogspot.com/s1600/photo.png">'
+                        '<img src="http://insecure-domain.com/photo.png">'
+                        '</a>'
+                    )
+                }
+            }
+        ]
+        results = self.client.parse_entries(sample_entry)
+        self.assertEqual(len(results), 1)
+        # Should fallback to high_res converted to thumbnail s120-c
+        self.assertEqual(results[0].thumb_url, "https://1.bp.blogspot.com/s120-c/photo.png")
 
 
 if __name__ == "__main__":

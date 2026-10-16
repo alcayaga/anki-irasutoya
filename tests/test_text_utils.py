@@ -13,10 +13,12 @@ class TestTextUtils(unittest.TestCase):
         self.assertEqual(clean_search_query("   "), "")
 
     def test_strip_html(self):
-        """Test stripping HTML tags and entities."""
+        """Test stripping HTML tags and unescaping entities."""
         self.assertEqual(clean_search_query("<div>猫</div>"), "猫")
         self.assertEqual(clean_search_query("<span style='color:red;'>犬</span>"), "犬")
         self.assertEqual(clean_search_query("<b>リンゴ</b>&nbsp;"), "リンゴ")
+        self.assertEqual(clean_search_query("&#29483;"), "猫")
+        self.assertEqual(clean_search_query("Tom &amp; Jerry"), "Tom & Jerry")
 
     def test_strip_sound_tags(self):
         """Test stripping Anki sound tags from field content."""

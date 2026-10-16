@@ -228,8 +228,9 @@ def run_batch_fill(
         for old_note, filename, img_bytes in pending_writes:
             try:
                 fresh_note = col.get_note(old_note.id)
-            except Exception:
-                stats.skipped += 1
+            except Exception as e:
+                logger.exception("Failed to load note %s at commit time: %s", old_note.id, e)
+                stats.errors += 1
                 processed_tracker[0] += 1
                 continue
             if target_field not in fresh_note:
@@ -308,14 +309,24 @@ def run_batch_fill(
 
     def on_notes_read(data: Tuple[List[Tuple[any, str, bool]], int, int]) -> None:
         """Launch background network downloads worker without collection lock."""
-        fetch_op = QueryOp(
+        def on_fetch_finished(fut: any) -> None:
+            """Handle background download completion on the main GUI thread."""
+            exc = fut.exception()
+            if exc:
+                logger.exception("Error during batch download: %s", exc)
+                items, load_errors, missing_field_skips = data
+                stats = BatchStats(total=total, errors=load_errors + len(items), skipped=missing_field_skips)
+                show_summary_and_callback(stats)
+                return
+            on_fetch_done(fut.result())
+
+        mw.taskman.with_progress(
+            task=lambda: fetch_images_worker(data),
+            on_done=on_fetch_finished,
+            label=f"Connecting to Irasutoya (0/{total})...",
             parent=parent_window,
-            op=lambda _: fetch_images_worker(data),
-            success=on_fetch_done
+            uses_collection=False
         )
-        fetch_op.without_collection().with_progress(
-            label=f"Connecting to Irasutoya (0/{total})..."
-        ).run_in_background()
 
     # Launch initial note read
     read_op = QueryOp(

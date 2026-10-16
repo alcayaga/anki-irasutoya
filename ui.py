@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
 import threading
+import time
 from typing import Dict, List, Optional, Sequence, Set
 import urllib.parse
 
@@ -298,6 +299,8 @@ class IrasutoyaDialog(QDialog):
 
         self._search_generation = 0
         self._thumb_executor = ThreadPoolExecutor(max_workers=4)
+        self._thumb_lock = threading.Lock()
+        self._last_thumb_request_time = 0.0
 
         self._init_ui()
 
@@ -927,9 +930,16 @@ class IrasutoyaDialog(QDialog):
         """Background thread worker to download a thumbnail with fast pacing."""
         if gen != self._search_generation:
             return
-        if delay_ms > 0:
-            import time
-            time.sleep(delay_ms / 1000.0)
+        delay_sec = max(0.0, delay_ms / 1000.0)
+        with self._thumb_lock:
+            if gen != self._search_generation:
+                return
+            if delay_sec > 0:
+                now = time.time()
+                elapsed = now - self._last_thumb_request_time
+                if elapsed < delay_sec:
+                    time.sleep(delay_sec - elapsed)
+            self._last_thumb_request_time = time.time()
         if gen != self._search_generation:
             return
         try:
@@ -957,7 +967,12 @@ class IrasutoyaDialog(QDialog):
             c.set_selected(c == card)
         self.selected_card_widget = card
         if hasattr(self, "btn_apply") and not self._applying:
-            self.btn_apply.setEnabled(True)
+            source_field = self.combo_source.currentText()
+            target_field = self.combo_target.currentText()
+            if source_field and target_field and source_field == target_field:
+                self.btn_apply.setEnabled(False)
+            else:
+                self.btn_apply.setEnabled(True)
 
     def _on_card_double_clicked(self, card: ImageCardWidget) -> None:
         """Double click selects and immediately applies."""
@@ -979,7 +994,12 @@ class IrasutoyaDialog(QDialog):
         if not self.selected_card_widget or not self.first_note or self._applying:
             return
 
+        source_field = self.combo_source.currentText()
         target_field = self.combo_target.currentText()
+        if source_field and target_field and source_field == target_field:
+            showWarning("Source and target fields cannot be the same.", parent=self)
+            return
+
         if not target_field or target_field not in self.first_note:
             showWarning(f"The selected target field '{target_field}' does not exist on this note.", parent=self)
             return

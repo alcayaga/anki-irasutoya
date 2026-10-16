@@ -1,4 +1,5 @@
 """Text utilities for sanitizing search queries from Anki card fields."""
+import html
 import re
 from typing import Optional
 
@@ -22,8 +23,8 @@ def clean_search_query(raw_text: Optional[str]) -> str:
     # 1. Strip HTML tags
     text = re.sub(r"<[^>]+>", " ", text)
 
-    # 2. Strip HTML entities like &nbsp;, &#39;, etc.
-    text = re.sub(r"&[a-zA-Z0-9#]+;", " ", text)
+    # 2. Decode HTML entities and replace non-breaking spaces
+    text = html.unescape(text).replace("\xa0", " ")
 
     # 3. Strip Anki sound tags [sound:...]
     text = re.sub(r"\[sound:[^\]]+\]", " ", text)
