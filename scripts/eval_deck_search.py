@@ -280,7 +280,11 @@ def run_evaluation(
     leg_pct = (legacy_hits / total * 100) if total else 0.0
     new_pct = (new_hits / total * 100) if total else 0.0
     abs_gain = new_pct - leg_pct
-    rel_gain = ((new_hits - legacy_hits) / legacy_hits * 100) if legacy_hits else 0.0
+    rel_gain_str = (
+        f"{((new_hits - legacy_hits) / legacy_hits * 100):+.1f}%"
+        if legacy_hits
+        else ("n/a" if new_hits > 0 else "+0.0%")
+    )
 
     print("\n" + "=" * 72)
     print("  EVALUATION SUMMARY REPORT")
@@ -289,7 +293,7 @@ def run_evaluation(
     print(f"Legacy Search Recall:     {legacy_hits:3d} / {total} ({leg_pct:.1f}%)")
     print(f"New Search Recall:        {new_hits:3d} / {total} ({new_pct:.1f}%)")
     print(f"Absolute Recall Gain:     {abs_gain:+.1f}%")
-    print(f"Relative Improvement:     {rel_gain:+.1f}%")
+    print(f"Relative Improvement:     {rel_gain_str}")
     print("-" * 72)
     print("Breakdown of New Matches:")
     print(f"  • Both Succeeded (Baseline):         {both_hits:3d}")

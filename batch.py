@@ -18,6 +18,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 FALLBACK_AUDIT_TAG = "irasutoya::fallback_reading"
+BATCH_MAX_CANDIDATES = 4
 
 
 @dataclass
@@ -95,11 +96,12 @@ def process_note_record(
         return "skipped_empty_query", None
 
     primary_query = candidates[0][0]
+    batch_candidates = candidates[:BATCH_MAX_CANDIDATES]
 
     try:
         if hasattr(client, "search_with_fallbacks"):
             images, matched_cand, best_img = client.search_with_fallbacks(
-                candidates, max_results=12, image_size=image_size
+                batch_candidates, max_results=12, image_size=image_size
             )
         else:
             matched_cand = None
@@ -232,9 +234,10 @@ def run_batch_fill(
                 stats.skipped += 1
                 continue
 
+            batch_candidates = candidates[:BATCH_MAX_CANDIDATES]
             try:
                 images, matched_cand, best_img = client.search_with_fallbacks(
-                    candidates, max_results=12, image_size=image_size, pace_callback=pace_request
+                    batch_candidates, max_results=12, image_size=image_size, pace_callback=pace_request
                 )
                 if not best_img or not matched_cand:
                     stats.not_found += 1
@@ -260,9 +263,10 @@ def run_batch_fill(
         pending_writes: List[Tuple[any, str, bytes, bool]],
         stats: BatchStats,
         processed_tracker: List[int]
-    ) -> List[any]:
+    ) -> Tuple[List[any], List[bool]]:
         """Write media files and assign target field on freshly loaded notes within collection op."""
         notes_to_save = []
+        saved_tiers = []
         for old_note, filename, img_bytes, is_tier2 in pending_writes:
             try:
                 fresh_note = col.get_note(old_note.id)
@@ -289,15 +293,13 @@ def run_batch_fill(
                     elif hasattr(fresh_note, "tags") and isinstance(fresh_note.tags, list):
                         if FALLBACK_AUDIT_TAG not in fresh_note.tags:
                             fresh_note.tags.append(FALLBACK_AUDIT_TAG)
-                    stats.fallback_matches += 1
-                else:
-                    stats.direct_matches += 1
                 notes_to_save.append(fresh_note)
+                saved_tiers.append(is_tier2)
             except Exception as e:
                 logger.exception("Failed to write media for note %s: %s", old_note.id, e)
                 stats.errors += 1
             processed_tracker[0] += 1
-        return notes_to_save
+        return notes_to_save, saved_tiers
 
 
     def on_fetch_done(result: Tuple[BatchStats, List[Tuple[any, str, bytes]]]) -> None:
@@ -311,8 +313,9 @@ def run_batch_fill(
 
         processed_tracker = [0]
 
-        def on_saved(saved_notes: List[any]) -> None:
+        def on_saved(saved_info: Tuple[List[any], List[bool]]) -> None:
             """Update notes with full undo support and calculate final added count."""
+            saved_notes, saved_tiers = saved_info
             if not saved_notes:
                 show_summary_and_callback(stats)
                 return
@@ -321,6 +324,8 @@ def run_batch_fill(
             def _ok(_: any) -> None:
                 """Handle successful notes update."""
                 stats.added = len(saved_notes)
+                stats.fallback_matches = sum(1 for is_t2 in saved_tiers if is_t2)
+                stats.direct_matches = stats.added - stats.fallback_matches
                 show_summary_and_callback(stats)
 
             def _fail(err: Exception) -> None:

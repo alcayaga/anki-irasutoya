@@ -98,6 +98,8 @@ class TestTextUtils(unittest.TestCase):
         self.assertEqual(clean_search_query("メッセージ・カード"), "メッセージ・カード")
         self.assertEqual(clean_search_query("オート・ロック"), "オート・ロック")
         self.assertEqual(clean_search_query("猫・ねこ"), "猫")
+        self.assertEqual(clean_search_query("猫・ネコ・キャット"), "猫")
+        self.assertEqual(clean_search_query("メッセージ・カード・手紙"), "メッセージ・カード")
 
     def test_deinflect_japanese(self):
         """Test heuristic deinflection of verb and compound forms."""
@@ -141,6 +143,16 @@ class TestTextUtils(unittest.TestCase):
         cands4 = generate_search_candidates("メンバ")
         terms4 = [c[0] for c in cands4]
         self.assertIn("メンバー", terms4)
+
+        # Test 5: Separate reading field containing bracketed furigana
+        note_furigana = {
+            "Expression": "其の儘",
+            "Reading": "其[そ]の儘[まま]"
+        }
+        cands5 = generate_search_candidates("其の儘", note=note_furigana, allow_tier2=True)
+        terms5 = [c[0] for c in cands5]
+        self.assertIn("そのまま", terms5)
+        self.assertIn("ソノママ", terms5)
 
 
 if __name__ == "__main__":

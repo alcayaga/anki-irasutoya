@@ -52,6 +52,7 @@ def extract_furigana_terms(raw_text: Optional[str]) -> Tuple[str, Optional[str]]
     
     Examples:
         '其の儘[そのまま]' -> ('其の儘', 'そのまま')
+        '其[そ]の儘[まま]' -> ('其の儘', 'そのまま')
         '動[うご]かす' -> ('動かす', 'うごかす')
         '林檎[りんご]' -> ('林檎', 'りんご')
         '猫' -> ('猫', None)
@@ -63,12 +64,21 @@ def extract_furigana_terms(raw_text: Optional[str]) -> Tuple[str, Optional[str]]
     if "[" not in raw_text or "]" not in raw_text:
         return clean_search_query(raw_text), None
 
-    # Surface Kanji: remove bracketed portions
-    surface_raw = re.sub(r" ?([^ \]]+)?\[([^\]]+)\]", r"\1", raw_text)
+    text = raw_text.strip()
+    # Case 1: Simple single word with furigana at the end: 'Headword[Reading]'
+    m_single = re.match(r"^([^\[]+)\[([^\]]+)\]$", text)
+    if m_single:
+        surface = clean_search_query(m_single.group(1))
+        reading = clean_search_query(m_single.group(2))
+        reading_out = reading if reading and reading != surface else None
+        return surface, reading_out
+
+    # Case 2: Segmented furigana: '其[そ]の儘[まま]', ' 其[そ]の 儘[まま]', '動[うご]かす'
+    surface_raw = re.sub(r" ?([^ \]]+)?\[([^\]]+)\]", r"\1", text)
     surface = clean_search_query(surface_raw)
 
-    # Reading: replace "kanji[reading]" with "reading"
-    reading_raw = re.sub(r" ?[^ \]]+\[([^\]]+)\]", r"\1", raw_text)
+    seg_pattern = re.compile(r"(?: ([^ \[]+)|([\u4e00-\u9fff\u3400-\u4dbf々〆〇]+))\[([^\]]+)\]")
+    reading_raw = seg_pattern.sub(r"\3", text)
     reading = clean_search_query(reading_raw)
 
     reading_out = reading if reading and reading != surface else None
@@ -191,11 +201,10 @@ def clean_search_query(raw_text: Optional[str]) -> str:
                 break
 
     if "・" in text:
-        # If surrounded by Katakana on both sides, keep middle dot (e.g. メッセージ・カード)
-        if not re.search(r"[\u30A0-\u30FF]・[\u30A0-\u30FF]", text):
-            parts = [p.strip() for p in text.split("・") if p.strip()]
-            if parts:
-                text = parts[0]
+        # Split on middle dots whose adjacent characters are not both Katakana (preserving loanword compounds like メッセージ・カード)
+        parts = [p.strip() for p in re.split(r"(?<![\u30A0-\u30FF])・|・(?![\u30A0-\u30FF])", text) if p.strip()]
+        if parts:
+            text = parts[0]
 
     # 9. Clean leftover edge punctuation (do NOT strip 'ー' from ends as it is a Katakana vowel letter!)
     text = text.strip(" ~〜-‐―–—:：!！?？. 。")
@@ -263,10 +272,12 @@ def generate_search_candidates(
         if note and hasattr(note, "__getitem__"):
             for rf in NOTE_READING_FIELDS:
                 if rf in note and note[rf]:
-                    val = note[rf].strip()
+                    val = str(note[rf]).strip()
                     if val:
-                        add(val, f"note_reading_{rf}", 2)
-                        add(to_katakana(val), f"note_reading_katakana_{rf}", 2)
+                        _, f_read = extract_furigana_terms(val)
+                        reading_term = f_read if f_read else val
+                        add(reading_term, f"note_reading_{rf}", 2)
+                        add(to_katakana(reading_term), f"note_reading_katakana_{rf}", 2)
 
             # Check furigana fields on the note
             for ff in NOTE_FURIGANA_FIELDS:
