@@ -15,7 +15,7 @@ try:
         is_decorative_asset,
     )
     from .config import get_config, CONFIG_KEY_FULL_DELAY, CONFIG_KEY_IMAGE_SIZE
-    from .text_utils import clean_search_query, generate_search_candidates
+    from .text_utils import clean_search_query, generate_search_candidates, BATCH_MAX_CANDIDATES
 except ImportError:
     from client import (
         IrasutoyaClient,
@@ -25,12 +25,11 @@ except ImportError:
         is_decorative_asset,
     )
     from config import get_config, CONFIG_KEY_FULL_DELAY, CONFIG_KEY_IMAGE_SIZE
-    from text_utils import clean_search_query, generate_search_candidates
+    from text_utils import clean_search_query, generate_search_candidates, BATCH_MAX_CANDIDATES
 
 logger = logging.getLogger(__name__)
 
 FALLBACK_AUDIT_TAG = "irasutoya::fallback_reading"
-BATCH_MAX_CANDIDATES = 4
 
 
 @dataclass
@@ -249,6 +248,8 @@ def run_batch_fill(
 
             batch_candidates = candidates[:BATCH_MAX_CANDIDATES]
             try:
+                # pace_request applies before each candidate query to avoid rate limits,
+                # incurring polite pacing delays for up to BATCH_MAX_CANDIDATES queries per note.
                 images, matched_cand, best_img = client.search_with_fallbacks(
                     batch_candidates, max_results=12, image_size=image_size, pace_callback=pace_request
                 )

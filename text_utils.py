@@ -30,6 +30,8 @@ NOTE_FURIGANA_FIELDS = (
     "VocabFurigana",
 )
 
+BATCH_MAX_CANDIDATES = 4
+
 
 def to_katakana(text: str) -> str:
     """Convert Hiragana characters to Katakana."""
@@ -101,15 +103,23 @@ def convert_to_kanji_numerals(text: str) -> Optional[str]:
     return None
 
 
+CHOUON_OMISSION_ENDINGS = ("バ", "パ", "タ", "ダ", "ザ", "ラ", "マ", "カ", "ガ", "サ")
+
+
 def expand_katakana_chouon(text: str) -> List[str]:
-    """Expand Katakana words dropping trailing vowel elongation marks per JIS/technical style.
+    """Expand Katakana loanwords dropping trailing vowel elongation marks per JIS/technical style.
     
     Examples:
         'メンバ' -> ['メンバー']
         'サーバ' -> ['サーバー']
     """
     variants: List[str] = []
-    if len(text) >= 2 and re.match(r"^[\u30A0-\u30FF]+$", text) and not text.endswith("ー"):
+    if (
+        len(text) >= 3
+        and re.match(r"^[\u30A0-\u30FF]+$", text)
+        and not text.endswith("ー")
+        and text.endswith(CHOUON_OMISSION_ENDINGS)
+    ):
         variants.append(text + "ー")
     return variants
 
@@ -224,9 +234,9 @@ def generate_search_candidates(
     
     Tiers:
         Tier 1 (Safe): Zero homophone risk. Always automatic in both Batch & UI.
-                       (NFKC, same-field furigana, loanword katakana, chōonpu, kanji numerals).
-        Tier 2 (Semantic): Reading from separate note fields, deinflection, stem extraction.
-                           (Controlled & auditable in Batch mode, interactive in Visual Picker).
+                       (NFKC, loanword katakana, kanji numerals).
+        Tier 2 (Phonetic & Semantic): Reading from separate note fields, same-field furigana,
+                           katakana chōonpu expansion, deinflection, stem extraction.
     
     Returns:
         List of (candidate_query, reason_label, confidence_tier).
@@ -257,12 +267,13 @@ def generate_search_candidates(
         if re.fullmatch(r"[\u3040-\u309F]+", surface):
             add(to_katakana(surface), "loanword_katakana", 1)
 
-        # Katakana elongation mark expansion (メンバ -> メンバー, サーバ -> サーバー)
-        for chouon_variant in expand_katakana_chouon(surface):
-            add(chouon_variant, "katakana_chouon", 1)
-
-    # 3. Tier 2 Semantic & Phonetic Fallbacks (Separate Note Fields & Deinflection)
+    # 3. Tier 2 Semantic & Phonetic Fallbacks (Separate Note Fields, Elongation & Deinflection)
     if allow_tier2:
+        # Katakana elongation mark expansion (メンバ -> メンバー, サーバ -> サーバー)
+        if surface:
+            for chouon_variant in expand_katakana_chouon(surface):
+                add(chouon_variant, "katakana_chouon", 2)
+
         # Same-field reading extracted from furigana brackets (e.g. 橋[はし] -> はし).
         # Classify as Tier 2 to audit potential homophone substitutions in batch mode.
         if same_field_reading:
@@ -283,7 +294,7 @@ def generate_search_candidates(
             # Check furigana fields on the note
             for ff in NOTE_FURIGANA_FIELDS:
                 if ff in note and note[ff]:
-                    f_val = note[ff].strip()
+                    f_val = str(note[ff]).strip()
                     if f_val:
                         _, f_read = extract_furigana_terms(f_val)
                         if f_read:

@@ -633,9 +633,9 @@ class IrasutoyaDialog(QDialog):
                     count_skip += 1
                     continue
                 raw_src = note[source_field]
-                cleaned_q = clean_search_query(raw_src)
+                candidates = generate_search_candidates(raw_src, note=note, allow_tier2=True)
                 has_target = bool(note[target_field].strip())
-                if not cleaned_q:
+                if not candidates:
                     count_skip += 1
                 elif not has_target:
                     count_fill += 1
@@ -715,13 +715,13 @@ class IrasutoyaDialog(QDialog):
                     continue
 
                 raw_src = note[source_field]
-                cleaned_q = clean_search_query(raw_src)
-                query = cleaned_q or "(Empty)"
+                candidates = generate_search_candidates(raw_src, note=note, allow_tier2=True)
+                query = candidates[0][0] if candidates else (clean_search_query(raw_src) or "(Empty)")
 
                 has_target = bool(note[target_field].strip())
                 target_status = "Has Content" if has_target else "Empty"
 
-                if not cleaned_q:
+                if not candidates:
                     action_text = "Will Skip"
                     color_hex = "#8E8E93"  # Muted secondary gray
                 elif not has_target:
@@ -943,7 +943,7 @@ class IrasutoyaDialog(QDialog):
             self._update_suggestion_chips(display_chips, active_term=active_term, restore_term=restore_term)
             return
 
-        if matched_cand and matched_cand[0] != query:
+        if matched_cand and matched_cand[1] != "primary":
             self.status_label.setStyleSheet("color: #0A84FF; font-size: 12px; font-weight: 500;")
             self.status_label.setText(
                 f"ℹ️ No direct results for '{query}'. Showing results for '{matched_cand[0]}' ({matched_cand[1]})."

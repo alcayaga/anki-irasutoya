@@ -73,6 +73,9 @@ def is_meaningful_title(text: str) -> bool:
     return any(unicodedata.category(ch).startswith(("L", "N")) for ch in text)
 
 
+DECORATIVE_NOISE_KEYWORDS = ("ライン素材", "背景", "フレーム", "枠", "文字", "テンプレート", "壁紙")
+
+
 def score_candidate_image(img: IrasutoyaImage, query: str) -> float:
     """Evaluate image semantic match quality and archetypal fit for flashcard learning."""
     score = 0.0
@@ -107,9 +110,6 @@ def score_candidate_image(img: IrasutoyaImage, query: str) -> float:
             score -= 60.0
 
     return score
-
-
-DECORATIVE_NOISE_KEYWORDS = ("ライン素材", "背景", "フレーム", "枠", "文字", "テンプレート", "壁紙")
 
 
 def is_decorative_asset(img: IrasutoyaImage, query: str) -> bool:

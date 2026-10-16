@@ -24,11 +24,11 @@ from typing import Any, Dict, List, Optional, Tuple
 # Ensure parent directory is on sys.path so we can import client and text_utils
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from batch import BATCH_MAX_CANDIDATES
 from client import IrasutoyaClient, IrasutoyaImage, score_candidate_image, select_best_image
 from text_utils import (
     clean_search_query,
     generate_search_candidates,
+    BATCH_MAX_CANDIDATES,
     NOTE_READING_FIELDS,
     NOTE_FURIGANA_FIELDS,
 )
@@ -207,6 +207,9 @@ def run_evaluation(
         matched_cand = None
         best_img = None
         new_error = False
+        matched_term = ""
+        matched_reason = ""
+        matched_tier = 0
         try:
             new_results, matched_cand, best_img = client.search_with_fallbacks(
                 batch_candidates,
@@ -280,7 +283,7 @@ def run_evaluation(
 
         print(
             f"[{idx:2d}/{len(notes):2d}] {status_marker} "
-            f"[{sort_val:>5s}] {raw_source[:12]:<12s} -> "
+            f"[{str(sort_val):>5s}] {raw_source[:12]:<12s} -> "
             f"Legacy: {'ERR' if leg_error else ('YES' if leg_found else 'NO '):3s} | "
             f"New: {'ERR' if new_error else (('YES (' + matched_reason[:15] + ')') if new_found else 'NO'):20s}"
         )
@@ -291,8 +294,10 @@ def run_evaluation(
 
     # --- SUMMARY REPORT ---
     total = len(results)
-    leg_pct = (legacy_hits / total * 100) if total else 0.0
-    new_pct = (new_hits / total * 100) if total else 0.0
+    valid_results = [r for r in results if r["status"] != "REQUEST_ERROR"]
+    valid_total = len(valid_results)
+    leg_pct = (legacy_hits / valid_total * 100) if valid_total else 0.0
+    new_pct = (new_hits / valid_total * 100) if valid_total else 0.0
     abs_gain = new_pct - leg_pct
     rel_gain_str = (
         f"{((new_hits - legacy_hits) / legacy_hits * 100):+.1f}%"
@@ -304,8 +309,10 @@ def run_evaluation(
     print("  EVALUATION SUMMARY REPORT")
     print("=" * 72)
     print(f"Total Notes Evaluated:    {total}")
-    print(f"Legacy Search Recall:     {legacy_hits:3d} / {total} ({leg_pct:.1f}%)")
-    print(f"New Search Recall:        {new_hits:3d} / {total} ({new_pct:.1f}%)")
+    if failed_requests > 0:
+        print(f"Valid Notes (No Errors):  {valid_total}")
+    print(f"Legacy Search Recall:     {legacy_hits:3d} / {valid_total} ({leg_pct:.1f}%)")
+    print(f"New Search Recall:        {new_hits:3d} / {valid_total} ({new_pct:.1f}%)")
     print(f"Absolute Recall Gain:     {abs_gain:+.1f}%")
     print(f"Relative Improvement:     {rel_gain_str}")
     if failed_requests > 0:

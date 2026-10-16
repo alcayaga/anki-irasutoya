@@ -120,14 +120,14 @@ To avoid false positive image matches during automated Batch operations (the **"
 
 - **Tier 1 (Safe Syntactic Normalization)**:
   - Unicode NFKC normalization (zenkaku/hankaku).
-  - Explicit furigana brackets from the same field (e.g., `林檎[りんご]` $\rightarrow$ `林檎`, `りんご`, `リンゴ`).
   - Loanword Katakana conversion (`とまと` $\rightarrow$ `トマト`).
-  - Katakana elongation mark expansion (`メンバ` $\rightarrow$ `メンバー`).
   - Kanji numeral conversion (`1杯` $\rightarrow$ `一杯`, `2人` $\rightarrow$ `二人`).
   - *Applied automatically with zero homophone risk.*
 
 - **Tier 2 (Phonetic & Semantic Fallbacks)**:
   - Separate note reading fields (`ExpressionReading`, `Reading`, `Word Reading`, `Kana`).
+  - Same-field bracketed furigana readings (`林檎[りんご]` $\rightarrow$ `りんご`, `リンゴ`).
+  - Katakana elongation mark expansion (`メンバ` $\rightarrow$ `メンバー`, `サーバ` $\rightarrow$ `サーバー`).
   - Verb and compound heuristic deinflections (`帰ってくる` $\rightarrow$ `帰る`, `走っている` $\rightarrow$ `走る`).
   - In **Single Card Visual Picker UI**: Displays a transparent notification banner with clickable suggestion chips to switch queries in 1 click.
   - In **Batch Mode**: Automatically applies fallback illustrations, and **tags the note with `irasutoya::fallback_reading`** so users can filter and review fallback images at their convenience.

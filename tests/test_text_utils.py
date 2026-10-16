@@ -81,6 +81,7 @@ class TestTextUtils(unittest.TestCase):
         self.assertEqual(expand_katakana_chouon("サーバ"), ["サーバー"])
         self.assertEqual(expand_katakana_chouon("フォルダ"), ["フォルダー"])
         self.assertEqual(expand_katakana_chouon("コーヒー"), [])  # Already has ー
+        self.assertEqual(expand_katakana_chouon("パン"), [])      # Not an omission ending
         self.assertEqual(expand_katakana_chouon("猫"), [])       # Not Katakana
 
     def test_convert_to_kanji_numerals(self):
@@ -141,10 +142,11 @@ class TestTextUtils(unittest.TestCase):
         self.assertIn("1杯", terms3)
         self.assertIn("一杯", terms3)
 
-        # Test 4: Katakana elongation
+        # Test 4: Katakana elongation (Tier 2)
         cands4 = generate_search_candidates("メンバ")
         terms4 = [c[0] for c in cands4]
         self.assertIn("メンバー", terms4)
+        self.assertEqual(cands4[1], ("メンバー", "katakana_chouon", 2))
 
         # Test 5: Separate reading field containing bracketed furigana
         note_furigana = {
@@ -165,6 +167,11 @@ class TestTextUtils(unittest.TestCase):
         cands_tomato = generate_search_candidates("とまと")
         terms_tomato = [c[0] for c in cands_tomato]
         self.assertIn("トマト", terms_tomato)
+
+        # Test 7: Non-string furigana field value safely handled
+        note_non_str = {"Expression": "本", "Furigana": 12345}
+        cands_non_str = generate_search_candidates("本", note=note_non_str, allow_tier2=True)
+        self.assertEqual(cands_non_str[0], ("本", "primary", 1))
 
 
 if __name__ == "__main__":
