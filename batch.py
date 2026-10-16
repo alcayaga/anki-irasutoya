@@ -7,11 +7,23 @@ import urllib.parse
 from typing import Callable, List, Optional, Sequence, Tuple
 
 try:
-    from .client import IrasutoyaClient, IrasutoyaImage, select_best_image, score_candidate_image
+    from .client import (
+        IrasutoyaClient,
+        IrasutoyaImage,
+        select_best_image,
+        score_candidate_image,
+        is_decorative_asset,
+    )
     from .config import get_config, CONFIG_KEY_FULL_DELAY, CONFIG_KEY_IMAGE_SIZE
     from .text_utils import clean_search_query, generate_search_candidates
 except ImportError:
-    from client import IrasutoyaClient, IrasutoyaImage, select_best_image, score_candidate_image
+    from client import (
+        IrasutoyaClient,
+        IrasutoyaImage,
+        select_best_image,
+        score_candidate_image,
+        is_decorative_asset,
+    )
     from config import get_config, CONFIG_KEY_FULL_DELAY, CONFIG_KEY_IMAGE_SIZE
     from text_utils import clean_search_query, generate_search_candidates
 
@@ -106,11 +118,12 @@ def process_note_record(
         else:
             matched_cand = None
             best_img = None
-            for cand in candidates:
+            for cand in batch_candidates:
                 imgs = client.search(cand[0], max_results=3, image_size=image_size)
-                if imgs:
+                valid_imgs = [img for img in imgs if not is_decorative_asset(img, cand[0])]
+                if valid_imgs:
                     matched_cand = cand
-                    best_img = select_best_image(imgs, cand[0]) or imgs[0]
+                    best_img = select_best_image(valid_imgs, cand[0]) or valid_imgs[0]
                     break
 
         if not best_img or not matched_cand:

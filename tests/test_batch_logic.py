@@ -161,6 +161,53 @@ class TestBatchLogic(unittest.TestCase):
         self.assertIn("irasutoya::fallback_reading", note.tags)
         self.assertIn(urllib.parse.quote("irasutoya_そのまま_そのままのイラスト.png"), mod["DefinitionPicture"])
 
+    def test_batch_skips_decorative_assets(self):
+        """Verify batch processor excludes decorative frames and continues to fallback illustration."""
+        frame_img = IrasutoyaImage("フレームのイラスト", "https://example.com/f.png", "https://example.com/t.png", "フレーム")
+        real_img = IrasutoyaImage("猫のイラスト", "https://example.com/c.png", "https://example.com/t.png", "猫")
+
+        note = {"Expression": "其の儘", "Reading": "猫", "DefinitionPicture": ""}
+        client = MockIrasutoyaClient(search_mapping={
+            "其の儘": [frame_img],
+            "猫": [real_img]
+        })
+
+        status, mod = process_note_record(
+            note=note,
+            source_field="Expression",
+            target_field="DefinitionPicture",
+            overwrite_mode="skip",
+            client=client,
+            write_media_func=lambda f, d: f,
+            allow_tier2=True
+        )
+        self.assertEqual(status, "added")
+        self.assertIn("猫のイラスト", urllib.parse.unquote(mod["DefinitionPicture"]))
+
+    def test_batch_legacy_path_caps_at_max_candidates(self):
+        """Verify legacy search path does not iterate past BATCH_MAX_CANDIDATES queries."""
+        queried = []
+
+        class QueryTrackingClient(MockIrasutoyaClient):
+            def search(self, query: str, **kwargs):
+                queried.append(query)
+                return []
+
+        note = {"Expression": "1杯", "Reading": "いっぱい", "Kana": "イッパイ", "DefinitionPicture": ""}
+        client = QueryTrackingClient()
+
+        status, mod = process_note_record(
+            note=note,
+            source_field="Expression",
+            target_field="DefinitionPicture",
+            overwrite_mode="skip",
+            client=client,
+            write_media_func=lambda f, d: f,
+            allow_tier2=True
+        )
+        self.assertEqual(status, "not_found")
+        self.assertLessEqual(len(queried), 4)
+
 
 if __name__ == "__main__":
     unittest.main()

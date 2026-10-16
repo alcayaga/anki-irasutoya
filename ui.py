@@ -867,6 +867,12 @@ class IrasutoyaDialog(QDialog):
             self.query_input.setText(new_query)
             if new_query:
                 self._do_search()
+            else:
+                self._search_generation += 1
+                self._clear_gallery()
+                self._update_suggestion_chips([], active_term="")
+                self.status_label.setStyleSheet("color: #8E8E93; font-size: 12px;")
+                self.status_label.setText("Source field is empty.")
 
     def _do_search(self) -> None:
         """Fetch search results from Irasutoya with fallback candidate generation asynchronously."""
@@ -987,8 +993,15 @@ class IrasutoyaDialog(QDialog):
             btn_restore.clicked.connect(lambda _, t=restore_term: self._on_chip_clicked(t))
             self.chips_layout.addWidget(btn_restore)
 
-        # Show up to 5 top candidate chips
-        for cand_term, reason, tier in candidates[:5]:
+        # Show up to 5 top candidate chips, ensuring active_term is visible if outside top 5
+        displayed_candidates: List[Tuple[str, str, int]] = []
+        active_cand = next((c for c in candidates if c[0] == active_term), None)
+        if active_cand and active_cand not in candidates[:5]:
+            displayed_candidates = candidates[:4] + [active_cand]
+        else:
+            displayed_candidates = candidates[:5]
+
+        for cand_term, _reason, _tier in displayed_candidates:
             is_active = (cand_term == active_term)
             btn = QPushButton(f"{cand_term}", self)
             btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))

@@ -128,7 +128,7 @@ To avoid false positive image matches during automated Batch operations (the **"
 
 - **Tier 2 (Phonetic & Semantic Fallbacks)**:
   - Separate note reading fields (`ExpressionReading`, `Reading`, `Word Reading`, `Kana`).
-  - Verb and compound heuristic deinflections (`帰ってくる` $\rightarrow$ `帰る`, `読める` $\rightarrow$ `読む`).
+  - Verb and compound heuristic deinflections (`帰ってくる` $\rightarrow$ `帰る`, `走っている` $\rightarrow$ `走る`).
   - In **Single Card Visual Picker UI**: Displays a transparent notification banner with clickable suggestion chips to switch queries in 1 click.
   - In **Batch Mode**: Automatically applies fallback illustrations, and **tags the note with `irasutoya::fallback_reading`** so users can filter and review fallback images at their convenience.
 

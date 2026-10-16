@@ -113,13 +113,15 @@ class TestTextUtils(unittest.TestCase):
         """Test candidate generation priority, tiers, and note field inspection."""
         from text_utils import generate_search_candidates
         
-        # Test 1: Direct furigana in primary term (All Tier 1)
+        # Test 1: Direct furigana in primary term (Primary is Tier 1, readings are Tier 2 for audit)
         cands1 = generate_search_candidates("林檎[りんご]")
         terms1 = [c[0] for c in cands1]
         self.assertIn("林檎", terms1)
         self.assertIn("りんご", terms1)
         self.assertIn("リンゴ", terms1)
         self.assertEqual(cands1[0], ("林檎", "primary", 1))
+        self.assertEqual(cands1[1], ("りんご", "same_field_reading", 2))
+        self.assertEqual(cands1[2], ("リンゴ", "same_field_reading_katakana", 2))
 
         # Test 2: Separate note reading field (Tier 2)
         note = {
@@ -153,6 +155,16 @@ class TestTextUtils(unittest.TestCase):
         terms5 = [c[0] for c in cands5]
         self.assertIn("そのまま", terms5)
         self.assertIn("ソノママ", terms5)
+
+        # Test 6: Mixed-script verb (e.g. 食べる) does not produce pseudo-katakana (食ベル)
+        cands_taberu = generate_search_candidates("食べる")
+        terms_taberu = [c[0] for c in cands_taberu]
+        self.assertNotIn("食ベル", terms_taberu)
+
+        # Pure Hiragana loanword (とまと) converts to Katakana (トマト)
+        cands_tomato = generate_search_candidates("とまと")
+        terms_tomato = [c[0] for c in cands_tomato]
+        self.assertIn("トマト", terms_tomato)
 
 
 if __name__ == "__main__":

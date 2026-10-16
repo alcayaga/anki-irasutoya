@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional, Tuple
 # Ensure parent directory is on sys.path so we can import client and text_utils
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from batch import BATCH_MAX_CANDIDATES
 from client import IrasutoyaClient, IrasutoyaImage, score_candidate_image, select_best_image
 from text_utils import (
     clean_search_query,
@@ -165,9 +166,11 @@ def run_evaluation(
     legacy_hits = 0
     new_hits = 0
     both_hits = 0
+    primary_improvements = 0
     tier1_improvements = 0
     tier2_improvements = 0
     both_failed = 0
+    failed_requests = 0
 
     results = []
 
@@ -184,11 +187,14 @@ def run_evaluation(
         # --- 1. LEGACY SEARCH SIMULATION ---
         leg_query = legacy_clean_query(raw_source)
         leg_results: List[IrasutoyaImage] = []
+        leg_error = False
         if leg_query:
             try:
                 # Legacy used default orderby (no orderby="relevance", so orderby=None/updated)
                 leg_results = client.search(leg_query, max_results=5, orderby=None)
             except Exception as e:
+                print(f"      [WARNING] Legacy search request failed for '{leg_query}': {e}")
+                leg_error = True
                 leg_results = []
         time.sleep(delay)
 
@@ -196,48 +202,66 @@ def run_evaluation(
         candidates = generate_search_candidates(
             raw_source, note=fields, allow_tier2=allow_tier2, allow_deinflection=False
         )
+        batch_candidates = candidates[:BATCH_MAX_CANDIDATES]
         new_results: List[IrasutoyaImage] = []
         matched_cand = None
         best_img = None
+        new_error = False
         try:
             new_results, matched_cand, best_img = client.search_with_fallbacks(
-                candidates,
+                batch_candidates,
                 max_results=5,
                 orderby="relevance",
                 pace_callback=lambda: time.sleep(delay) if delay > 0 else None,
             )
         except Exception as e:
+            print(f"      [WARNING] New search request failed for '{raw_source}': {e}")
+            new_error = True
             new_results, matched_cand, best_img = [], None, None
 
-        leg_found = len(leg_results) > 0
-        new_found = len(new_results) > 0
-
-        if leg_found:
-            legacy_hits += 1
-        if new_found:
-            new_hits += 1
-
-        status = ""
-        matched_term = matched_cand[0] if matched_cand else ""
-        matched_reason = matched_cand[1] if matched_cand else ""
-        matched_tier = matched_cand[2] if matched_cand else 0
-
-        if leg_found and new_found:
-            both_hits += 1
-            status = "BOTH_HIT"
-        elif not leg_found and new_found:
-            if matched_tier == 1:
-                tier1_improvements += 1
-                status = "NEW_HIT_T1"
-            else:
-                tier2_improvements += 1
-                status = "NEW_HIT_T2"
-        elif leg_found and not new_found:
-            status = "LEGACY_ONLY"
+        if leg_error or new_error:
+            failed_requests += 1
+            status = "REQUEST_ERROR"
+            status_marker = " ⚠"
+            leg_found = False
+            new_found = False
         else:
-            both_failed += 1
-            status = "NOT_FOUND"
+            leg_found = len(leg_results) > 0
+            new_found = len(new_results) > 0
 
+            if leg_found:
+                legacy_hits += 1
+            if new_found:
+                new_hits += 1
+
+            matched_term = matched_cand[0] if matched_cand else ""
+            matched_reason = matched_cand[1] if matched_cand else ""
+            matched_tier = matched_cand[2] if matched_cand else 0
+
+            if leg_found and new_found:
+                both_hits += 1
+                status = "BOTH_HIT"
+                status_marker = " ✓"
+            elif not leg_found and new_found:
+                if matched_reason == "primary":
+                    primary_improvements += 1
+                    status = "NEW_HIT_PRIMARY"
+                    status_marker = "★P"
+                elif matched_tier == 1:
+                    tier1_improvements += 1
+                    status = "NEW_HIT_T1"
+                    status_marker = "★1"
+                else:
+                    tier2_improvements += 1
+                    status = "NEW_HIT_T2"
+                    status_marker = "★2"
+            elif leg_found and not new_found:
+                status = "LEGACY_ONLY"
+                status_marker = "  "
+            else:
+                both_failed += 1
+                status = "NOT_FOUND"
+                status_marker = " ✗"
         res_entry = {
             "index": idx,
             "sort_val": sort_val,
@@ -254,21 +278,11 @@ def run_evaluation(
         }
         results.append(res_entry)
 
-        status_marker = "  "
-        if status == "NEW_HIT_T1":
-            status_marker = "★1"
-        elif status == "NEW_HIT_T2":
-            status_marker = "★2"
-        elif status == "BOTH_HIT":
-            status_marker = " ✓"
-        elif status == "NOT_FOUND":
-            status_marker = " ✗"
-
         print(
             f"[{idx:2d}/{len(notes):2d}] {status_marker} "
             f"[{sort_val:>5s}] {raw_source[:12]:<12s} -> "
-            f"Legacy: {'YES' if leg_found else 'NO ':3s} | "
-            f"New: {'YES (' + matched_reason[:15] + ')' if new_found else 'NO':20s}"
+            f"Legacy: {'ERR' if leg_error else ('YES' if leg_found else 'NO '):3s} | "
+            f"New: {'ERR' if new_error else (('YES (' + matched_reason[:15] + ')') if new_found else 'NO'):20s}"
         )
 
         if verbose and new_found and not leg_found:
@@ -294,16 +308,20 @@ def run_evaluation(
     print(f"New Search Recall:        {new_hits:3d} / {total} ({new_pct:.1f}%)")
     print(f"Absolute Recall Gain:     {abs_gain:+.1f}%")
     print(f"Relative Improvement:     {rel_gain_str}")
+    if failed_requests > 0:
+        print(f"Failed Request Notes:     {failed_requests:3d} (Encountered HTTP/network errors)")
     print("-" * 72)
     print("Breakdown of New Matches:")
-    print(f"  • Both Succeeded (Baseline):         {both_hits:3d}")
-    print(f"  • Tier 1 Syntactic Improvements:     {tier1_improvements:3d}")
-    print(f"  • Tier 2 Reading / Semantic Fallbacks: {tier2_improvements:3d} (Tagged with 'irasutoya::fallback_reading')")
-    print(f"  • Unmatched (No Illustration Found):  {both_failed:3d}")
+    print(f"  • Both Succeeded (Baseline):             {both_hits:3d}")
+    if primary_improvements > 0:
+        print(f"  • Primary Query Wins (Relevance Sorting):{primary_improvements:3d}")
+    print(f"  • Tier 1 Syntactic Improvements:         {tier1_improvements:3d}")
+    print(f"  • Tier 2 Reading / Semantic Fallbacks:   {tier2_improvements:3d} (Tagged with 'irasutoya::fallback_reading')")
+    print(f"  • Unmatched (No Illustration Found):      {both_failed:3d}")
     print("-" * 72)
 
     # Exemplars of improvement
-    wins = [r for r in results if r["status"] in ("NEW_HIT_T1", "NEW_HIT_T2")]
+    wins = [r for r in results if r["status"] in ("NEW_HIT_PRIMARY", "NEW_HIT_T1", "NEW_HIT_T2")]
     if wins:
         print("\nExemplars Recovered by New Search Strategy:")
         print(f"{'Freq':<6s} | {'Term':<12s} | {'Tier':<6s} | {'Strategy Reason':<24s} | {'Matched Image Title'}")
@@ -316,6 +334,10 @@ def run_evaluation(
                 f"{w['matched_reason']:<24s} | "
                 f"{w['best_title'][:30]}"
             )
+
+    if failed_requests > 0:
+        print(f"\n[ERROR] Evaluation completed with {failed_requests} failed network request(s). Exiting with error code 1.")
+        sys.exit(1)
 
     print("\nBenchmark completed successfully.")
 

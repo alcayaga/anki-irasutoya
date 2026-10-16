@@ -242,14 +242,9 @@ def generate_search_candidates(
             seen.add(cleaned)
             candidates.append((cleaned, reason, tier))
 
-    # 1. Primary source field & Same-field Furigana
+    # 1. Primary source field
     surface, same_field_reading = extract_furigana_terms(raw_source)
     add(surface, "primary", 1)
-
-    if same_field_reading:
-        # High confidence: card author explicitly specified this reading for this term
-        add(same_field_reading, "same_field_reading", 1)
-        add(to_katakana(same_field_reading), "same_field_reading_katakana", 1)
 
     # 2. Tier 1 Syntactic Expansions on primary term
     if surface:
@@ -258,16 +253,22 @@ def generate_search_candidates(
         if kanji_num:
             add(kanji_num, "kanji_numeral", 1)
 
-        # Katakana conversion (crucial for loanwords written in hiragana like とまと -> トマト, ぱん -> パン)
-        if re.search(r"[\u3040-\u309F]", surface):
+        # Katakana conversion for loanwords written entirely in Hiragana (e.g. とまと -> トマト, ぱん -> パン)
+        if re.fullmatch(r"[\u3040-\u309F]+", surface):
             add(to_katakana(surface), "loanword_katakana", 1)
 
         # Katakana elongation mark expansion (メンバ -> メンバー, サーバ -> サーバー)
         for chouon_variant in expand_katakana_chouon(surface):
             add(chouon_variant, "katakana_chouon", 1)
 
-    # 3. Tier 2 Semantic Fallbacks (Separate Note Fields & Deinflection)
+    # 3. Tier 2 Semantic & Phonetic Fallbacks (Separate Note Fields & Deinflection)
     if allow_tier2:
+        # Same-field reading extracted from furigana brackets (e.g. 橋[はし] -> はし).
+        # Classify as Tier 2 to audit potential homophone substitutions in batch mode.
+        if same_field_reading:
+            add(same_field_reading, "same_field_reading", 2)
+            add(to_katakana(same_field_reading), "same_field_reading_katakana", 2)
+
         # Check dedicated reading fields on the note
         if note and hasattr(note, "__getitem__"):
             for rf in NOTE_READING_FIELDS:

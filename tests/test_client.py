@@ -2,7 +2,7 @@
 import json
 import unittest
 import urllib.error
-from client import IrasutoyaClient, IrasutoyaImage
+from client import IrasutoyaClient, IrasutoyaImage, is_decorative_asset, select_best_image
 
 
 class TestIrasutoyaClient(unittest.TestCase):
@@ -419,6 +419,40 @@ class TestIrasutoyaClient(unittest.TestCase):
 
         with self.assertRaises(urllib.error.HTTPError):
             client.search_with_fallbacks(candidates)
+
+    def test_is_decorative_asset(self):
+        """Verify decorative noise detection for frames, borders, and templates."""
+        frame_img = IrasutoyaImage("花のフレーム", "https://example.com/f.png", "https://example.com/t.png", "花")
+        self.assertTrue(is_decorative_asset(frame_img, "花"))
+        # Explicit search for frame should not be treated as unwanted decorative noise
+        self.assertFalse(is_decorative_asset(frame_img, "フレーム"))
+
+        cat_img = IrasutoyaImage("かわいい猫のイラスト", "https://example.com/c.png", "https://example.com/t.png", "猫")
+        self.assertFalse(is_decorative_asset(cat_img, "猫"))
+
+    def test_search_with_fallbacks_skips_decorative_only_results(self):
+        """Verify search_with_fallbacks continues to fallback candidate if initial candidate only yields decorative assets."""
+        client = IrasutoyaClient()
+
+        def mock_search(q, max_results=3, image_size="s800", orderby="relevance"):
+            if q == "追いかける":
+                # Only decorative frame returned
+                return [IrasutoyaImage("フレームのイラスト", "https://example.com/frame.png", "https://example.com/t.png", "フレーム")]
+            if q == "走る":
+                # Actual illustration returned
+                return [IrasutoyaImage("走る人のイラスト", "https://example.com/run.png", "https://example.com/t.png", "走る")]
+            return []
+
+        client.search = mock_search
+        candidates = [
+            ("追いかける", "primary", 1),
+            ("走る", "note_reading", 2),
+        ]
+        images, matched_cand, best_img = client.search_with_fallbacks(candidates)
+        self.assertIsNotNone(matched_cand)
+        self.assertEqual(matched_cand[0], "走る")
+        self.assertIsNotNone(best_img)
+        self.assertEqual(best_img.title, "走る人のイラスト")
 
 
 if __name__ == "__main__":

@@ -102,18 +102,30 @@ def score_candidate_image(img: IrasutoyaImage, query: str) -> float:
     score -= len(title) * 0.8  # Shorter, direct titles are more archetypal
 
     # 4. Filter out non-illustration assets (lines, borders, text, templates)
-    for noise in ["ライン素材", "背景", "フレーム", "枠", "文字", "テンプレート", "壁紙"]:
+    for noise in DECORATIVE_NOISE_KEYWORDS:
         if noise in title and noise not in clean_q:
             score -= 60.0
 
     return score
 
 
+DECORATIVE_NOISE_KEYWORDS = ("ライン素材", "背景", "フレーム", "枠", "文字", "テンプレート", "壁紙")
+
+
+def is_decorative_asset(img: IrasutoyaImage, query: str) -> bool:
+    """Return True if image is a decorative asset (frame, border, wallpaper) not matching query."""
+    clean_q = query.strip()
+    title = img.title.strip()
+    return any(noise in title and noise not in clean_q for noise in DECORATIVE_NOISE_KEYWORDS)
+
+
 def select_best_image(images: Sequence[IrasutoyaImage], query: str) -> Optional[IrasutoyaImage]:
-    """Select the highest-ranked archetypal image from candidate images."""
+    """Select the highest-ranked archetypal image from candidate images, excluding decorative assets."""
     if not images:
         return None
-    return max(images, key=lambda img: score_candidate_image(img, query))
+    illustration_candidates = [img for img in images if not is_decorative_asset(img, query)]
+    pool = illustration_candidates if illustration_candidates else images
+    return max(pool, key=lambda img: score_candidate_image(img, query))
 
 
 
@@ -345,9 +357,10 @@ class IrasutoyaClient:
                 pace_callback()
             images = self.search(term, max_results=max_results, image_size=image_size, orderby=orderby)
 
-            if images:
-                # Rank images by archetype score
-                ranked = sorted(images, key=lambda img: score_candidate_image(img, term), reverse=True)
+            # Filter out non-illustration/decorative assets unless explicitly queried
+            illustration_candidates = [img for img in images if not is_decorative_asset(img, term)]
+            if illustration_candidates:
+                ranked = sorted(illustration_candidates, key=lambda img: score_candidate_image(img, term), reverse=True)
                 best = ranked[0]
                 return ranked, cand, best
 

@@ -200,17 +200,28 @@ class TestUIMode(unittest.TestCase):
     def test_source_field_change_updates_card_candidates(self):
         """Verify changing the source field dropdown updates card search term and candidates."""
         mock_mw = MagicMock()
-        mock_note = {"Expression": "本", "Reading": "ほん", "Vocab": "猫"}
+        mock_note = {"Expression": "本", "Reading": "ほん", "Vocab": "猫", "EmptyField": ""}
         mock_mw.col.get_note.return_value = mock_note
 
-        with patch("ui.mw", mock_mw):
+        with patch("ui.mw", mock_mw), patch("threading.Thread", _SyncThread):
             dlg = IrasutoyaDialog(parent=None, browser=None, note_ids=[1001])
+            dlg._thumb_executor.submit = MagicMock()
+            dlg._run_on_main = lambda cb: cb()
+            dlg.client.search_with_fallbacks = MagicMock(return_value=([], None, None))
             self.assertEqual(dlg._card_source_term, "本")
 
             dlg.combo_source.setCurrentText("Vocab")
             self.assertEqual(dlg._card_source_term, "猫")
             terms = [c[0] for c in dlg._card_candidates]
             self.assertIn("猫", terms)
+
+            # Test switching to an empty field clears chips and advances search generation
+            gen_before = dlg._search_generation
+            dlg.combo_source.setCurrentText("EmptyField")
+            self.assertEqual(dlg._card_source_term, "")
+            self.assertEqual(dlg._card_candidates, [])
+            self.assertGreater(dlg._search_generation, gen_before)
+            self.assertEqual(dlg.status_label.text(), "Source field is empty.")
 
 
 if __name__ == "__main__":
