@@ -186,7 +186,7 @@ def run_evaluation(
         if leg_query:
             try:
                 # Legacy used default orderby (no orderby="relevance", so orderby=None/updated)
-                leg_results = client.search(leg_query, max_results=3, orderby=None)
+                leg_results = client.search(leg_query, max_results=5, orderby=None)
             except Exception as e:
                 leg_results = []
         time.sleep(delay)

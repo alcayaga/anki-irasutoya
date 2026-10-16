@@ -37,8 +37,7 @@ class BatchStats:
     def summary_message(self) -> str:
         """Formatted human-readable summary of the batch operation."""
         if self.fallback_matches > 0:
-            direct = max(0, self.added - self.fallback_matches)
-            msg = f"Added: {self.added} ({direct} direct, {self.fallback_matches} via fallback), Skipped: {self.skipped}, Not found: {self.not_found}"
+            msg = f"Added: {self.added} ({self.direct_matches} direct, {self.fallback_matches} via fallback), Skipped: {self.skipped}, Not found: {self.not_found}"
         else:
             msg = f"Added: {self.added}, Skipped: {self.skipped}, Not found: {self.not_found}"
 
@@ -247,11 +246,6 @@ def run_batch_fill(
                     continue
 
                 is_tier2 = bool(matched_cand[2] == 2)
-                if is_tier2:
-                    stats.fallback_matches += 1
-                else:
-                    stats.direct_matches += 1
-
                 filename = make_safe_media_filename(matched_cand[0], best_img.title)
                 pending_writes.append((note, filename, img_bytes, is_tier2))
             except Exception as e:
@@ -294,6 +288,9 @@ def run_batch_fill(
                     elif hasattr(fresh_note, "tags") and isinstance(fresh_note.tags, list):
                         if FALLBACK_AUDIT_TAG not in fresh_note.tags:
                             fresh_note.tags.append(FALLBACK_AUDIT_TAG)
+                    stats.fallback_matches += 1
+                else:
+                    stats.direct_matches += 1
                 notes_to_save.append(fresh_note)
             except Exception as e:
                 logger.exception("Failed to write media for note %s: %s", old_note.id, e)
