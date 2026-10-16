@@ -111,6 +111,13 @@ class TestIrasutoyaClient(unittest.TestCase):
         self.assertEqual(results[0].image_url, "https://example.com/s800/apple.png")
         self.assertEqual(results[0].thumb_url, "https://example.com/s120-c/apple.png")
 
+    def test_download_image_scheme_validation(self):
+        """Verify non-HTTPS image download URLs are rejected with ValueError."""
+        with self.assertRaises(ValueError):
+            self.client.download_image("file:///etc/passwd")
+        with self.assertRaises(ValueError):
+            self.client.download_image("http://example.com/insecure.png")
+
 
 if __name__ == "__main__":
     unittest.main()

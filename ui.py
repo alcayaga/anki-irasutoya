@@ -986,9 +986,9 @@ class IrasutoyaDialog(QDialog):
 
                     def commit_single(col: any) -> any:
                         """Write media and assign field to fresh note."""
+                        fresh_note = col.get_note(self.first_note.id)
                         stored_filename = col.media.write_data(filename, img_bytes)
                         encoded_src = urllib.parse.quote(stored_filename)
-                        fresh_note = col.get_note(self.first_note.id)
                         fresh_note[target_field] = f'<img src="{encoded_src}">'
                         return fresh_note
 

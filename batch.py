@@ -213,10 +213,14 @@ def run_batch_fill(
                 continue
             if overwrite_mode == "skip" and fresh_note[target_field].strip():
                 continue
-            stored_filename = col.media.write_data(filename, img_bytes)
-            encoded_src = urllib.parse.quote(stored_filename)
-            fresh_note[target_field] = f'<img src="{encoded_src}">'
-            notes_to_save.append(fresh_note)
+            try:
+                stored_filename = col.media.write_data(filename, img_bytes)
+                encoded_src = urllib.parse.quote(stored_filename)
+                fresh_note[target_field] = f'<img src="{encoded_src}">'
+                notes_to_save.append(fresh_note)
+            except Exception as e:
+                logger.exception("Failed to write media for note %s: %s", old_note.id, e)
+                stats.errors += 1
         return notes_to_save
 
     def on_fetch_done(result: Tuple[BatchStats, List[Tuple[any, str, bytes]]]) -> None:
@@ -231,6 +235,10 @@ def run_batch_fill(
         def on_saved(saved_notes: List[any]) -> None:
             """Update notes with full undo support and calculate final added count."""
             stats.added = len(saved_notes)
+            stats.skipped += len(pending_writes) - len(saved_notes)
+            if not saved_notes:
+                show_summary_and_callback(stats)
+                return
             op = aqt.operations.note.update_notes(parent=parent_window, notes=saved_notes)
             op.success(lambda _: show_summary_and_callback(stats))
             op.run_in_background()
@@ -240,6 +248,7 @@ def run_batch_fill(
             op=lambda col: commit_task(col, pending_writes),
             success=on_saved
         )
+        commit_op.failure(lambda _: show_summary_and_callback(stats))
         commit_op.run_in_background()
 
     def show_summary_and_callback(final_stats: BatchStats) -> None:

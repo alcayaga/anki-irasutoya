@@ -189,5 +189,7 @@ class IrasutoyaClient:
         return re.sub(r"/s\d+(-c)?/", f"/{image_size}/", url)
 
     def download_image(self, url: str, timeout: int = 15) -> bytes:
-        """Download raw image binary data from a direct URL."""
+        """Download raw image binary data from a direct HTTPS URL."""
+        if urllib.parse.urlparse(url).scheme != "https":
+            raise ValueError(f"Refusing non-HTTPS image URL: {url}")
         return self._make_request(url, timeout=timeout)
