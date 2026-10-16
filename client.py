@@ -334,11 +334,7 @@ class IrasutoyaClient:
             term = cand[0]
             if pace_callback is not None:
                 pace_callback()
-            try:
-                images = self.search(term, max_results=max_results, image_size=image_size, orderby=orderby)
-            except Exception as e:
-                logger.warning("Search failed for candidate '%s': %s", term, e)
-                images = []
+            images = self.search(term, max_results=max_results, image_size=image_size, orderby=orderby)
 
             if images:
                 # Rank images by archetype score

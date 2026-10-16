@@ -192,11 +192,21 @@ def run_evaluation(
         time.sleep(delay)
 
         # --- 2. NEW SEARCH MECHANISM ---
-        candidates = generate_search_candidates(raw_source, note=fields, allow_tier2=allow_tier2)
-        new_results, matched_cand, best_img = client.search_with_fallbacks(
-            candidates, max_results=5, orderby="relevance"
+        candidates = generate_search_candidates(
+            raw_source, note=fields, allow_tier2=allow_tier2, allow_deinflection=False
         )
-        time.sleep(delay)
+        new_results: List[IrasutoyaImage] = []
+        matched_cand = None
+        best_img = None
+        try:
+            new_results, matched_cand, best_img = client.search_with_fallbacks(
+                candidates,
+                max_results=5,
+                orderby="relevance",
+                pace_callback=lambda: time.sleep(delay) if delay > 0 else None,
+            )
+        except Exception as e:
+            new_results, matched_cand, best_img = [], None, None
 
         leg_found = len(leg_results) > 0
         new_found = len(new_results) > 0

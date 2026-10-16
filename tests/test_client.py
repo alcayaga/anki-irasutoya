@@ -383,6 +383,25 @@ class TestIrasutoyaClient(unittest.TestCase):
         self.assertIsNotNone(best_img)
         self.assertEqual(best_img.title, "そのままのイラスト")
 
+    def test_search_with_fallbacks_propagates_search_exception(self):
+        """Verify search_with_fallbacks propagates network/HTTP errors rather than falling back to Tier 2."""
+        import urllib.error
+        client = IrasutoyaClient()
+
+        def mock_failing_search(q, **kwargs):
+            if q == "其の儘":
+                raise urllib.error.HTTPError("https://example.com", 429, "Too Many Requests", {}, None)
+            return [IrasutoyaImage("そのままのイラスト", "https://example.com/img.png", "https://example.com/t.png", "そのまま")]
+
+        client.search = mock_failing_search
+        candidates = [
+            ("其の儘", "primary", 1),
+            ("そのまま", "note_reading_Reading", 2)
+        ]
+
+        with self.assertRaises(urllib.error.HTTPError):
+            client.search_with_fallbacks(candidates)
+
 
 if __name__ == "__main__":
     unittest.main()
