@@ -141,7 +141,7 @@ def deinflect_japanese(text: str) -> List[str]:
     # Geminate verb compound auxiliaries (〜ってくる, 〜っている, 〜っていく -> 〜る, 〜う, 〜つ)
     # e.g. 帰ってくる -> 帰る, 走っている -> 走る
     geminate_matched = False
-    for aux in ["ってくる", "っている", "っていく"]:
+    for aux in ["ってくる", "っている", "っていく", "ってみる"]:
         if text.endswith(aux) and len(text) > len(aux):
             geminate_matched = True
             base = text[:-len(aux)]

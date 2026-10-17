@@ -115,6 +115,9 @@ class TestTextUtils(unittest.TestCase):
         hashiru_forms = deinflect_japanese("走っている")
         self.assertIn("走る", hashiru_forms)
         self.assertNotIn("走っる", hashiru_forms)
+        mite_forms = deinflect_japanese("走ってみる")
+        self.assertIn("走る", mite_forms)
+        self.assertNotIn("走っる", mite_forms)
         self.assertIn("結果", deinflect_japanese("その結果"))
         self.assertIn("方", deinflect_japanese("方がいい"))
 

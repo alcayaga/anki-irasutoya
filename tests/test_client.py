@@ -632,6 +632,57 @@ class TestIrasutoyaClient(unittest.TestCase):
         self.assertEqual(len(images), 1)
         self.assertEqual(images[0].description, "猫 犬の説明")
 
+    def test_mining_vocabulary_benchmark_recall(self):
+        """Automated reviewable benchmark verifying recall boost and boundary safety on core vocabulary."""
+        from text_utils import generate_search_candidates
+        from client import classify_match_boundary
+
+        # Sample representative mining / Kaishi vocabulary terms
+        vocab_cases = [
+            # (card_term, reading, expected_title, expected_boundary, tier1_expansion)
+            ("1杯", "いっぱい", "一杯のイラスト", "exact_quoted", "一杯"),
+            ("肉", "にく", "お肉のイラスト", "exact_quoted", "お肉"),
+            ("茶", "ちゃ", "お茶のイラスト", "exact_quoted", "お茶"),
+            ("勝つ", "かつ", "勝った人のイラスト", "inflected", "勝った"),
+            ("疲れる", "つかれる", "疲れた人のイラスト", "inflected", "疲れた"),
+            ("走る", "はしる", "走る人のイラスト", "standalone", None),
+            ("とまと", "とまと", "トマトのイラスト", "exact_quoted", "トマト"),
+            ("猫", "ねこ", "かわいい猫のイラスト", "exact_quoted", None),
+            ("本", "ほん", "本のイラスト", "exact_quoted", None),
+            ("其の儘[そのまま]", None, "そのままのイラスト", "exact_quoted", None),
+        ]
+
+        resolved_count = 0
+        for term, reading, target_title, expected_boundary, expected_expansion in vocab_cases:
+            note = {"Expression": term, "Reading": reading} if reading else {"Expression": term}
+            candidates = generate_search_candidates(term, note=note, allow_tier2=True)
+            candidate_queries = [c[0] for c in candidates]
+            if expected_expansion:
+                self.assertIn(expected_expansion, candidate_queries)
+
+            # Verify that at least one candidate matches the canonical target illustration
+            matches = [
+                q for q in candidate_queries
+                if classify_match_boundary(target_title, q) in ("exact_quoted", "polite_prefix", "inflected", "standalone")
+            ]
+            self.assertTrue(len(matches) > 0, f"Benchmark term '{term}' should match '{target_title}'")
+            resolved_count += 1
+
+        self.assertEqual(resolved_count, len(vocab_cases))
+
+        # Negative boundary collision tests: must never match false homophones
+        negative_cases = [
+            ("さくらんぼのイラスト", "さくら"),
+            ("カフェオレのイラスト", "オレ"),
+            ("芋けんぴのイラスト", "けん"),
+            ("食べ物のイラスト", "食べる"),
+            ("売り場のイラスト", "売る"),
+            ("中性的な人のイラスト", "中"),
+        ]
+        for title, query in negative_cases:
+            quality = classify_match_boundary(title, query)
+            self.assertIn(quality, ("none", "compound"), f"Query '{query}' in '{title}' must not match as standalone/inflected")
+
 
 if __name__ == "__main__":
     unittest.main()

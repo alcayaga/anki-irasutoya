@@ -24,6 +24,8 @@ KANJI_CHAR_RE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf々〆〇]")
 HIRAGANA_CHAR_RE = re.compile(r"[\u3040-\u309F]")
 # Exclude ゠ (U+30A0) and ・ (U+30FB); they are word separators, not Katakana letters.
 KATAKANA_CHAR_RE = re.compile(r"[\u30A1-\u30FA\u30FC-\u30FF]")
+ABSTRACT_SINGLE_KANJI = frozenset({"中", "部", "件", "方", "事", "物", "歳"})
+
 
 
 
@@ -226,21 +228,9 @@ def is_image_relevant(img: IrasutoyaImage, query: str) -> bool:
         return True
     if qual_title == "compound":
         # Disallow compound matches for 1-Kanji grammatical/abstract words
-        if len(clean_q) == 1 and clean_q in ("中", "部", "件", "方", "事", "物", "歳"):
-            return False
-        return True
+        return len(clean_q) > 1 or clean_q not in ABSTRACT_SINGLE_KANJI
 
-    # 2. Inherited title if image title equals post_title
-    if title == post_title:
-        qual_post = classify_match_boundary(post_title, clean_q)
-        if qual_post in ("exact_quoted", "standalone", "polite_prefix", "inflected"):
-            return True
-        if qual_post == "compound":
-            if len(clean_q) == 1 and clean_q in ("中", "部", "件", "方", "事", "物", "歳"):
-                return False
-            return True
-
-    # 3. Single-image post caption/description match
+    # 2. Single-image post caption/description match
     if getattr(img, "is_single_image_post", True) and not is_grammar_function_word(clean_q):
         desc = getattr(img, "description", "").strip()
         if desc:
@@ -248,13 +238,10 @@ def is_image_relevant(img: IrasutoyaImage, query: str) -> bool:
             if qual_desc in ("exact_quoted", "standalone", "polite_prefix", "inflected"):
                 return True
 
-    # 4. Multi-word queries
+    # 3. Multi-word queries
     tokens = clean_q.split()
-    if len(tokens) > 1:
-        if all(classify_match_boundary(title, t) != "none" for t in tokens):
-            return True
-        if title == post_title and all(classify_match_boundary(post_title, t) != "none" for t in tokens):
-            return True
+    if len(tokens) > 1 and all(classify_match_boundary(title, t) != "none" for t in tokens):
+        return True
 
     return False
 
@@ -267,20 +254,18 @@ def score_candidate_image(img: IrasutoyaImage, query: str) -> float:
     post_title = img.post_title.strip()
 
     qual_title = classify_match_boundary(title, clean_q)
-    if qual_title == "none" and title == post_title:
-        qual_title = classify_match_boundary(post_title, clean_q)
 
     # 1. Exact canonical matches
     if is_image_relevant(img, clean_q):
-        if title == f"{clean_q}のイラスト" or (title == post_title and post_title == f"{clean_q}のイラスト"):
+        if title == f"{clean_q}のイラスト":
             score += 100.0
-        elif title in (f"お{clean_q}のイラスト", f"ご{clean_q}のイラスト") or (title == post_title and post_title in (f"お{clean_q}のイラスト", f"ご{clean_q}のイラスト")):
+        elif title in (f"お{clean_q}のイラスト", f"ご{clean_q}のイラスト"):
             score += 95.0
-        elif title == f"かわいい{clean_q}のイラスト" or (title == post_title and post_title == f"かわいい{clean_q}のイラスト"):
+        elif title == f"かわいい{clean_q}のイラスト":
             score += 90.0
-        elif title == clean_q or (title == post_title and post_title == clean_q):
+        elif title == clean_q:
             score += 85.0
-        elif title.startswith(f"{clean_q}の") or (title == post_title and post_title.startswith(f"{clean_q}の")):
+        elif title.startswith(f"{clean_q}の"):
             score += 60.0
         elif post_title == f"{clean_q}のイラスト":
             score += 50.0
