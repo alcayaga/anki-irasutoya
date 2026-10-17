@@ -121,7 +121,9 @@ def fetch_deck_notes(
             break
 
     notes_info = anki_invoke("notesInfo", anki_url=anki_url, notes=ordered_note_ids)
-    return notes_info
+    note_map = {n.get("noteId"): n for n in notes_info if n.get("noteId")}
+    ordered_notes = [note_map[nid] for nid in ordered_note_ids if nid in note_map]
+    return ordered_notes
 
 
 def detect_source_field(fields_dict: Dict[str, Any], requested_field: Optional[str] = None) -> Optional[str]:
@@ -207,7 +209,7 @@ def run_evaluation(
 
         # --- 2. NEW SEARCH MECHANISM ---
         candidates = generate_search_candidates(
-            raw_source, note=fields, allow_tier2=allow_tier2, allow_deinflection=False
+            raw_source, note=fields, allow_tier2=allow_tier2, allow_deinflection=True
         )
         batch_candidates = candidates[:BATCH_MAX_CANDIDATES]
         new_results: List[IrasutoyaImage] = []

@@ -61,6 +61,10 @@ class TestTextUtils(unittest.TestCase):
         self.assertEqual(extract_furigana_terms("林檎[りんご]"), ("林檎", "りんご"))
         self.assertEqual(extract_furigana_terms("動[うご]かす"), ("動かす", "うごかす"))
         self.assertEqual(extract_furigana_terms("１杯[いっぱい]"), ("1杯", "いっぱい"))
+        self.assertEqual(extract_furigana_terms("其の儘[そのまま]"), ("其の儘", "そのまま"))
+        self.assertEqual(extract_furigana_terms("食べる[たべる]"), ("食べる", "たべる"))
+        self.assertEqual(extract_furigana_terms("お茶[おちゃ]"), ("お茶", "おちゃ"))
+        self.assertEqual(extract_furigana_terms("ご飯[ごはん]"), ("ご飯", "ごはん"))
         self.assertEqual(extract_furigana_terms("猫"), ("猫", None))
         self.assertEqual(extract_furigana_terms(""), ("", None))
         self.assertEqual(extract_furigana_terms(None), ("", None))
@@ -105,8 +109,12 @@ class TestTextUtils(unittest.TestCase):
     def test_deinflect_japanese(self):
         """Test heuristic deinflection of verb and compound forms."""
         from text_utils import deinflect_japanese
-        self.assertIn("帰る", deinflect_japanese("帰ってくる"))
-        self.assertIn("走る", deinflect_japanese("走っている"))
+        kaeru_forms = deinflect_japanese("帰ってくる")
+        self.assertIn("帰る", kaeru_forms)
+        self.assertNotIn("帰っる", kaeru_forms)
+        hashiru_forms = deinflect_japanese("走っている")
+        self.assertIn("走る", hashiru_forms)
+        self.assertNotIn("走っる", hashiru_forms)
         self.assertIn("結果", deinflect_japanese("その結果"))
         self.assertIn("方", deinflect_japanese("方がいい"))
 
@@ -172,6 +180,165 @@ class TestTextUtils(unittest.TestCase):
         note_non_str = {"Expression": "本", "Furigana": 12345}
         cands_non_str = generate_search_candidates("本", note=note_non_str, allow_tier2=True)
         self.assertEqual(cands_non_str[0], ("本", "primary", 1))
+
+        # Test 8: Note reading fields take precedence over heuristic deinflections in Tier 2
+        note_kaeru = {
+            "Expression": "帰ってくる",
+            "Reading": "かえってくる"
+        }
+        cands_kaeru = generate_search_candidates("帰ってくる", note=note_kaeru, allow_tier2=True, allow_deinflection=True)
+        terms_kaeru = [c[0] for c in cands_kaeru]
+        self.assertIn("かえってくる", terms_kaeru)
+        self.assertIn("帰る", terms_kaeru)
+        self.assertLess(terms_kaeru.index("かえってくる"), terms_kaeru.index("帰る"))
+        self.assertNotIn("帰っる", terms_kaeru)
+
+    def test_verb_conjugations(self):
+        """Test Kanji-preserving verb inflection generation for Irasutoya titles."""
+        from text_utils import conjugate_japanese_verb
+        # Godan verbs
+        katsu = conjugate_japanese_verb("勝つ")
+        self.assertIn("勝った", katsu)
+        self.assertIn("勝ち", katsu)
+        self.assertIn("勝とう", katsu)
+
+        uru = conjugate_japanese_verb("売る")
+        self.assertIn("売った", uru)
+        self.assertIn("売り", uru)
+        self.assertIn("売ろう", uru)
+
+        yobu = conjugate_japanese_verb("呼ぶ")
+        self.assertIn("呼んだ", yobu)
+        self.assertIn("呼び", yobu)
+
+        # Ichidan verbs
+        tsukareru = conjugate_japanese_verb("疲れる")
+        self.assertIn("疲れた", tsukareru)
+        self.assertIn("疲れ", tsukareru)
+        self.assertNotIn("疲れった", tsukareru)
+        self.assertNotIn("疲れり", tsukareru)
+
+        mitsukeru = conjugate_japanese_verb("見つける")
+        self.assertIn("見つけた", mitsukeru)
+        self.assertIn("見つけ", mitsukeru)
+        self.assertNotIn("見つけった", mitsukeru)
+
+        taberu = conjugate_japanese_verb("食べる")
+        self.assertEqual(taberu, ["食べた", "食べ"])
+        self.assertNotIn("食べった", taberu)
+        self.assertNotIn("食べり", taberu)
+
+        # Godan verbs ending in る must not produce Ichidan forms
+        hashiru = conjugate_japanese_verb("走る")
+        self.assertIn("走った", hashiru)
+        self.assertIn("走り", hashiru)
+        self.assertNotIn("走た", hashiru)
+
+        self.assertNotIn("売た", uru)
+
+        # Single-kanji Ichidan verbs (omit bare single-kanji stem to prevent false-positive collisions)
+        miru = conjugate_japanese_verb("見る")
+        self.assertEqual(miru, ["見た"])
+        self.assertNotIn("見", miru)
+        self.assertNotIn("見った", miru)
+
+        deru = conjugate_japanese_verb("出る")
+        self.assertEqual(deru, ["出た"])
+        self.assertNotIn("出", deru)
+
+        # Irregular verbs
+        benkyou = conjugate_japanese_verb("勉強する")
+        self.assertEqual(benkyou, ["勉強した", "勉強し"])
+        self.assertNotIn("勉強すった", benkyou)
+
+        kuru = conjugate_japanese_verb("来る")
+        self.assertEqual(kuru, ["来た"])
+        self.assertNotIn("来", kuru)
+
+        iku = conjugate_japanese_verb("行く")
+        self.assertIn("行った", iku)
+        self.assertNotIn("行いた", iku)
+
+        # Compound auxiliaries
+        kaette = conjugate_japanese_verb("帰ってくる")
+        self.assertEqual(kaette, ["帰ってきた"])
+
+        hashitte = conjugate_japanese_verb("走っている")
+        self.assertEqual(hashitte, [])
+
+        # Numeral counters must not be conjugated as verbs
+        self.assertEqual(conjugate_japanese_verb("一つ"), [])
+        self.assertEqual(conjugate_japanese_verb("二つ"), [])
+
+        # Non-kanji or short inputs should yield empty list
+        self.assertEqual(conjugate_japanese_verb("する"), [])
+        self.assertEqual(conjugate_japanese_verb("いく"), [])
+        self.assertEqual(conjugate_japanese_verb(""), [])
+
+    def test_bikago_prefix(self):
+        """Test canonical polite お prefix expansion for everyday nouns."""
+        from text_utils import expand_bikago_prefix
+        self.assertEqual(expand_bikago_prefix("肉"), "お肉")
+        self.assertEqual(expand_bikago_prefix("肌"), "お肌")
+        self.assertEqual(expand_bikago_prefix("茶"), "お茶")
+        self.assertEqual(expand_bikago_prefix("風呂"), "お風呂")
+        self.assertEqual(expand_bikago_prefix("金"), "お金")
+        self.assertIsNone(expand_bikago_prefix("猫"))
+        self.assertIsNone(expand_bikago_prefix("自動車"))
+
+    def test_grammar_function_words(self):
+        """Test identification of pure grammar particles and function words."""
+        from text_utils import is_grammar_function_word
+        self.assertTrue(is_grammar_function_word("よ"))
+        self.assertTrue(is_grammar_function_word("ね"))
+        self.assertTrue(is_grammar_function_word("から"))
+        self.assertTrue(is_grammar_function_word("まで"))
+        self.assertTrue(is_grammar_function_word("ので"))
+        self.assertTrue(is_grammar_function_word("なら"))
+        self.assertTrue(is_grammar_function_word("もん"))
+        self.assertTrue(is_grammar_function_word("その"))
+        self.assertTrue(is_grammar_function_word("これ"))
+        self.assertFalse(is_grammar_function_word("本"))
+        self.assertFalse(is_grammar_function_word("猫"))
+        self.assertFalse(is_grammar_function_word("走る"))
+        self.assertFalse(is_grammar_function_word("トマト"))
+
+    def test_segmented_and_prefixed_furigana(self):
+        """Test extracting segmented furigana with prefixes and spaces."""
+        from text_utils import extract_furigana_terms
+        self.assertEqual(extract_furigana_terms("お 前[まえ]"), ("お前", "おまえ"))
+        self.assertEqual(extract_furigana_terms("この 世[よ]"), ("この世", "このよ"))
+        self.assertEqual(extract_furigana_terms("其[そ]の 儘[まま]"), ("其の儘", "そのまま"))
+        self.assertEqual(extract_furigana_terms("其[そ]の儘[まま]"), ("其の儘", "そのまま"))
+        self.assertEqual(extract_furigana_terms("これ 以上[いじょう]"), ("これ以上", "これいじょう"))
+
+    def test_candidate_tiers_morphology(self):
+        """Test that verb inflections and bikago run in Tier 1 while readings run in Tier 2."""
+        from text_utils import generate_search_candidates
+        # Verb past/volitional inflection is Tier 1, while masu-stem is Tier 2
+        cands_verb = generate_search_candidates("勝つ")
+        cand_map_verb = {term: (reason, tier) for term, reason, tier in cands_verb}
+        self.assertIn("勝った", cand_map_verb)
+        self.assertEqual(cand_map_verb["勝った"][1], 1)
+        self.assertEqual(cand_map_verb["勝った"][0], "verb_inflection")
+        self.assertIn("勝とう", cand_map_verb)
+        self.assertEqual(cand_map_verb["勝とう"][1], 1)
+        self.assertEqual(cand_map_verb["勝とう"][0], "verb_inflection")
+        self.assertIn("勝ち", cand_map_verb)
+        self.assertEqual(cand_map_verb["勝ち"][1], 2)
+        self.assertEqual(cand_map_verb["勝ち"][0], "verb_stem")
+
+        # Bikago prefix is Tier 1
+        cands_niku = generate_search_candidates("肉")
+        cand_map_niku = {term: (reason, tier) for term, reason, tier in cands_niku}
+        self.assertIn("お肉", cand_map_niku)
+        self.assertEqual(cand_map_niku["お肉"][1], 1)
+        self.assertEqual(cand_map_niku["お肉"][0], "bikago_prefix")
+
+        # Grammar particle suppresses unanchored search fallbacks
+        cands_particle = generate_search_candidates("まで")
+        self.assertEqual(len(cands_particle), 1)
+        self.assertEqual(cands_particle[0], ("まで", "primary", 1))
 
 
 if __name__ == "__main__":

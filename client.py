@@ -13,16 +13,28 @@ import urllib.parse
 import urllib.request
 from typing import Callable, List, Optional, Sequence, Tuple
 
+try:
+    from .text_utils import is_grammar_function_word, conjugate_japanese_verb, SAFE_2MORA_LOANWORDS
+except ImportError:
+    from text_utils import is_grammar_function_word, conjugate_japanese_verb, SAFE_2MORA_LOANWORDS
+
 logger = logging.getLogger(__name__)
+
+KANJI_CHAR_RE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf々〆〇]")
+HIRAGANA_CHAR_RE = re.compile(r"[\u3040-\u309F]")
+# Exclude ゠ (U+30A0) and ・ (U+30FB); they are word separators, not Katakana letters.
+KATAKANA_CHAR_RE = re.compile(r"[\u30A1-\u30FA\u30FC-\u30FF]")
+
 
 
 class _BloggerContentParser(HTMLParser):
-    """HTML parser to reliably extract (href, src, alt) image tuples from Blogger content."""
+    """HTML parser to reliably extract (href, src, alt) image tuples and body text from Blogger content."""
 
     def __init__(self) -> None:
-        """Initialize parser state and items list."""
+        """Initialize parser state, text chunks, and items list."""
         super().__init__(convert_charrefs=True)
         self.items: List[Tuple[Optional[str], str, str]] = []
+        self.text_chunks: List[str] = []
         self._current_href: Optional[str] = None
 
     def handle_starttag(self, tag: str, attrs: Sequence[Tuple[str, Optional[str]]]) -> None:
@@ -41,6 +53,10 @@ class _BloggerContentParser(HTMLParser):
         if tag.lower() == "a":
             self._current_href = None
 
+    def handle_data(self, data: str) -> None:
+        """Capture visible text content outside of tags."""
+        if data:
+            self.text_chunks.append(data)
 
 
 @dataclass
@@ -51,6 +67,7 @@ class IrasutoyaImage:
     thumb_url: str
     post_title: str
     description: str = ""
+    is_single_image_post: bool = True
 
 
 ALLOWED_IMAGE_HOSTS = (
@@ -73,14 +90,129 @@ def is_meaningful_title(text: str) -> bool:
     return any(unicodedata.category(ch).startswith(("L", "N")) for ch in text)
 
 
-DECORATIVE_NOISE_KEYWORDS = ("ライン素材", "背景", "フレーム", "枠", "文字", "テンプレート", "壁紙")
+DECORATIVE_NOISE_KEYWORDS = ("ライン素材", "背景", "フレーム", "枠", "テンプレート", "壁紙")
+TEXT_CALLOUT_KEYWORDS = ("イラスト文字",)
+SITUATIONAL_NOISE_KEYWORDS = ("事故", "トラブル", "失敗", "注意", "禁止", "マーク")
+
+
+def classify_match_boundary(text: str, query: str) -> str:
+    """Classify the boundary quality of query within text.
+    
+    Returns:
+        'exact_quoted': explicitly quoted 「query」/『query』or exact title match
+        'standalone': bounded by particles, punctuation, or script transitions
+        'polite_prefix': preceded by お/ご with valid trailing boundary (e.g. お肉のイラスト)
+        'inflected': an inflected verb form (e.g. 売ろう, 売り for 売る) appears
+        'compound': fused with an adjacent Kanji or Katakana (e.g. 培養肉, カフェオレ)
+        'none': not found or invalid mid-word Kana collision
+    """
+    if not text or not query:
+        return "none"
+
+    if (
+        f"「{query}」" in text
+        or f"『{query}』" in text
+        or f"（{query}）" in text
+        or f"({query})" in text
+        or text in (query, f"{query}のイラスト", f"かわいい{query}のイラスト")
+    ):
+        return "exact_quoted"
+
+    is_pure_kana = bool(re.fullmatch(r"[\u3040-\u309F\u30A0-\u30FF]+", query))
+    is_pure_kanji = bool(re.fullmatch(r"[\u4e00-\u9fff\u3400-\u4dbf々〆〇]+", query))
+
+    start = 0
+    best_quality = "none"
+    while True:
+        idx = text.find(query, start)
+        if idx == -1:
+            break
+        start = idx + 1
+        prev_ch = text[idx - 1] if idx > 0 else ""
+        next_ch = text[idx + len(query)] if idx + len(query) < len(text) else ""
+
+        # Case 1: Pure Kana queries (high collision risk!)
+        if is_pure_kana:
+            is_katakana_q = bool(re.fullmatch(r"[\u30A0-\u30FF]+", query))
+            if is_katakana_q:
+                # Must not be embedded mid-Katakana (e.g. オレ in カフェオレ, モン in モンスター)
+                prev_is_kata = bool(prev_ch and KATAKANA_CHAR_RE.match(prev_ch))
+                next_is_kata = bool(next_ch and KATAKANA_CHAR_RE.match(next_ch))
+                if prev_is_kata or next_is_kata:
+                    continue
+                if is_grammar_function_word(query) or len(query) < 2:
+                    continue
+                return "standalone"
+            else:
+                # Hiragana:
+                # Grammar stop words and unlisted 2-mora words: only exact quoted matches allowed
+                if is_grammar_function_word(query) or (len(query) <= 2 and query not in SAFE_2MORA_LOANWORDS):
+                    continue
+                particles = ("の", "が", "を", "に", "で", "と", "は", "も", "へ", "や", "な", "か")
+                # Reject if preceded by Hiragana other than polite お/ご or a particle
+                prev_is_hira = bool(
+                    prev_ch
+                    and HIRAGANA_CHAR_RE.match(prev_ch)
+                    and prev_ch not in ("お", "ご") + particles
+                )
+                # Reject if followed by Hiragana other than a particle
+                next_is_hira = bool(
+                    next_ch
+                    and HIRAGANA_CHAR_RE.match(next_ch)
+                    and next_ch not in particles
+                )
+                if prev_is_hira or next_is_hira:
+                    continue
+                return "standalone"
+
+        # Case 2: Pure Kanji queries (e.g. 肉, 肌, 本, 二人)
+        if is_pure_kanji:
+            prev_is_kanji = bool(prev_ch and KANJI_CHAR_RE.match(prev_ch))
+            next_is_kanji = bool(next_ch and KANJI_CHAR_RE.match(next_ch))
+            if not prev_is_kanji and not next_is_kanji:
+                if prev_ch in ("お", "ご"):
+                    best_quality = "polite_prefix"
+                else:
+                    return "standalone"
+            else:
+                if best_quality == "none":
+                    best_quality = "compound"
+            continue
+
+        # Case 3: Mixed Kanji + Kana (e.g. 食べる, 1杯, 時に, お金, お茶)
+        prev_is_kanji = bool(prev_ch and KANJI_CHAR_RE.match(prev_ch))
+        next_is_kanji = bool(next_ch and KANJI_CHAR_RE.match(next_ch))
+        if (prev_is_kanji and KANJI_CHAR_RE.match(query[0])) or (
+            next_is_kanji and KANJI_CHAR_RE.match(query[-1])
+        ):
+            if best_quality == "none":
+                best_quality = "compound"
+            continue
+        return "standalone"
+
+    # Check verb inflections (e.g. 疲れた人のイラスト for 疲れる, 勝った人のイラスト for 勝つ)
+    for inflected in conjugate_japanese_verb(query):
+        is_stem = not inflected.endswith(("た", "だ", "う"))
+        pos = text.find(inflected)
+        while pos != -1:
+            p_ch = text[pos - 1] if pos > 0 else ""
+            end = pos + len(inflected)
+            n_ch = text[end] if end < len(text) else ""
+            prev_kanji = bool(p_ch and KANJI_CHAR_RE.match(p_ch))
+            next_kanji = bool(n_ch and KANJI_CHAR_RE.match(n_ch))
+            # Must not be preceded by Kanji, and bare stems (食べ, 売り) must not form Kanji compounds (食べ物, 売り場)
+            if not prev_kanji and not (is_stem and next_kanji):
+                return "inflected"
+            pos = text.find(inflected, pos + 1)
+
+    return best_quality
 
 
 def is_image_relevant(img: IrasutoyaImage, query: str) -> bool:
-    """Check if the individual image itself is semantically relevant to the query keyword.
+    """Check if the individual image itself is semantically relevant with boundary safety.
 
     Prevents false-positive matches where a multi-image post matching a query contains
-    unrelated illustrations (e.g. an image titled '犬のイラスト' in a post matching '猫').
+    unrelated illustrations, or where short queries collide mid-word.
     """
     clean_q = query.strip()
     if not clean_q:
@@ -88,21 +220,40 @@ def is_image_relevant(img: IrasutoyaImage, query: str) -> bool:
     title = img.title.strip()
     post_title = img.post_title.strip()
 
-    # Image title explicitly mentions the query keyword
-    if clean_q in title:
+    # 1. Title boundary classification
+    qual_title = classify_match_boundary(title, clean_q)
+    if qual_title in ("exact_quoted", "standalone", "polite_prefix", "inflected"):
+        return True
+    if qual_title == "compound":
+        # Disallow compound matches for 1-Kanji grammatical/abstract words
+        if len(clean_q) == 1 and clean_q in ("中", "部", "件", "方", "事", "物", "歳"):
+            return False
         return True
 
-    # If the image inherited the post title (e.g. alt text was omitted or generic),
-    # verify the query appears in that inherited post title
-    if title == post_title and clean_q in post_title:
-        return True
+    # 2. Inherited title if image title equals post_title
+    if title == post_title:
+        qual_post = classify_match_boundary(post_title, clean_q)
+        if qual_post in ("exact_quoted", "standalone", "polite_prefix", "inflected"):
+            return True
+        if qual_post == "compound":
+            if len(clean_q) == 1 and clean_q in ("中", "部", "件", "方", "事", "物", "歳"):
+                return False
+            return True
 
-    # Multi-word queries: check if all whitespace-delimited tokens are in the image title
+    # 3. Single-image post caption/description match
+    if getattr(img, "is_single_image_post", True) and not is_grammar_function_word(clean_q):
+        desc = getattr(img, "description", "").strip()
+        if desc:
+            qual_desc = classify_match_boundary(desc, clean_q)
+            if qual_desc in ("exact_quoted", "standalone", "polite_prefix", "inflected"):
+                return True
+
+    # 4. Multi-word queries
     tokens = clean_q.split()
     if len(tokens) > 1:
-        if all(t in title for t in tokens):
+        if all(classify_match_boundary(title, t) != "none" for t in tokens):
             return True
-        if title == post_title and all(t in post_title for t in tokens):
+        if title == post_title and all(classify_match_boundary(post_title, t) != "none" for t in tokens):
             return True
 
     return False
@@ -115,10 +266,16 @@ def score_candidate_image(img: IrasutoyaImage, query: str) -> float:
     title = img.title.strip()
     post_title = img.post_title.strip()
 
-    # 1. Exact canonical matches (requires image relevance to avoid multi-image post mismatches)
+    qual_title = classify_match_boundary(title, clean_q)
+    if qual_title == "none" and title == post_title:
+        qual_title = classify_match_boundary(post_title, clean_q)
+
+    # 1. Exact canonical matches
     if is_image_relevant(img, clean_q):
         if title == f"{clean_q}のイラスト" or (title == post_title and post_title == f"{clean_q}のイラスト"):
             score += 100.0
+        elif title in (f"お{clean_q}のイラスト", f"ご{clean_q}のイラスト") or (title == post_title and post_title in (f"お{clean_q}のイラスト", f"ご{clean_q}のイラスト")):
+            score += 95.0
         elif title == f"かわいい{clean_q}のイラスト" or (title == post_title and post_title == f"かわいい{clean_q}のイラスト"):
             score += 90.0
         elif title == clean_q or (title == post_title and post_title == clean_q):
@@ -130,18 +287,39 @@ def score_candidate_image(img: IrasutoyaImage, query: str) -> float:
         elif post_title.startswith(f"{clean_q}の"):
             score += 30.0
 
-    # 2. Query in image title (Avoids multi-image mismatch like picking Cat for Dog)
-    if clean_q in title:
-        score += 40.0
-    elif clean_q in post_title and title == post_title:
-        score += 20.0
+    # 2. Boundary, politeness, and focus bonuses
+    if qual_title == "exact_quoted" or f"「{clean_q}」" in title or f"（{clean_q}）" in title:
+        score += 55.0
+    elif qual_title == "polite_prefix":
+        score += 45.0
+    elif qual_title == "standalone":
+        score += 35.0
+    elif qual_title == "inflected":
+        score += 30.0
+    elif qual_title == "compound":
+        score -= 35.0
+    elif is_image_relevant(img, clean_q):
+        # Matched only via description on single-image post
+        score += 15.0
     else:
-        score -= 50.0  # Heavy penalty: image itself doesn't mention the query
+        score -= 50.0  # Heavy penalty: image does not mention the query
 
-    # 3. Penalize situational clutter and favor clean archetypes
-    score -= len(title) * 0.8  # Shorter, direct titles are more archetypal
+    # 3. Penalize length (shorter, direct titles are more archetypal)
+    score -= len(title) * 0.8
 
-    # 4. Filter out non-illustration assets (lines, borders, text, templates)
+    # 4. Situational, hazard, and mark noise penalty
+    for noise in SITUATIONAL_NOISE_KEYWORDS:
+        if noise in title and noise not in clean_q:
+            score -= 25.0
+
+    # 5. Heavy penalty for text callouts (イラスト文字 / trailing 文字) so illustrations always win if available
+    is_callout = ("イラスト文字" in title and "イラスト文字" not in clean_q) or (
+        title.endswith("文字") and "文字" not in clean_q
+    )
+    if is_callout:
+        score -= 65.0
+
+    # 6. Filter out non-illustration decorative assets (lines, borders, wallpaper, templates)
     for noise in DECORATIVE_NOISE_KEYWORDS:
         if noise in title and noise not in clean_q:
             score -= 60.0
@@ -283,12 +461,17 @@ class IrasutoyaClient:
             content_html = entry.get("content", {}).get("$t", "")
 
             found_in_post = False
+            post_images: List[IrasutoyaImage] = []
+            post_urls = set()
 
             parser = _BloggerContentParser()
             try:
                 parser.feed(content_html)
             except Exception as e:
                 logger.warning("Failed to parse entry HTML: %s", e)
+
+            content_text = re.sub(r"\s+", " ", " ".join(parser.text_chunks)).strip()
+            post_desc = content_text or summary
 
             # 1. Search for <a> links wrapping <img> or standalone <img> tags
             for href, src, alt in parser.items:
@@ -324,6 +507,7 @@ class IrasutoyaClient:
                     continue
 
                 high_res = self._upgrade_image_url(candidate_url, image_size)
+                post_urls.add(high_res)
                 if high_res in seen_urls:
                     continue
                 seen_urls.add(high_res)
@@ -340,13 +524,13 @@ class IrasutoyaClient:
                 else:
                     thumb = self._to_thumbnail_url(high_res, "s120-c")
 
-                images.append(
+                post_images.append(
                     IrasutoyaImage(
                         title=title,
                         image_url=high_res,
                         thumb_url=thumb,
                         post_title=post_title,
-                        description=summary
+                        description=post_desc
                     )
                 )
                 found_in_post = True
@@ -359,17 +543,23 @@ class IrasutoyaClient:
                     parsed_thumb = urllib.parse.urlparse(thumb)
                     if parsed_thumb.scheme == "https" and self._is_allowed_image_host(parsed_thumb.hostname or ""):
                         high_res = self._upgrade_image_url(thumb, image_size)
+                        post_urls.add(high_res)
                         if high_res not in seen_urls:
                             seen_urls.add(high_res)
-                            images.append(
+                            post_images.append(
                                 IrasutoyaImage(
                                     title=post_title,
                                     image_url=high_res,
                                     thumb_url=self._to_thumbnail_url(thumb, "s120-c"),
                                     post_title=post_title,
-                                    description=summary
+                                    description=post_desc
                                 )
                             )
+
+            is_single = (len(post_urls) == 1)
+            for img in post_images:
+                img.is_single_image_post = is_single
+                images.append(img)
 
         return images
 

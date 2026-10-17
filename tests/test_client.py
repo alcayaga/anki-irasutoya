@@ -494,6 +494,145 @@ class TestIrasutoyaClient(unittest.TestCase):
         self.assertIsNotNone(best_img)
         self.assertEqual(best_img.title, "ネコのイラスト")
 
+    def test_classify_match_boundary(self):
+        """Test fine-grained morphological boundary classification."""
+        from client import classify_match_boundary
+
+        # Quoted concepts
+        self.assertEqual(classify_match_boundary("交通安全のイラスト「聞く」", "聞く"), "exact_quoted")
+        self.assertEqual(classify_match_boundary("地球のイラスト（笑顔）", "笑顔"), "exact_quoted")
+        self.assertEqual(classify_match_boundary("本のイラスト", "本"), "exact_quoted")
+
+        # Polite prefix
+        self.assertEqual(classify_match_boundary("お肉のイラスト", "肉"), "polite_prefix")
+        self.assertEqual(classify_match_boundary("お茶のイラスト", "茶"), "polite_prefix")
+
+        # Standalone
+        self.assertEqual(classify_match_boundary("赤い本のイラスト", "本"), "standalone")
+        # Bounded 2-mora Katakana queries
+        self.assertEqual(classify_match_boundary("焼きたてのパンのイラスト", "パン"), "standalone")
+        self.assertEqual(classify_match_boundary("黒いネコのイラスト", "ネコ"), "standalone")
+        self.assertEqual(classify_match_boundary("おいしいピザのイラスト", "ピザ"), "standalone")
+        # Bounded 2-mora Hiragana loanwords in SAFE_2MORA_LOANWORDS
+        self.assertEqual(classify_match_boundary("焼きたてのぱんのイラスト", "ぱん"), "standalone")
+        # Hiragana queries preceded by case particles
+        self.assertEqual(classify_match_boundary("犬がごはんを食べているイラスト", "ごはん"), "standalone")
+        # Hiragana queries with trailing mid-word collision
+        self.assertEqual(classify_match_boundary("さくらんぼのイラスト", "さくら"), "none")
+        self.assertEqual(classify_match_boundary("綺麗なさくらのイラスト", "さくら"), "standalone")
+        # Unbounded / collision Katakana queries
+        self.assertEqual(classify_match_boundary("フライパンのイラスト", "パン"), "none")
+
+        # Verb inflections
+        self.assertEqual(classify_match_boundary("勝った人のイラスト", "勝つ"), "inflected")
+        self.assertEqual(classify_match_boundary("不用品を売ろうとする人のイラスト", "売る"), "inflected")
+
+        # Kanji compound affixes
+        self.assertEqual(classify_match_boundary("乾燥肌のイラスト", "肌"), "compound")
+        self.assertEqual(classify_match_boundary("中性的な人のイラスト", "中"), "compound")
+
+        # Mid-word collisions should be classified as none
+        self.assertEqual(classify_match_boundary("カフェオレのイラスト", "オレ"), "none")
+        self.assertEqual(classify_match_boundary("芋けんぴのイラスト", "けん"), "none")
+
+        # Katakana compounds separated by middle dot (・) should match as standalone
+        self.assertEqual(classify_match_boundary("ハンバーガー・ポテトのイラスト", "ポテト"), "standalone")
+        self.assertEqual(classify_match_boundary("ハンバーガー・ポテトのイラスト", "ハンバーガー"), "standalone")
+
+        # Mixed kana/kanji query ending in Kanji followed by Kanji should be classified as compound
+        self.assertEqual(classify_match_boundary("お金持ちのイラスト", "お金"), "compound")
+        self.assertEqual(classify_match_boundary("お茶碗のイラスト", "お茶"), "compound")
+        self.assertEqual(classify_match_boundary("たくさんのお金のイラスト", "お金"), "standalone")
+        self.assertEqual(classify_match_boundary("パンを食べる人のイラスト", "食べる"), "standalone")
+
+        # Inflected matches should ignore bare stems forming Kanji compound nouns
+        self.assertEqual(classify_match_boundary("食べ物のイラスト", "食べる"), "none")
+        self.assertEqual(classify_match_boundary("売り場のイラスト", "売る"), "none")
+        self.assertEqual(classify_match_boundary("食べ物とご飯を食べた人のイラスト", "食べる"), "inflected")
+
+    def test_score_callout_text_heavy_penalty(self):
+        """Test that illustrated text callouts receive heavy penalty instead of hard rejection."""
+        from client import score_candidate_image, is_image_relevant, is_decorative_asset
+
+        img_callout = IrasutoyaImage(
+            title="「決定！」のイラスト文字",
+            image_url="https://example.com/kettei_text.png",
+            thumb_url="https://example.com/thumb.png",
+            post_title="「決定！」のイラスト文字"
+        )
+        img_scene = IrasutoyaImage(
+            title="決定を下す人のイラスト",
+            image_url="https://example.com/kettei_scene.png",
+            thumb_url="https://example.com/thumb.png",
+            post_title="決定のイラスト"
+        )
+
+        # Callout text is not hard-rejected by is_decorative_asset
+        self.assertFalse(is_decorative_asset(img_callout, "決定"))
+        self.assertTrue(is_image_relevant(img_callout, "決定"))
+
+        # But scene illustration scores significantly higher than text callout
+        score_callout = score_candidate_image(img_callout, "決定")
+        score_scene = score_candidate_image(img_scene, "決定")
+        self.assertGreater(score_scene, score_callout)
+
+    def test_single_image_post_description_relevance(self):
+        """Test accepting relevant single-image posts whose description matches query."""
+        from client import is_image_relevant
+
+        single_img = IrasutoyaImage(
+            title="ガッツポーズをする人のイラスト",
+            image_url="https://example.com/win.png",
+            thumb_url="https://example.com/thumb.png",
+            post_title="ガッツポーズをする人のイラスト",
+            description="勝った人や勝利を喜んでいる人のイラストです。"
+        )
+        single_img.is_single_image_post = True
+
+        # Matches '勝利' in caption of single image post
+        self.assertTrue(is_image_relevant(single_img, "勝利"))
+
+        # On multi-image posts, description alone is not sufficient
+        single_img.is_single_image_post = False
+        self.assertFalse(is_image_relevant(single_img, "勝利"))
+
+    def test_parse_entries_tracks_multi_image_posts_even_with_cross_post_duplicates(self):
+        """Verify that multi-image posts are not misclassified as single-image posts when duplicate images are deduplicated."""
+        client = IrasutoyaClient()
+        entries = [
+            {
+                "title": {"$t": "Post A"},
+                "content": {"$t": '<img src="https://1.bp.blogspot.com/img1.png" alt="img 1">'},
+                "summary": {"$t": "Summary A"}
+            },
+            {
+                "title": {"$t": "Post B"},
+                "content": {"$t": '<img src="https://1.bp.blogspot.com/img1.png" alt="img 1"><img src="https://1.bp.blogspot.com/img2.png" alt="img 2">'},
+                "summary": {"$t": "Summary B"}
+            }
+        ]
+        images = client.parse_entries(entries, "s800")
+        self.assertEqual(len(images), 2)
+        # img 1 from Post A is a single image post
+        self.assertTrue(images[0].is_single_image_post)
+        # img 2 from Post B should NOT be marked single image post because Post B originally had 2 images
+        self.assertFalse(images[1].is_single_image_post)
+
+    def test_parse_entries_separates_adjacent_html_elements_with_spaces(self):
+        """Verify text from separate HTML elements is space-delimited to prevent fusing words into compound Kanji runs."""
+        client = IrasutoyaClient()
+        entries = [
+            {
+                "title": {"$t": "Post A"},
+                "content": {"$t": '<div>猫</div><div>犬の説明</div><img src="https://1.bp.blogspot.com/img1.png" alt="img 1">'},
+                "summary": {"$t": ""}
+            }
+        ]
+        images = client.parse_entries(entries, "s800")
+        self.assertEqual(len(images), 1)
+        self.assertEqual(images[0].description, "猫 犬の説明")
+
 
 if __name__ == "__main__":
     unittest.main()
+
