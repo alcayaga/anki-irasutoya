@@ -14,9 +14,21 @@ import urllib.request
 from typing import Callable, List, Optional, Sequence, Tuple
 
 try:
-    from .text_utils import is_grammar_function_word, conjugate_japanese_verb, SAFE_2MORA_LOANWORDS
+    from .text_utils import (
+        is_grammar_function_word,
+        conjugate_japanese_verb,
+        SAFE_2MORA_LOANWORDS,
+        COMMON_I_ADJECTIVES,
+        is_adjective_ending,
+    )
 except ImportError:
-    from text_utils import is_grammar_function_word, conjugate_japanese_verb, SAFE_2MORA_LOANWORDS
+    from text_utils import (
+        is_grammar_function_word,
+        conjugate_japanese_verb,
+        SAFE_2MORA_LOANWORDS,
+        COMMON_I_ADJECTIVES,
+        is_adjective_ending,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +107,17 @@ def is_meaningful_title(text: str) -> bool:
 DECORATIVE_NOISE_KEYWORDS = ("ライン素材", "背景", "フレーム", "枠", "テンプレート", "壁紙")
 TEXT_CALLOUT_KEYWORDS = ("イラスト文字",)
 SITUATIONAL_NOISE_KEYWORDS = ("事故", "トラブル", "失敗", "注意", "禁止", "マーク")
+VERB_TERMINAL_ENDINGS = ("う", "く", "ぐ", "す", "つ", "ぬ", "ぶ", "む", "る", "た", "だ")
+
+
+def _is_bare_verb_stem(text: str) -> bool:
+    """Return True if text ends in non-terminal okurigana (e.g. 売り, 食べ, 買い)."""
+    return bool(
+        text
+        and HIRAGANA_CHAR_RE.match(text[-1])
+        and not text.endswith(VERB_TERMINAL_ENDINGS)
+        and not is_adjective_ending(text)
+    )
 
 
 def classify_match_boundary(text: str, query: str) -> str:
@@ -185,10 +208,8 @@ def classify_match_boundary(text: str, query: str) -> str:
         # Case 3: Mixed Kanji + Kana (e.g. 食べる, 1杯, 時に, お金, お茶)
         prev_is_kanji = bool(prev_ch and KANJI_CHAR_RE.match(prev_ch))
         next_is_kanji = bool(next_ch and KANJI_CHAR_RE.match(next_ch))
-        # Bare stems (食べ, 売り, 勝ち) fused with a following Kanji form nouns (食べ物, 売り場, 勝ち組)
-        ends_in_stem_okurigana = bool(HIRAGANA_CHAR_RE.match(query[-1])) and not query.endswith(
-            ("う", "く", "ぐ", "す", "つ", "ぬ", "ぶ", "む", "る", "た", "だ", "い")
-        )
+        # Bare stems (食べ, 売り, 勝ち, 買い) fused with a following Kanji form nouns (食べ物, 売り場, 勝ち組, 買い物)
+        ends_in_stem_okurigana = _is_bare_verb_stem(query)
         if (prev_is_kanji and KANJI_CHAR_RE.match(query[0])) or (
             next_is_kanji and (KANJI_CHAR_RE.match(query[-1]) or ends_in_stem_okurigana)
         ):
@@ -235,10 +256,8 @@ def is_image_relevant(img: IrasutoyaImage, query: str) -> bool:
         # Disallow compound matches for 1-Kanji grammatical/abstract words
         if len(clean_q) == 1 and clean_q in ABSTRACT_SINGLE_KANJI:
             return False
-        # Bare verb stems fused with Kanji form different nouns (売り場, 勝ち組, 食べ物)
-        if HIRAGANA_CHAR_RE.match(clean_q[-1]) and not clean_q.endswith(
-            ("う", "く", "ぐ", "す", "つ", "ぬ", "ぶ", "む", "る", "た", "だ", "い")
-        ):
+        # Bare verb stems fused with Kanji form different nouns (売り場, 勝ち組, 食べ物, 買い物)
+        if _is_bare_verb_stem(clean_q):
             return False
         return True
 
@@ -310,11 +329,9 @@ def score_candidate_image(img: IrasutoyaImage, query: str) -> float:
             score -= 25.0
 
     # 5. Heavy penalty for text callouts (イラスト文字 / trailing 文字) so illustrations always win if available
-    is_callout = ("イラスト文字" in title and "イラスト文字" not in clean_q) or (
-        title.endswith("文字") and "文字" not in clean_q
-    )
+    is_callout = is_callout_asset(img, clean_q)
     if is_callout:
-        score -= 65.0
+        score -= 110.0
 
     # 6. Filter out non-illustration decorative assets (lines, borders, wallpaper, templates)
     for noise in DECORATIVE_NOISE_KEYWORDS:
@@ -322,6 +339,15 @@ def score_candidate_image(img: IrasutoyaImage, query: str) -> float:
             score -= 60.0
 
     return score
+
+
+def is_callout_asset(img: IrasutoyaImage, query: str) -> bool:
+    """Return True if image is an illustrated text callout (イラスト文字 or trailing 文字)."""
+    clean_q = query.strip()
+    title = img.title.strip()
+    return ("イラスト文字" in title and "イラスト文字" not in clean_q) or (
+        title.endswith("文字") and "文字" not in clean_q
+    )
 
 
 def is_decorative_asset(img: IrasutoyaImage, query: str) -> bool:
@@ -339,9 +365,11 @@ def select_best_image(images: Sequence[IrasutoyaImage], query: str) -> Optional[
         img for img in images
         if not is_decorative_asset(img, query) and is_image_relevant(img, query)
     ]
-    pool = illustration_candidates if illustration_candidates else [
-        img for img in images if not is_decorative_asset(img, query)
-    ] or images
+    # Prefer relevant scene illustrations over text callouts
+    non_callouts = [img for img in illustration_candidates if not is_callout_asset(img, query)]
+    pool = non_callouts if non_callouts else illustration_candidates
+    if not pool:
+        pool = [img for img in images if not is_decorative_asset(img, query)] or images
     return max(pool, key=lambda img: score_candidate_image(img, query))
 
 

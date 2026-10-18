@@ -470,15 +470,21 @@ class TestIrasutoyaClient(unittest.TestCase):
         self.assertTrue(is_image_relevant(multi_img, "黒い 猫"))
         self.assertFalse(is_image_relevant(multi_img, "白い 猫"))
 
-        # Okurigana verb stems fused with Kanji must be rejected (売り場 != 売り, 食べ物 != 食べ)
+        # Okurigana verb stems fused with Kanji must be rejected (売り場 != 売り, 食べ物 != 食べ, 買い物 != 買い)
         uriba_img = IrasutoyaImage("売り場のイラスト", "https://example.com/u.png", "https://example.com/t.png", "売り場")
         self.assertFalse(is_image_relevant(uriba_img, "売り"))
         tabemono_img = IrasutoyaImage("食べ物のイラスト", "https://example.com/tb.png", "https://example.com/t.png", "食べ物")
         self.assertFalse(is_image_relevant(tabemono_img, "食べ"))
+        kaimono_img = IrasutoyaImage("買い物のイラスト", "https://example.com/km.png", "https://example.com/t.png", "買い物")
+        self.assertFalse(is_image_relevant(kaimono_img, "買い"))
 
-        # Genuine Kanji-noun compounds should still be accepted
+        # Genuine Kanji-noun compounds and adjectives modifying nouns should still be accepted
         hada_img = IrasutoyaImage("乾燥肌のイラスト", "https://example.com/h.png", "https://example.com/t.png", "乾燥肌")
         self.assertTrue(is_image_relevant(hada_img, "肌"))
+        akai_car_img = IrasutoyaImage("赤い車のイラスト", "https://example.com/ac.png", "https://example.com/t.png", "赤い車")
+        self.assertTrue(is_image_relevant(akai_car_img, "赤い"))
+        ookii_tree_img = IrasutoyaImage("大きい木のイラスト", "https://example.com/ot.png", "https://example.com/t.png", "大きい木")
+        self.assertTrue(is_image_relevant(ookii_tree_img, "大きい"))
 
     def test_search_with_fallbacks_skips_unrelated_images(self):
         """Verify search_with_fallbacks skips candidates that only return unrelated images from multi-image posts."""
@@ -563,9 +569,19 @@ class TestIrasutoyaClient(unittest.TestCase):
         self.assertEqual(classify_match_boundary("売り場のイラスト", "売る"), "none")
         self.assertEqual(classify_match_boundary("食べ物とご飯を食べた人のイラスト", "食べる"), "inflected")
 
+        # Verb stems ending in okurigana forming nouns should be classified as compound (not standalone)
+        self.assertEqual(classify_match_boundary("買い物のイラスト", "買い"), "compound")
+        self.assertEqual(classify_match_boundary("食べ物のイラスト", "食べ"), "compound")
+        self.assertEqual(classify_match_boundary("売り場のイラスト", "売り"), "compound")
+        # True adjectives modifying nouns should be classified as standalone
+        self.assertEqual(classify_match_boundary("赤い車のイラスト", "赤い"), "standalone")
+        self.assertEqual(classify_match_boundary("美しい風景のイラスト", "美しい"), "standalone")
+        self.assertEqual(classify_match_boundary("大きい木のイラスト", "大きい"), "standalone")
+        self.assertEqual(classify_match_boundary("小さい犬のイラスト", "小さい"), "standalone")
+
     def test_score_callout_text_heavy_penalty(self):
         """Test that illustrated text callouts receive heavy penalty instead of hard rejection."""
-        from client import score_candidate_image, is_image_relevant, is_decorative_asset
+        from client import score_candidate_image, is_image_relevant, is_decorative_asset, select_best_image
 
         img_callout = IrasutoyaImage(
             title="「決定！」のイラスト文字",
@@ -588,6 +604,18 @@ class TestIrasutoyaClient(unittest.TestCase):
         score_callout = score_candidate_image(img_callout, "決定")
         score_scene = score_candidate_image(img_scene, "決定")
         self.assertGreater(score_scene, score_callout)
+
+        # Even when the callout has an exact quoted match and canonical post title,
+        # select_best_image prefers the scene illustration
+        img_callout_canonical = IrasutoyaImage(
+            title="「決定」のイラスト文字",
+            image_url="https://example.com/kettei_text2.png",
+            thumb_url="https://example.com/thumb.png",
+            post_title="決定のイラスト"
+        )
+        self.assertGreater(score_scene, score_candidate_image(img_callout_canonical, "決定"))
+        best = select_best_image([img_callout_canonical, img_scene], "決定")
+        self.assertEqual(best, img_scene)
 
     def test_single_image_post_description_relevance(self):
         """Test accepting relevant single-image posts whose description matches query."""
@@ -702,6 +730,7 @@ class TestIrasutoyaClient(unittest.TestCase):
             ("売り場のイラスト", "売る"),
             ("売り場のイラスト", "売り"),
             ("勝ち組のイラスト", "勝ち"),
+            ("買い物のイラスト", "買い"),
             ("中性的な人のイラスト", "中"),
         ]
         for title, query in negative_cases:

@@ -134,31 +134,88 @@ def expand_katakana_chouon(text: str) -> List[str]:
     return variants
 
 
+GODAN_TSU_BASES = frozenset({"待", "勝", "立", "持", "打", "育", "建", "保", "放", "断", "経"})
+GODAN_U_BASES = frozenset({
+    "買", "言", "会", "洗", "歌", "使", "払", "笑", "思", "手伝", "吸", "祝",
+    "向か", "追", "習", "拾", "失", "通", "願", "争", "奪", "誘", "舞", "嫌",
+    "狂", "繕", "雇", "商", "賑わ", "誓", "救", "養", "扱", "結",
+})
+GODAN_BU_BASES = frozenset({"遊", "呼", "飛", "並", "選", "運", "叫", "結", "喜", "転"})
+
+COMMON_I_ADJECTIVES = frozenset({
+    "赤い", "白い", "青い", "黒い", "黄色い", "茶色い", "高い", "安い", "低い", "近い", "遠い",
+    "広い", "狭い", "早い", "速い", "遅い", "重い", "軽い", "深い", "浅い", "強い", "弱い",
+    "暑い", "熱い", "寒い", "冷たい", "痛い", "辛い", "甘い", "苦い", "若い", "暗い", "明るい",
+    "長い", "短い", "丸い", "太い", "細い", "荒い", "粗い", "鋭い", "鈍い", "汚い", "危ない",
+    "良い", "善い", "酷い", "凄い", "怖い", "恐い", "偉い", "尊い", "賢い", "臭い", "固い", "硬い", "堅い",
+    "多い", "少ない", "美味い", "旨い", "大きい", "小さい", "古い", "薄い", "厚い", "眠い",
+    "細かい", "暖かい", "温かい", "柔らかい", "可愛い", "緩い", "痒い", "温い", "ぬるい",
+})
+
+ADJECTIVE_CANONICAL_ENDINGS = ("しい", "たい", "かい", "ない", "るい", "おい", "よい", "どい", "とい", "ゆい", "らい", "ぶい")
+
+
+def is_adjective_ending(text: str) -> bool:
+    """Return True if text ends in a standard Japanese i-adjective form."""
+    if not text or not text.endswith("い"):
+        return False
+    return text in COMMON_I_ADJECTIVES or text.endswith(ADJECTIVE_CANONICAL_ENDINGS)
+
+
 def deinflect_japanese(text: str) -> List[str]:
     """Extract dictionary base forms and simplify compound headwords using safe heuristics."""
     forms: List[str] = []
 
-    # Geminate verb compound auxiliaries (〜ってくる, 〜っている, 〜っていく -> 〜る, 〜う, 〜つ)
-    # e.g. 帰ってくる -> 帰る, 走っている -> 走る
+    # Geminate verb compound auxiliaries (〜ってくる, 〜っている, 〜っていく -> 〜る, 〜う, 〜つ, 行く)
+    # e.g. 帰ってくる -> 帰る, 走っている -> 走る, 待っている -> 待つ, 買っている -> 買う, 行ってくる -> 行く
     geminate_matched = False
     for aux in ["ってくる", "っている", "っていく", "ってみる"]:
         if text.endswith(aux) and len(text) > len(aux):
             geminate_matched = True
             base = text[:-len(aux)]
-            forms.append(base + "る")
-            forms.append(base + "う")
-            forms.append(base + "つ")
+            if base.endswith("行"):
+                forms.append(base + "く")
+            elif base in GODAN_TSU_BASES:
+                forms.extend([base + "つ", base + "る", base + "う"])
+            elif base in GODAN_U_BASES:
+                forms.extend([base + "う", base + "る", base + "つ"])
+            else:
+                forms.extend([base + "る", base + "う", base + "つ"])
 
-    # Regular verb compound auxiliaries (〜てくる, 〜ている, 〜ていく, 〜てみる -> 〜る)
+    # Regular verb compound auxiliaries (〜てくる, 〜ている, 〜ていく, 〜てみる -> 〜る, 〜する, 〜す, 〜く)
+    # e.g. 勉強している -> 勉強する; 話している -> 話す; 書いている -> 書く; 食べている -> 食べる
     if not geminate_matched:
         for aux in ["てくる", "ている", "ていく", "てみる"]:
             if text.endswith(aux) and len(text) > len(aux):
-                forms.append(text[:-len(aux)] + "る")
+                base = text[:-len(aux)]
+                if base.endswith("し") and len(base) > 1:
+                    head = base[:-1]
+                    # Multi-Kanji heads are usually suru-nouns (勉強している -> 勉強する); otherwise godan す (話している -> 話す)
+                    if len(head) >= 2 and all("\u4e00" <= ch <= "\u9fff" for ch in head):
+                        forms.extend([head + "する", head + "す"])
+                    else:
+                        forms.extend([head + "す", head + "する"])
+                elif base.endswith("い") and len(base) > 1:
+                    # 書いている -> 書く (godan く); keep ichidan 〜いる as a speculative alternative
+                    forms.extend([base[:-1] + "く", base + "る"])
+                else:
+                    forms.append(base + "る")
 
-    # Voiced verb compounds (〜でくる, 〜でいる -> 〜ぐ)
+    # Voiced verb compounds (〜でくる, 〜でいる -> 〜ぐ, 〜む, 〜ぶ, 〜ぬ)
+    # e.g. 泳いでいる -> 泳ぐ; 読んでいる -> 読む; 遊んでいる -> 遊ぶ
     for aux in ["でくる", "でいる"]:
         if text.endswith(aux) and len(text) > len(aux):
-            forms.append(text[:-len(aux)] + "ぐ")
+            base = text[:-len(aux)]
+            if base.endswith("い") and len(base) > 1:
+                forms.append(base[:-1] + "ぐ")
+            elif base.endswith("ん") and len(base) > 1:
+                stem = base[:-1]
+                if stem.endswith("死"):
+                    forms.extend([stem + "ぬ", stem + "む", stem + "ぶ"])
+                elif stem in GODAN_BU_BASES:
+                    forms.extend([stem + "ぶ", stem + "む", stem + "ぬ"])
+                else:
+                    forms.extend([stem + "む", stem + "ぶ", stem + "ぬ"])
 
     # Excessive suffix (〜すぎる, 〜過ぎる)
     for aux in ["すぎる", "過ぎる"]:
@@ -295,11 +352,16 @@ def expand_bikago_prefix(text: str) -> Optional[str]:
 
 
 SINGLE_KANJI_ICHIDAN = {"見る", "着る", "寝る", "出る", "似る", "煮る", "居る", "得る", "経る", "射る", "干る"}
+NON_VERB_GODAN_LOOKALIKES = frozenset({"全く", "暫く", "漸く", "恐らく", "悉く", "如く", "幾つ"})
 
 
 def conjugate_japanese_verb(text: str) -> List[str]:
     """Generate canonical Irasutoya title inflection forms (past/stative, masu-stem, volitional) for verbs containing Kanji."""
     if len(text) < 2 or not re.search(r"[\u4e00-\u9fff\u3400-\u4dbf々〆〇]", text):
+        return []
+
+    # Common non-verb adverbs / interrogative counters ending in godan kana
+    if text in NON_VERB_GODAN_LOOKALIKES:
         return []
 
     # Irregular verbs: する compounds (勉強する -> 勉強した, 勉強しよう, 勉強し) and 来る
@@ -320,6 +382,10 @@ def conjugate_japanese_verb(text: str) -> List[str]:
     if last_char not in GODAN_ENDINGS:
         return []
     stem = text[:-1]
+
+    # Adverbial i-adjective forms (早く, 多く, 遅く, 美しく, 大きく, 小さく) are not verbs
+    if last_char == "く" and is_adjective_ending(stem + "い"):
+        return []
 
     # Exclude numeral counters like 一つ, 二つ, 1つ
     if re.fullmatch(r"[0-9\uff10-\uff19一二三四五六七八九十]+", stem):
@@ -417,14 +483,14 @@ def generate_search_candidates(
     ):
         add(to_katakana(surface), "loanword_katakana", 1)
 
-    # 3. Tier 2 Semantic & Phonetic Fallbacks (Heuristic Deinflection, Separate Note Fields, Furigana Readings, Masu-Stems, Elongation)
+    # 3. Tier 2 Semantic & Phonetic Fallbacks (Validated Deinflection, Note Fields, Readings, Masu-Stems, Elongation, Speculative Deinflection)
     if allow_tier2:
-        # Heuristic compound deinflection from surface (e.g. 帰ってくる -> 帰る, 走っている -> 走る)
+        deinflections = deinflect_japanese(surface) if allow_deinflection else []
+        # Primary validated deinflection from surface (e.g. 帰ってくる -> 帰る, 走っている -> 走る, 待っている -> 待つ)
         # Surface-derived base preserves Kanji stem with zero homophone risk; rank before phonetic readings
-        # to ensure bases are evaluated within BATCH_MAX_CANDIDATES
-        if allow_deinflection:
-            for deinflected in deinflect_japanese(surface):
-                add(deinflected, "deinflected_base", 2)
+        # while keeping only the single validated base form to preserve note reading slots in batch mode
+        if deinflections:
+            add(deinflections[0], "deinflected_base", 2)
 
         # Check dedicated reading fields on the note (authoritative dictionary readings)
         if note and hasattr(note, "__getitem__"):
@@ -466,6 +532,11 @@ def generate_search_candidates(
         # Katakana elongation mark expansion (メンバ -> メンバー, サーバ -> サーバー)
         for chouon_variant in expand_katakana_chouon(surface):
             add(chouon_variant, "katakana_chouon", 2)
+
+        # Speculative deinflection alternatives (e.g. alternative godan endings)
+        if len(deinflections) > 1:
+            for alt in deinflections[1:]:
+                add(alt, "deinflected_base_speculative", 2)
 
     return candidates
 

@@ -118,6 +118,26 @@ class TestTextUtils(unittest.TestCase):
         mite_forms = deinflect_japanese("走ってみる")
         self.assertIn("走る", mite_forms)
         self.assertNotIn("走っる", mite_forms)
+        # 行 geminate exception: 行ってくる -> 行く (not 行る)
+        iku_forms = deinflect_japanese("行ってくる")
+        self.assertEqual(iku_forms[0], "行く")
+        self.assertNotIn("行る", iku_forms)
+        # Voiced reductions: 読んでいる -> 読む (not 読んぐ), 泳いでいる -> 泳ぐ (not 泳いぐ), 遊んでいる -> 遊ぶ
+        yomu_forms = deinflect_japanese("読んでいる")
+        self.assertEqual(yomu_forms[0], "読む")
+        self.assertNotIn("読んぐ", yomu_forms)
+        oyogu_forms = deinflect_japanese("泳いでいる")
+        self.assertEqual(oyogu_forms[0], "泳ぐ")
+        self.assertNotIn("泳いぐ", oyogu_forms)
+        asobu_forms = deinflect_japanese("遊んでいる")
+        self.assertEqual(asobu_forms[0], "遊ぶ")
+        shinu_forms = deinflect_japanese("死んでいる")
+        self.assertEqual(shinu_forms[0], "死ぬ")
+        # Regular te-stems: 勉強している -> 勉強する, 話している -> 話す, 書いている -> 書く, 食べている -> 食べる
+        self.assertEqual(deinflect_japanese("勉強している")[0], "勉強する")
+        self.assertEqual(deinflect_japanese("話している")[0], "話す")
+        self.assertEqual(deinflect_japanese("書いている")[0], "書く")
+        self.assertEqual(deinflect_japanese("食べている")[0], "食べる")
         self.assertIn("結果", deinflect_japanese("その結果"))
         self.assertIn("方", deinflect_japanese("方がいい"))
 
@@ -184,18 +204,21 @@ class TestTextUtils(unittest.TestCase):
         cands_non_str = generate_search_candidates("本", note=note_non_str, allow_tier2=True)
         self.assertEqual(cands_non_str[0], ("本", "primary", 1))
 
-        # Test 8: Surface-derived deinflected bases precede phonetic readings in Tier 2
-        # to ensure bases are evaluated within BATCH_MAX_CANDIDATES (e.g. 待つ for 待っている)
+        # Test 8: Surface-derived validated deinflected bases precede phonetic readings in Tier 2
+        # to ensure bases are evaluated within BATCH_MAX_CANDIDATES without crowding out note readings
         note_kaeru = {
             "Expression": "帰ってくる",
             "Reading": "かえってくる"
         }
         cands_kaeru = generate_search_candidates("帰ってくる", note=note_kaeru, allow_tier2=True, allow_deinflection=True)
         terms_kaeru = [c[0] for c in cands_kaeru]
-        self.assertIn("かえってくる", terms_kaeru)
-        self.assertIn("帰る", terms_kaeru)
+        self.assertIn("帰る", terms_kaeru[:5])
+        self.assertIn("かえってくる", terms_kaeru[:5])
         self.assertLess(terms_kaeru.index("帰る"), terms_kaeru.index("かえってくる"))
         self.assertNotIn("帰っる", terms_kaeru)
+        # Speculative alternatives (帰う, 帰つ) appear after note reading
+        if "帰う" in terms_kaeru:
+            self.assertGreater(terms_kaeru.index("帰う"), terms_kaeru.index("かえってくる"))
 
         note_matsu = {
             "Expression": "待っている",
@@ -204,6 +227,10 @@ class TestTextUtils(unittest.TestCase):
         cands_matsu = generate_search_candidates("待っている", note=note_matsu, allow_tier2=True, allow_deinflection=True)
         terms_matsu = [c[0] for c in cands_matsu]
         self.assertIn("待つ", terms_matsu[:5])
+        self.assertIn("まっている", terms_matsu[:5])
+        self.assertLess(terms_matsu.index("待つ"), terms_matsu.index("まっている"))
+        if "待る" in terms_matsu:
+            self.assertGreater(terms_matsu.index("待る"), terms_matsu.index("まっている"))
 
     def test_verb_conjugations(self):
         """Test Kanji-preserving verb inflection generation for Irasutoya titles."""
@@ -283,6 +310,21 @@ class TestTextUtils(unittest.TestCase):
         # Numeral counters must not be conjugated as verbs
         self.assertEqual(conjugate_japanese_verb("一つ"), [])
         self.assertEqual(conjugate_japanese_verb("二つ"), [])
+
+        # Adverbial i-adjective forms ending in く must not be conjugated as verbs
+        self.assertEqual(conjugate_japanese_verb("早く"), [])
+        self.assertEqual(conjugate_japanese_verb("遅く"), [])
+        self.assertEqual(conjugate_japanese_verb("多く"), [])
+        self.assertEqual(conjugate_japanese_verb("美しく"), [])
+        self.assertEqual(conjugate_japanese_verb("大きく"), [])
+        # Non-verb adverbs and interrogative counters must not be conjugated as verbs
+        self.assertEqual(conjugate_japanese_verb("全く"), [])
+        self.assertEqual(conjugate_japanese_verb("暫く"), [])
+        self.assertEqual(conjugate_japanese_verb("漸く"), [])
+        self.assertEqual(conjugate_japanese_verb("恐らく"), [])
+        self.assertEqual(conjugate_japanese_verb("悉く"), [])
+        self.assertEqual(conjugate_japanese_verb("如く"), [])
+        self.assertEqual(conjugate_japanese_verb("幾つ"), [])
 
         # Non-kanji or short inputs should yield empty list
         self.assertEqual(conjugate_japanese_verb("する"), [])
