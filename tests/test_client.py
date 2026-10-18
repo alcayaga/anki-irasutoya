@@ -632,45 +632,64 @@ class TestIrasutoyaClient(unittest.TestCase):
         self.assertEqual(len(images), 1)
         self.assertEqual(images[0].description, "猫 犬の説明")
 
-    def test_mining_vocabulary_benchmark_recall(self):
-        """Automated reviewable benchmark verifying recall boost and boundary safety on core vocabulary."""
+    def test_mining_and_kaishi_benchmark_evaluations(self):
+        """Automated reviewable benchmark verifying recall boost and boundary safety on Mining and Kaishi 1.5k decks."""
         from text_utils import generate_search_candidates
         from client import classify_match_boundary
 
-        # Sample representative mining / Kaishi vocabulary terms
-        vocab_cases = [
-            # (card_term, reading, expected_title, expected_boundary, tier1_expansion)
-            ("1杯", "いっぱい", "一杯のイラスト", "exact_quoted", "一杯"),
-            ("肉", "にく", "お肉のイラスト", "exact_quoted", "お肉"),
-            ("茶", "ちゃ", "お茶のイラスト", "exact_quoted", "お茶"),
-            ("勝つ", "かつ", "勝った人のイラスト", "inflected", "勝った"),
-            ("疲れる", "つかれる", "疲れた人のイラスト", "inflected", "疲れた"),
-            ("走る", "はしる", "走る人のイラスト", "standalone", None),
-            ("とまと", "とまと", "トマトのイラスト", "exact_quoted", "トマト"),
-            ("猫", "ねこ", "かわいい猫のイラスト", "exact_quoted", None),
-            ("本", "ほん", "本のイラスト", "exact_quoted", None),
-            ("其の儘[そのまま]", None, "そのままのイラスト", "exact_quoted", None),
+        # Mining vocabulary dataset: (card_term, reading, target_illustration_title)
+        mining_dataset = [
+            ("1杯", "いっぱい", "一杯のイラスト"),
+            ("肉", "にく", "お肉のイラスト"),
+            ("茶", "ちゃ", "お茶のイラスト"),
+            ("勝つ", "かつ", "勝った人のイラスト"),
+            ("疲れる", "つかれる", "疲れた人のイラスト"),
+            ("走る", "はしる", "走る人のイラスト"),
+            ("とまと", "とまと", "トマトのイラスト"),
+            ("猫", "ねこ", "かわいい猫のイラスト"),
+            ("本", "ほん", "本のイラスト"),
+            ("犬", "いぬ", "犬のイラスト"),
         ]
 
-        resolved_count = 0
-        for term, reading, target_title, expected_boundary, expected_expansion in vocab_cases:
-            note = {"Expression": term, "Reading": reading} if reading else {"Expression": term}
-            candidates = generate_search_candidates(term, note=note, allow_tier2=True)
-            candidate_queries = [c[0] for c in candidates]
-            if expected_expansion:
-                self.assertIn(expected_expansion, candidate_queries)
+        # Kaishi 1.5k vocabulary dataset: (card_term, reading, target_illustration_title)
+        kaishi_dataset = [
+            ("其の儘[そのまま]", None, "そのままのイラスト"),
+            ("動[うご]かす", "うごかす", "動かす人のイラスト"),
+            ("帰ってくる", "かえってくる", "帰る人のイラスト"),
+            ("お 前[まえ]", "おまえ", "お前のイラスト"),
+            ("林檎[りんご]", "りんご", "りんごのイラスト"),
+            ("檸檬[れもん]", "れもん", "レモンのイラスト"),
+            ("食べる[たべる]", "たべる", "食べる人のイラスト"),
+            ("見る", "みる", "見る人のイラスト"),
+            ("売る", "うる", "売る人のイラスト"),
+            ("車", "くるま", "車のイラスト"),
+        ]
 
-            # Verify that at least one candidate matches the canonical target illustration
-            matches = [
-                q for q in candidate_queries
-                if classify_match_boundary(target_title, q) in ("exact_quoted", "polite_prefix", "inflected", "standalone")
-            ]
-            self.assertTrue(len(matches) > 0, f"Benchmark term '{term}' should match '{target_title}'")
-            resolved_count += 1
+        for deck_name, dataset in [("Mining", mining_dataset), ("Kaishi 1.5k", kaishi_dataset)]:
+            legacy_hits = 0
+            v2_hits = 0
+            for term, reading, target_title in dataset:
+                # Legacy only searches raw term cleaned without morphological expansions
+                clean_term = term.split("[")[0].strip()
+                if classify_match_boundary(target_title, clean_term) in ("exact_quoted", "standalone", "inflected", "polite_prefix"):
+                    legacy_hits += 1
 
-        self.assertEqual(resolved_count, len(vocab_cases))
+                # v2 uses two-tier candidate search engine
+                note = {"Expression": term, "Reading": reading} if reading else {"Expression": term}
+                candidates = generate_search_candidates(term, note=note, allow_tier2=True, allow_deinflection=True)
+                candidate_queries = [c[0] for c in candidates]
+                matched = any(
+                    classify_match_boundary(target_title, q) in ("exact_quoted", "standalone", "inflected", "polite_prefix")
+                    for q in candidate_queries
+                )
+                if matched:
+                    v2_hits += 1
 
-        # Negative boundary collision tests: must never match false homophones
+            # Assert v2 recall strictly matches or exceeds legacy recall with zero regressions
+            self.assertGreaterEqual(v2_hits, legacy_hits, f"{deck_name} v2 recall must meet or exceed legacy recall")
+            self.assertEqual(v2_hits, len(dataset), f"{deck_name} v2 search should resolve 100% of benchmark terms")
+
+        # Boundary safety verification (preventing homophone / substring collisions)
         negative_cases = [
             ("さくらんぼのイラスト", "さくら"),
             ("カフェオレのイラスト", "オレ"),
