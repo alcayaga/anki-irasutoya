@@ -478,13 +478,20 @@ class TestIrasutoyaClient(unittest.TestCase):
         kaimono_img = IrasutoyaImage("買い物のイラスト", "https://example.com/km.png", "https://example.com/t.png", "買い物")
         self.assertFalse(is_image_relevant(kaimono_img, "買い"))
 
-        # Genuine Kanji-noun compounds and adjectives modifying nouns should still be accepted
+        # Genuine Kanji-noun compounds, okurigana nouns, and adjectives modifying nouns should still be accepted
         hada_img = IrasutoyaImage("乾燥肌のイラスト", "https://example.com/h.png", "https://example.com/t.png", "乾燥肌")
         self.assertTrue(is_image_relevant(hada_img, "肌"))
+        matsuri_img = IrasutoyaImage("祭り会場のイラスト", "https://example.com/m.png", "https://example.com/t.png", "祭り会場")
+        self.assertTrue(is_image_relevant(matsuri_img, "祭り"))
+        summer_matsuri_img = IrasutoyaImage("夏祭りのイラスト", "https://example.com/sm.png", "https://example.com/t.png", "夏祭り")
+        self.assertTrue(is_image_relevant(summer_matsuri_img, "祭り"))
         akai_car_img = IrasutoyaImage("赤い車のイラスト", "https://example.com/ac.png", "https://example.com/t.png", "赤い車")
         self.assertTrue(is_image_relevant(akai_car_img, "赤い"))
         ookii_tree_img = IrasutoyaImage("大きい木のイラスト", "https://example.com/ot.png", "https://example.com/t.png", "大きい木")
         self.assertTrue(is_image_relevant(ookii_tree_img, "大きい"))
+        # Masu-stems preceded by Kanji should remain relevant (夏休み is relevant to 休み)
+        yasumi_img = IrasutoyaImage("夏休みのイラスト", "https://example.com/y.png", "https://example.com/t.png", "夏休み")
+        self.assertTrue(is_image_relevant(yasumi_img, "休み"))
 
     def test_search_with_fallbacks_skips_unrelated_images(self):
         """Verify search_with_fallbacks skips candidates that only return unrelated images from multi-image posts."""
@@ -578,6 +585,9 @@ class TestIrasutoyaClient(unittest.TestCase):
         self.assertEqual(classify_match_boundary("美しい風景のイラスト", "美しい"), "standalone")
         self.assertEqual(classify_match_boundary("大きい木のイラスト", "大きい"), "standalone")
         self.assertEqual(classify_match_boundary("小さい犬のイラスト", "小さい"), "standalone")
+        # Established okurigana nouns forming compounds with following Kanji
+        self.assertEqual(classify_match_boundary("祭り会場のイラスト", "祭り"), "compound")
+        self.assertEqual(classify_match_boundary("夏祭りのイラスト", "祭り"), "compound")
 
     def test_score_callout_text_heavy_penalty(self):
         """Test that illustrated text callouts receive heavy penalty instead of hard rejection."""
@@ -616,6 +626,39 @@ class TestIrasutoyaClient(unittest.TestCase):
         self.assertGreater(score_scene, score_candidate_image(img_callout_canonical, "決定"))
         best = select_best_image([img_callout_canonical, img_scene], "決定")
         self.assertEqual(best, img_scene)
+
+        # Verify exact callout penalty (-65.0) as specified in Issue #7
+        img_plain_callout = IrasutoyaImage(
+            title="決定のイラスト文字",
+            image_url="https://example.com/plain_callout.png",
+            thumb_url="https://example.com/thumb.png",
+            post_title="その他のイラスト"
+        )
+        from unittest.mock import patch
+        with patch("client.is_callout_asset", side_effect=[True, False]):
+            score_callout = score_candidate_image(img_plain_callout, "決定")
+            score_non_callout = score_candidate_image(img_plain_callout, "決定")
+            self.assertEqual(score_non_callout - score_callout, 65.0)
+
+    def test_search_with_fallbacks_prefers_scene_over_callout(self):
+        """Verify search_with_fallbacks selects non-callout scene illustration before text callout."""
+        client = IrasutoyaClient()
+
+        def mock_search(q, max_results=3, image_size="s800", orderby="relevance"):
+            if q == "肉":
+                # Returns both a text callout (with high quoted/post title bonus) and a relevant scene
+                callout = IrasutoyaImage("「肉」のイラスト文字", "https://example.com/c.png", "https://example.com/t.png", "肉のイラスト")
+                scene = IrasutoyaImage("培養肉のイラスト", "https://example.com/s.png", "https://example.com/t.png", "培養肉のイラスト")
+                return [callout, scene]
+            return []
+
+        client.search = mock_search
+        candidates = [("肉", "primary", 1)]
+        images, matched_cand, best_img = client.search_with_fallbacks(candidates)
+        self.assertIsNotNone(best_img)
+        self.assertEqual(best_img.title, "培養肉のイラスト")
+        self.assertEqual(images[0].title, "培養肉のイラスト")
+        self.assertEqual(images[1].title, "「肉」のイラスト文字")
 
     def test_single_image_post_description_relevance(self):
         """Test accepting relevant single-image posts whose description matches query."""

@@ -118,10 +118,13 @@ class TestTextUtils(unittest.TestCase):
         mite_forms = deinflect_japanese("走ってみる")
         self.assertIn("走る", mite_forms)
         self.assertNotIn("走っる", mite_forms)
-        # 行 geminate exception: 行ってくる -> 行く (not 行る)
+        # 行 geminate exception: 行ってくる -> 行く (not 行る), but 流行っている -> 流行る (not 流行く)
         iku_forms = deinflect_japanese("行ってくる")
         self.assertEqual(iku_forms[0], "行く")
         self.assertNotIn("行る", iku_forms)
+        hayaru_forms = deinflect_japanese("流行っている")
+        self.assertEqual(hayaru_forms[0], "流行る")
+        self.assertNotIn("流行く", hayaru_forms)
         # Voiced reductions: 読んでいる -> 読む (not 読んぐ), 泳いでいる -> 泳ぐ (not 泳いぐ), 遊んでいる -> 遊ぶ
         yomu_forms = deinflect_japanese("読んでいる")
         self.assertEqual(yomu_forms[0], "読む")
@@ -286,6 +289,14 @@ class TestTextUtils(unittest.TestCase):
         deru = conjugate_japanese_verb("出る")
         self.assertEqual(deru, ["出た", "出よう"])
         self.assertNotIn("出", deru)
+
+        # Single-kanji Ichidan homographs of 見る (観る, 診る, 看る, 視る)
+        kanmiru = conjugate_japanese_verb("観る")
+        self.assertEqual(kanmiru, ["観た", "観よう"])
+        self.assertNotIn("観った", kanmiru)
+        shinmiru = conjugate_japanese_verb("診る")
+        self.assertEqual(shinmiru, ["診た", "診よう"])
+        self.assertNotIn("診った", shinmiru)
 
         # Irregular verbs
         benkyou = conjugate_japanese_verb("勉強する")

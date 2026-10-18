@@ -108,13 +108,18 @@ DECORATIVE_NOISE_KEYWORDS = ("ライン素材", "背景", "フレーム", "枠",
 TEXT_CALLOUT_KEYWORDS = ("イラスト文字",)
 SITUATIONAL_NOISE_KEYWORDS = ("事故", "トラブル", "失敗", "注意", "禁止", "マーク")
 VERB_TERMINAL_ENDINGS = ("う", "く", "ぐ", "す", "つ", "ぬ", "ぶ", "む", "る", "た", "だ")
+COMMON_OKURIGANA_NOUNS = frozenset({
+    "祭り", "祭", "周り", "香り", "祈り", "便り", "望み", "恵み", "答え", "知らせ",
+    "怒り", "踊り", "誓い", "願い", "想い", "思い", "集まり", "始まり", "終わり",
+})
 
 
 def _is_bare_verb_stem(text: str) -> bool:
-    """Return True if text ends in non-terminal okurigana (e.g. 売り, 食べ, 買い)."""
+    """Return True if text ends in non-terminal okurigana and is a verb stem (e.g. 売り, 食べ, 買い)."""
+    if not text or text in COMMON_OKURIGANA_NOUNS:
+        return False
     return bool(
-        text
-        and HIRAGANA_CHAR_RE.match(text[-1])
+        HIRAGANA_CHAR_RE.match(text[-1])
         and not text.endswith(VERB_TERMINAL_ENDINGS)
         and not is_adjective_ending(text)
     )
@@ -209,9 +214,11 @@ def classify_match_boundary(text: str, query: str) -> str:
         prev_is_kanji = bool(prev_ch and KANJI_CHAR_RE.match(prev_ch))
         next_is_kanji = bool(next_ch and KANJI_CHAR_RE.match(next_ch))
         # Bare stems (食べ, 売り, 勝ち, 買い) fused with a following Kanji form nouns (食べ物, 売り場, 勝ち組, 買い物)
+        # Nouns ending in okurigana (e.g. 祭り) fused with a following Kanji form compound nouns (祭り会場)
+        is_noun_compound = query in COMMON_OKURIGANA_NOUNS and next_is_kanji
         ends_in_stem_okurigana = _is_bare_verb_stem(query)
         if (prev_is_kanji and KANJI_CHAR_RE.match(query[0])) or (
-            next_is_kanji and (KANJI_CHAR_RE.match(query[-1]) or ends_in_stem_okurigana)
+            next_is_kanji and (KANJI_CHAR_RE.match(query[-1]) or ends_in_stem_okurigana or is_noun_compound)
         ):
             if best_quality == "none":
                 best_quality = "compound"
@@ -256,8 +263,10 @@ def is_image_relevant(img: IrasutoyaImage, query: str) -> bool:
         # Disallow compound matches for 1-Kanji grammatical/abstract words
         if len(clean_q) == 1 and clean_q in ABSTRACT_SINGLE_KANJI:
             return False
-        # Bare verb stems fused with Kanji form different nouns (売り場, 勝ち組, 食べ物, 買い物)
-        if _is_bare_verb_stem(clean_q):
+        # Bare verb stems fused with following Kanji form different nouns (売り場, 勝ち組, 食べ物, 買い物)
+        if _is_bare_verb_stem(clean_q) and re.search(
+            re.escape(clean_q) + KANJI_CHAR_RE.pattern, title
+        ):
             return False
         return True
 
@@ -331,7 +340,7 @@ def score_candidate_image(img: IrasutoyaImage, query: str) -> float:
     # 5. Heavy penalty for text callouts (イラスト文字 / trailing 文字) so illustrations always win if available
     is_callout = is_callout_asset(img, clean_q)
     if is_callout:
-        score -= 110.0
+        score -= 65.0
 
     # 6. Filter out non-illustration decorative assets (lines, borders, wallpaper, templates)
     for noise in DECORATIVE_NOISE_KEYWORDS:
@@ -620,7 +629,13 @@ class IrasutoyaClient:
                 if not is_decorative_asset(img, term) and is_image_relevant(img, term)
             ]
             if illustration_candidates:
-                ranked = sorted(illustration_candidates, key=lambda img: score_candidate_image(img, term), reverse=True)
+                non_callouts = [img for img in illustration_candidates if not is_callout_asset(img, term)]
+                pool = non_callouts if non_callouts else illustration_candidates
+                callouts = [img for img in illustration_candidates if is_callout_asset(img, term)] if pool is non_callouts else []
+                ranked = (
+                    sorted(pool, key=lambda img: score_candidate_image(img, term), reverse=True)
+                    + sorted(callouts, key=lambda img: score_candidate_image(img, term), reverse=True)
+                )
                 best = ranked[0]
                 return ranked, cand, best
 

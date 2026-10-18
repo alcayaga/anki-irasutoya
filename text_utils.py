@@ -173,7 +173,7 @@ def deinflect_japanese(text: str) -> List[str]:
         if text.endswith(aux) and len(text) > len(aux):
             geminate_matched = True
             base = text[:-len(aux)]
-            if base.endswith("行"):
+            if base == "行":
                 forms.append(base + "く")
             elif base in GODAN_TSU_BASES:
                 forms.extend([base + "つ", base + "る", base + "う"])
@@ -351,7 +351,10 @@ def expand_bikago_prefix(text: str) -> Optional[str]:
     return None
 
 
-SINGLE_KANJI_ICHIDAN = {"見る", "着る", "寝る", "出る", "似る", "煮る", "居る", "得る", "経る", "射る", "干る"}
+SINGLE_KANJI_ICHIDAN = {
+    "見る", "観る", "診る", "看る", "視る",
+    "着る", "寝る", "出る", "似る", "煮る", "居る", "得る", "経る", "射る", "干る",
+}
 NON_VERB_GODAN_LOOKALIKES = frozenset({"全く", "暫く", "漸く", "恐らく", "悉く", "如く", "幾つ"})
 
 
