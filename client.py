@@ -151,11 +151,12 @@ def classify_match_boundary(text: str, query: str) -> str:
                 if is_grammar_function_word(query) or (len(query) <= 2 and query not in SAFE_2MORA_LOANWORDS):
                     continue
                 particles = ("の", "が", "を", "に", "で", "と", "は", "も", "へ", "や", "な", "か")
-                # Reject if preceded by Hiragana other than polite お/ご or a particle
+                attributive_endings = ("い", "る", "た", "だ")
+                # Reject if preceded by Hiragana other than polite お/ご, a particle, or an attributive ending
                 prev_is_hira = bool(
                     prev_ch
                     and HIRAGANA_CHAR_RE.match(prev_ch)
-                    and prev_ch not in ("お", "ご") + particles
+                    and prev_ch not in ("お", "ご") + particles + attributive_endings
                 )
                 # Reject if followed by Hiragana other than a particle
                 next_is_hira = bool(
@@ -184,8 +185,12 @@ def classify_match_boundary(text: str, query: str) -> str:
         # Case 3: Mixed Kanji + Kana (e.g. 食べる, 1杯, 時に, お金, お茶)
         prev_is_kanji = bool(prev_ch and KANJI_CHAR_RE.match(prev_ch))
         next_is_kanji = bool(next_ch and KANJI_CHAR_RE.match(next_ch))
+        # Bare stems (食べ, 売り, 勝ち) fused with a following Kanji form nouns (食べ物, 売り場, 勝ち組)
+        ends_in_stem_okurigana = bool(HIRAGANA_CHAR_RE.match(query[-1])) and not query.endswith(
+            ("う", "く", "ぐ", "す", "つ", "ぬ", "ぶ", "む", "る", "た", "だ", "い")
+        )
         if (prev_is_kanji and KANJI_CHAR_RE.match(query[0])) or (
-            next_is_kanji and KANJI_CHAR_RE.match(query[-1])
+            next_is_kanji and (KANJI_CHAR_RE.match(query[-1]) or ends_in_stem_okurigana)
         ):
             if best_quality == "none":
                 best_quality = "compound"
@@ -228,7 +233,14 @@ def is_image_relevant(img: IrasutoyaImage, query: str) -> bool:
         return True
     if qual_title == "compound":
         # Disallow compound matches for 1-Kanji grammatical/abstract words
-        return len(clean_q) > 1 or clean_q not in ABSTRACT_SINGLE_KANJI
+        if len(clean_q) == 1 and clean_q in ABSTRACT_SINGLE_KANJI:
+            return False
+        # Bare verb stems fused with Kanji form different nouns (売り場, 勝ち組, 食べ物)
+        if HIRAGANA_CHAR_RE.match(clean_q[-1]) and not clean_q.endswith(
+            ("う", "く", "ぐ", "す", "つ", "ぬ", "ぶ", "む", "る", "た", "だ", "い")
+        ):
+            return False
+        return True
 
     # 2. Single-image post caption/description match
     if getattr(img, "is_single_image_post", True) and not is_grammar_function_word(clean_q):

@@ -184,7 +184,8 @@ class TestTextUtils(unittest.TestCase):
         cands_non_str = generate_search_candidates("本", note=note_non_str, allow_tier2=True)
         self.assertEqual(cands_non_str[0], ("本", "primary", 1))
 
-        # Test 8: Note reading fields take precedence over heuristic deinflections in Tier 2
+        # Test 8: Surface-derived deinflected bases precede phonetic readings in Tier 2
+        # to ensure bases are evaluated within BATCH_MAX_CANDIDATES (e.g. 待つ for 待っている)
         note_kaeru = {
             "Expression": "帰ってくる",
             "Reading": "かえってくる"
@@ -193,8 +194,16 @@ class TestTextUtils(unittest.TestCase):
         terms_kaeru = [c[0] for c in cands_kaeru]
         self.assertIn("かえってくる", terms_kaeru)
         self.assertIn("帰る", terms_kaeru)
-        self.assertLess(terms_kaeru.index("かえってくる"), terms_kaeru.index("帰る"))
+        self.assertLess(terms_kaeru.index("帰る"), terms_kaeru.index("かえってくる"))
         self.assertNotIn("帰っる", terms_kaeru)
+
+        note_matsu = {
+            "Expression": "待っている",
+            "Reading": "まっている"
+        }
+        cands_matsu = generate_search_candidates("待っている", note=note_matsu, allow_tier2=True, allow_deinflection=True)
+        terms_matsu = [c[0] for c in cands_matsu]
+        self.assertIn("待つ", terms_matsu[:5])
 
     def test_verb_conjugations(self):
         """Test Kanji-preserving verb inflection generation for Irasutoya titles."""
@@ -217,17 +226,19 @@ class TestTextUtils(unittest.TestCase):
         # Ichidan verbs
         tsukareru = conjugate_japanese_verb("疲れる")
         self.assertIn("疲れた", tsukareru)
+        self.assertIn("疲れよう", tsukareru)
         self.assertIn("疲れ", tsukareru)
         self.assertNotIn("疲れった", tsukareru)
         self.assertNotIn("疲れり", tsukareru)
 
         mitsukeru = conjugate_japanese_verb("見つける")
         self.assertIn("見つけた", mitsukeru)
+        self.assertIn("見つけよう", mitsukeru)
         self.assertIn("見つけ", mitsukeru)
         self.assertNotIn("見つけった", mitsukeru)
 
         taberu = conjugate_japanese_verb("食べる")
-        self.assertEqual(taberu, ["食べた", "食べ"])
+        self.assertEqual(taberu, ["食べた", "食べよう", "食べ"])
         self.assertNotIn("食べった", taberu)
         self.assertNotIn("食べり", taberu)
 
@@ -241,17 +252,17 @@ class TestTextUtils(unittest.TestCase):
 
         # Single-kanji Ichidan verbs (omit bare single-kanji stem to prevent false-positive collisions)
         miru = conjugate_japanese_verb("見る")
-        self.assertEqual(miru, ["見た"])
+        self.assertEqual(miru, ["見た", "見よう"])
         self.assertNotIn("見", miru)
         self.assertNotIn("見った", miru)
 
         deru = conjugate_japanese_verb("出る")
-        self.assertEqual(deru, ["出た"])
+        self.assertEqual(deru, ["出た", "出よう"])
         self.assertNotIn("出", deru)
 
         # Irregular verbs
         benkyou = conjugate_japanese_verb("勉強する")
-        self.assertEqual(benkyou, ["勉強した", "勉強し"])
+        self.assertEqual(benkyou, ["勉強した", "勉強しよう", "勉強し"])
         self.assertNotIn("勉強すった", benkyou)
 
         kuru = conjugate_japanese_verb("来る")

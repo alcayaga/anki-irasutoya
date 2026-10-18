@@ -302,10 +302,10 @@ def conjugate_japanese_verb(text: str) -> List[str]:
     if len(text) < 2 or not re.search(r"[\u4e00-\u9fff\u3400-\u4dbf々〆〇]", text):
         return []
 
-    # Irregular verbs: する compounds (勉強する -> 勉強した, 勉強し) and 来る
+    # Irregular verbs: する compounds (勉強する -> 勉強した, 勉強しよう, 勉強し) and 来る
     if text.endswith("する"):
         base = text[:-2]
-        return [base + "した", base + "し"] if base else []
+        return [base + "した", base + "しよう", base + "し"] if base else []
     if text.endswith("来る"):
         base = text[:-1]
         return [base + "た", base] if len(base) >= 2 else [base + "た"]
@@ -333,8 +333,9 @@ def conjugate_japanese_verb(text: str) -> List[str]:
         or bool(stem and stem[-1] in "いきぎしじちにひびみりえけげせぜてでねへべめれ")
     )
     if is_ichidan:
-        # Ichidan: 食べる -> 食べた, 食べ; 疲れる -> 疲れた, 疲れ; 見る -> 見た
+        # Ichidan: 食べる -> 食べた, 食べよう, 食べ; 疲れる -> 疲れた, 疲れよう, 疲れ; 見る -> 見た, 見よう
         forms.append(stem + "た")
+        forms.append(stem + "よう")
         if len(stem) >= 2:
             forms.append(stem)
     else:
@@ -416,9 +417,16 @@ def generate_search_candidates(
     ):
         add(to_katakana(surface), "loanword_katakana", 1)
 
-    # 3. Tier 2 Semantic & Phonetic Fallbacks (Separate Note Fields, Furigana Readings, Masu-Stems, Elongation, Heuristic Deinflection)
+    # 3. Tier 2 Semantic & Phonetic Fallbacks (Heuristic Deinflection, Separate Note Fields, Furigana Readings, Masu-Stems, Elongation)
     if allow_tier2:
-        # Check dedicated reading fields on the note first (authoritative dictionary readings)
+        # Heuristic compound deinflection from surface (e.g. 帰ってくる -> 帰る, 走っている -> 走る)
+        # Surface-derived base preserves Kanji stem with zero homophone risk; rank before phonetic readings
+        # to ensure bases are evaluated within BATCH_MAX_CANDIDATES
+        if allow_deinflection:
+            for deinflected in deinflect_japanese(surface):
+                add(deinflected, "deinflected_base", 2)
+
+        # Check dedicated reading fields on the note (authoritative dictionary readings)
         if note and hasattr(note, "__getitem__"):
             for rf in NOTE_READING_FIELDS:
                 if rf in note and note[rf]:
@@ -458,11 +466,6 @@ def generate_search_candidates(
         # Katakana elongation mark expansion (メンバ -> メンバー, サーバ -> サーバー)
         for chouon_variant in expand_katakana_chouon(surface):
             add(chouon_variant, "katakana_chouon", 2)
-
-        # Heuristic compound deinflection (e.g. 帰ってくる -> 帰る, 走っている -> 走る)
-        if allow_deinflection:
-            for deinflected in deinflect_japanese(surface):
-                add(deinflected, "deinflected_base", 2)
 
     return candidates
 

@@ -470,6 +470,16 @@ class TestIrasutoyaClient(unittest.TestCase):
         self.assertTrue(is_image_relevant(multi_img, "黒い 猫"))
         self.assertFalse(is_image_relevant(multi_img, "白い 猫"))
 
+        # Okurigana verb stems fused with Kanji must be rejected (売り場 != 売り, 食べ物 != 食べ)
+        uriba_img = IrasutoyaImage("売り場のイラスト", "https://example.com/u.png", "https://example.com/t.png", "売り場")
+        self.assertFalse(is_image_relevant(uriba_img, "売り"))
+        tabemono_img = IrasutoyaImage("食べ物のイラスト", "https://example.com/tb.png", "https://example.com/t.png", "食べ物")
+        self.assertFalse(is_image_relevant(tabemono_img, "食べ"))
+
+        # Genuine Kanji-noun compounds should still be accepted
+        hada_img = IrasutoyaImage("乾燥肌のイラスト", "https://example.com/h.png", "https://example.com/t.png", "乾燥肌")
+        self.assertTrue(is_image_relevant(hada_img, "肌"))
+
     def test_search_with_fallbacks_skips_unrelated_images(self):
         """Verify search_with_fallbacks skips candidates that only return unrelated images from multi-image posts."""
         client = IrasutoyaClient()
@@ -520,6 +530,9 @@ class TestIrasutoyaClient(unittest.TestCase):
         # Hiragana queries with trailing mid-word collision
         self.assertEqual(classify_match_boundary("さくらんぼのイラスト", "さくら"), "none")
         self.assertEqual(classify_match_boundary("綺麗なさくらのイラスト", "さくら"), "standalone")
+        # Hiragana queries preceded by attributive endings (い, る, た, だ)
+        self.assertEqual(classify_match_boundary("赤いりんごのイラスト", "りんご"), "standalone")
+        self.assertEqual(classify_match_boundary("走るおとこのこのイラスト", "おとこのこ"), "standalone")
         # Unbounded / collision Katakana queries
         self.assertEqual(classify_match_boundary("フライパンのイラスト", "パン"), "none")
 
@@ -632,9 +645,9 @@ class TestIrasutoyaClient(unittest.TestCase):
         self.assertEqual(len(images), 1)
         self.assertEqual(images[0].description, "猫 犬の説明")
 
-    def test_mining_and_kaishi_benchmark_evaluations(self):
-        """Automated reviewable benchmark verifying recall boost and boundary safety on Mining and Kaishi 1.5k decks."""
-        from text_utils import generate_search_candidates
+    def test_candidate_regression_fixture(self):
+        """Automated regression fixture verifying candidate generation and boundary matching on Mining and Kaishi 1.5k decks."""
+        from text_utils import generate_search_candidates, BATCH_MAX_CANDIDATES
         from client import classify_match_boundary
 
         # Mining vocabulary dataset: (card_term, reading, target_illustration_title)
@@ -666,28 +679,18 @@ class TestIrasutoyaClient(unittest.TestCase):
         ]
 
         for deck_name, dataset in [("Mining", mining_dataset), ("Kaishi 1.5k", kaishi_dataset)]:
-            legacy_hits = 0
-            v2_hits = 0
             for term, reading, target_title in dataset:
-                # Legacy only searches raw term cleaned without morphological expansions
-                clean_term = term.split("[")[0].strip()
-                if classify_match_boundary(target_title, clean_term) in ("exact_quoted", "standalone", "inflected", "polite_prefix"):
-                    legacy_hits += 1
-
-                # v2 uses two-tier candidate search engine
-                note = {"Expression": term, "Reading": reading} if reading else {"Expression": term}
-                candidates = generate_search_candidates(term, note=note, allow_tier2=True, allow_deinflection=True)
-                candidate_queries = [c[0] for c in candidates]
-                matched = any(
-                    classify_match_boundary(target_title, q) in ("exact_quoted", "standalone", "inflected", "polite_prefix")
-                    for q in candidate_queries
-                )
-                if matched:
-                    v2_hits += 1
-
-            # Assert v2 recall strictly matches or exceeds legacy recall with zero regressions
-            self.assertGreaterEqual(v2_hits, legacy_hits, f"{deck_name} v2 recall must meet or exceed legacy recall")
-            self.assertEqual(v2_hits, len(dataset), f"{deck_name} v2 search should resolve 100% of benchmark terms")
+                with self.subTest(deck=deck_name, term=term):
+                    note = {"Expression": term, "Reading": reading} if reading else {"Expression": term}
+                    candidates = generate_search_candidates(term, note=note, allow_tier2=True, allow_deinflection=True)[:BATCH_MAX_CANDIDATES]
+                    self.assertTrue(
+                        any(
+                            classify_match_boundary(target_title, c[0])
+                            in ("exact_quoted", "standalone", "inflected", "polite_prefix")
+                            for c in candidates
+                        ),
+                        f"No candidate for '{term}' matches '{target_title}'",
+                    )
 
         # Boundary safety verification (preventing homophone / substring collisions)
         negative_cases = [
@@ -695,12 +698,16 @@ class TestIrasutoyaClient(unittest.TestCase):
             ("カフェオレのイラスト", "オレ"),
             ("芋けんぴのイラスト", "けん"),
             ("食べ物のイラスト", "食べる"),
+            ("食べ物のイラスト", "食べ"),
             ("売り場のイラスト", "売る"),
+            ("売り場のイラスト", "売り"),
+            ("勝ち組のイラスト", "勝ち"),
             ("中性的な人のイラスト", "中"),
         ]
         for title, query in negative_cases:
-            quality = classify_match_boundary(title, query)
-            self.assertIn(quality, ("none", "compound"), f"Query '{query}' in '{title}' must not match as standalone/inflected")
+            with self.subTest(negative_case=query):
+                quality = classify_match_boundary(title, query)
+                self.assertIn(quality, ("none", "compound"), f"Query '{query}' in '{title}' must not match as standalone/inflected")
 
 
 if __name__ == "__main__":
