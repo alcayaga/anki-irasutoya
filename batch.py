@@ -104,7 +104,7 @@ def process_note_record(
         return "skipped_not_empty", None
 
     raw_source = note[source_field]
-    candidates = generate_search_candidates(raw_source, note=note, allow_tier2=allow_tier2, allow_deinflection=False)
+    candidates = generate_search_candidates(raw_source, note=note, allow_tier2=allow_tier2, allow_deinflection=True)
     if not candidates:
         return "skipped_empty_query", None
 
@@ -206,7 +206,7 @@ def run_batch_fill(
                     missing_field_skips += 1
                     continue
                 raw_val = note[source_field]
-                candidates = generate_search_candidates(raw_val, note=note, allow_tier2=True, allow_deinflection=False)
+                candidates = generate_search_candidates(raw_val, note=note, allow_tier2=True, allow_deinflection=True)
                 has_target = bool(note[target_field].strip())
                 items.append((note, candidates, has_target))
             except Exception as e:
