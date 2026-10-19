@@ -335,6 +335,32 @@ class TestIrasutoyaClient(unittest.TestCase):
         self.assertEqual(len(images), 1)
         self.assertEqual(images[0].title, "ネズミを追いかける猫のイラスト")
 
+    def test_parse_entries_excludes_script_and_style_data_from_description(self):
+        """Verify script and style blocks do not leak into post descriptions or cause false matches."""
+        from client import is_image_relevant
+        sample_entries = [
+            {
+                "title": {"$t": "敗北のイラスト"},
+                "content": {
+                    "$t": (
+                        '<script>var label = "勝利";</script>'
+                        '<style>.shori { color: red; }</style>'
+                        '<div class="separator">'
+                        '<img alt="敗北のイラスト" src="https://1.bp.blogspot.com/s400/loss.png" />'
+                        '</div>'
+                        '<p>試合に負けて悔しがっている人のイラストです。</p>'
+                    )
+                }
+            }
+        ]
+        images = self.client.parse_entries(sample_entries)
+        self.assertEqual(len(images), 1)
+        img = images[0]
+        self.assertNotIn("勝利", img.description)
+        self.assertIn("試合に負けて悔しがっている人のイラストです。", img.description)
+        # Verify an otherwise unrelated single-image post is not matched using script text
+        self.assertFalse(is_image_relevant(img, "勝利"))
+
     def test_score_candidate_image(self):
         """Test archetype scoring engine penalties and boosts."""
         from client import score_candidate_image

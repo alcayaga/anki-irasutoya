@@ -136,6 +136,11 @@ class TestTextUtils(unittest.TestCase):
         self.assertEqual(asobu_forms[0], "遊ぶ")
         shinu_forms = deinflect_japanese("死んでいる")
         self.assertEqual(shinu_forms[0], "死ぬ")
+        # Voiced reductions with でいく and でみる: 飛んでいく -> 飛ぶ, 読んでみる -> 読む
+        tonde_forms = deinflect_japanese("飛んでいく")
+        self.assertEqual(tonde_forms[0], "飛ぶ")
+        yonde_forms = deinflect_japanese("読んでみる")
+        self.assertEqual(yonde_forms[0], "読む")
         # Regular te-stems: 勉強している -> 勉強する, 話している -> 話す, 書いている -> 書く, 食べている -> 食べる
         self.assertEqual(deinflect_japanese("勉強している")[0], "勉強する")
         self.assertEqual(deinflect_japanese("話している")[0], "話す")
@@ -317,6 +322,8 @@ class TestTextUtils(unittest.TestCase):
 
         hashitte = conjugate_japanese_verb("走っている")
         self.assertEqual(hashitte, [])
+        self.assertEqual(conjugate_japanese_verb("飛んでいく"), [])
+        self.assertEqual(conjugate_japanese_verb("読んでみる"), [])
 
         # Numeral counters must not be conjugated as verbs
         self.assertEqual(conjugate_japanese_verb("一つ"), [])

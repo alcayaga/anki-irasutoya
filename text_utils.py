@@ -201,9 +201,9 @@ def deinflect_japanese(text: str) -> List[str]:
                 else:
                     forms.append(base + "る")
 
-    # Voiced verb compounds (〜でくる, 〜でいる -> 〜ぐ, 〜む, 〜ぶ, 〜ぬ)
-    # e.g. 泳いでいる -> 泳ぐ; 読んでいる -> 読む; 遊んでいる -> 遊ぶ
-    for aux in ["でくる", "でいる"]:
+    # Voiced verb compounds (〜でくる, 〜でいる, 〜でいく, 〜でみる -> 〜ぐ, 〜む, 〜ぶ, 〜ぬ)
+    # e.g. 泳いでいる -> 泳ぐ; 読んでいる -> 読む; 遊んでいる -> 遊ぶ; 飛んでいく -> 飛ぶ
+    for aux in ["でくる", "でいる", "でいく", "でみる"]:
         if text.endswith(aux) and len(text) > len(aux):
             base = text[:-len(aux)]
             if base.endswith("い") and len(base) > 1:
@@ -378,7 +378,7 @@ def conjugate_japanese_verb(text: str) -> List[str]:
     # Compound auxiliary くる (帰ってくる -> 帰ってきた); other auxiliaries handled by deinflect_japanese
     if text.endswith(("てくる", "でくる")):
         return [text[:-2] + "きた"]
-    if text.endswith(("ている", "でいる", "ていく", "てみる")):
+    if text.endswith(("ている", "でいる", "ていく", "でいく", "てみる", "でみる")):
         return []
 
     last_char = text[-1]

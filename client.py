@@ -50,10 +50,14 @@ class _BloggerContentParser(HTMLParser):
         self.items: List[Tuple[Optional[str], str, str]] = []
         self.text_chunks: List[str] = []
         self._current_href: Optional[str] = None
+        self._ignored_depth: int = 0
 
     def handle_starttag(self, tag: str, attrs: Sequence[Tuple[str, Optional[str]]]) -> None:
         """Track active anchor href and capture nested or standalone img src and alt attributes."""
         tag_lower = tag.lower()
+        if tag_lower in ("script", "style", "noscript"):
+            self._ignored_depth += 1
+            return
         attr_dict = {k.lower(): (v or "") for k, v in attrs}
         if tag_lower == "a":
             self._current_href = attr_dict.get("href")
@@ -63,13 +67,18 @@ class _BloggerContentParser(HTMLParser):
             self.items.append((self._current_href, src, alt))
 
     def handle_endtag(self, tag: str) -> None:
-        """Clear active anchor when </a> is closed."""
-        if tag.lower() == "a":
+        """Clear active anchor when </a> is closed, and track script/style closing tags."""
+        tag_lower = tag.lower()
+        if tag_lower in ("script", "style", "noscript"):
+            if self._ignored_depth > 0:
+                self._ignored_depth -= 1
+            return
+        if tag_lower == "a":
             self._current_href = None
 
     def handle_data(self, data: str) -> None:
-        """Capture visible text content outside of tags."""
-        if data:
+        """Capture visible text content outside of tags and script/style elements."""
+        if data and self._ignored_depth == 0:
             self.text_chunks.append(data)
 
 
