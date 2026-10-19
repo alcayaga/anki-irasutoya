@@ -58,6 +58,8 @@ class _BloggerContentParser(HTMLParser):
         if tag_lower in ("script", "style", "noscript"):
             self._ignored_depth += 1
             return
+        if self._ignored_depth > 0:
+            return
         attr_dict = {k.lower(): (v or "") for k, v in attrs}
         if tag_lower == "a":
             self._current_href = attr_dict.get("href")
@@ -72,6 +74,8 @@ class _BloggerContentParser(HTMLParser):
         if tag_lower in ("script", "style", "noscript"):
             if self._ignored_depth > 0:
                 self._ignored_depth -= 1
+            return
+        if self._ignored_depth > 0:
             return
         if tag_lower == "a":
             self._current_href = None
@@ -375,6 +379,14 @@ def is_decorative_asset(img: IrasutoyaImage, query: str) -> bool:
     return any(noise in title and noise not in clean_q for noise in DECORATIVE_NOISE_KEYWORDS)
 
 
+def rank_relevant_images(candidates: Sequence[IrasutoyaImage], query: str) -> List[IrasutoyaImage]:
+    """Rank relevant images by preference: non-callout illustrations first, then text callouts, ordered by score."""
+    scored = [(img, score_candidate_image(img, query), is_callout_asset(img, query)) for img in candidates]
+    non_callouts = sorted((s for s in scored if not s[2]), key=lambda s: s[1], reverse=True)
+    callouts = sorted((s for s in scored if s[2]), key=lambda s: s[1], reverse=True)
+    return [s[0] for s in non_callouts + callouts]
+
+
 def select_best_image(images: Sequence[IrasutoyaImage], query: str) -> Optional[IrasutoyaImage]:
     """Select the highest-ranked archetypal image from candidate images, excluding decorative assets."""
     if not images:
@@ -383,12 +395,10 @@ def select_best_image(images: Sequence[IrasutoyaImage], query: str) -> Optional[
         img for img in images
         if not is_decorative_asset(img, query) and is_image_relevant(img, query)
     ]
-    # Prefer relevant scene illustrations over text callouts
-    non_callouts = [img for img in illustration_candidates if not is_callout_asset(img, query)]
-    pool = non_callouts if non_callouts else illustration_candidates
-    if not pool:
-        pool = [img for img in images if not is_decorative_asset(img, query)] or images
-    return max(pool, key=lambda img: score_candidate_image(img, query))
+    if illustration_candidates:
+        return rank_relevant_images(illustration_candidates, query)[0]
+    fallback_pool = [img for img in images if not is_decorative_asset(img, query)] or images
+    return max(fallback_pool, key=lambda img: score_candidate_image(img, query))
 
 
 
@@ -638,13 +648,7 @@ class IrasutoyaClient:
                 if not is_decorative_asset(img, term) and is_image_relevant(img, term)
             ]
             if illustration_candidates:
-                non_callouts = [img for img in illustration_candidates if not is_callout_asset(img, term)]
-                pool = non_callouts if non_callouts else illustration_candidates
-                callouts = [img for img in illustration_candidates if is_callout_asset(img, term)] if pool is non_callouts else []
-                ranked = (
-                    sorted(pool, key=lambda img: score_candidate_image(img, term), reverse=True)
-                    + sorted(callouts, key=lambda img: score_candidate_image(img, term), reverse=True)
-                )
+                ranked = rank_relevant_images(illustration_candidates, term)
                 best = ranked[0]
                 return ranked, cand, best
 

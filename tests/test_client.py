@@ -361,6 +361,38 @@ class TestIrasutoyaClient(unittest.TestCase):
         # Verify an otherwise unrelated single-image post is not matched using script text
         self.assertFalse(is_image_relevant(img, "勝利"))
 
+    def test_parse_entries_ignores_tags_inside_noscript(self):
+        """Verify images inside noscript blocks are ignored and do not misclassify single-image posts."""
+        from client import is_image_relevant
+        sample_entries = [
+            {
+                "title": {"$t": "走る人のイラスト"},
+                "content": {
+                    "$t": (
+                        '<div class="separator">'
+                        '<a href="https://1.bp.blogspot.com/s1600/run.png">'
+                        '<img alt="走る人のイラスト" src="https://1.bp.blogspot.com/s400/run.png" />'
+                        '</a>'
+                        '<noscript>'
+                        '<a href="https://1.bp.blogspot.com/s1600/ignored.png">'
+                        '<img alt="無視される画像" src="https://1.bp.blogspot.com/s400/ignored.png" />'
+                        '</a>'
+                        '</noscript>'
+                        '</div>'
+                        '<p>元気に走っている人のイラストです。</p>'
+                    )
+                }
+            }
+        ]
+        images = self.client.parse_entries(sample_entries)
+        self.assertEqual(len(images), 1)
+        img = images[0]
+        self.assertEqual(img.title, "走る人のイラスト")
+        self.assertEqual(img.image_url, "https://1.bp.blogspot.com/s800/run.png")
+        self.assertTrue(img.is_single_image_post)
+        # Description matching remains active for genuine single-image posts
+        self.assertTrue(is_image_relevant(img, "元気"))
+
     def test_score_candidate_image(self):
         """Test archetype scoring engine penalties and boosts."""
         from client import score_candidate_image
@@ -403,6 +435,19 @@ class TestIrasutoyaClient(unittest.TestCase):
         )
         best = select_best_image([img_bad, img_good], "本")
         self.assertEqual(best, img_good)
+
+    def test_rank_relevant_images(self):
+        """Verify rank_relevant_images orders non-callout illustrations before callouts even when callout scores higher."""
+        from client import rank_relevant_images, IrasutoyaImage, is_callout_asset
+        callout = IrasutoyaImage("合格のイラスト文字", "https://example.com/c.png", "https://example.com/tc.png", "合格")
+        scene_archetype = IrasutoyaImage("合格のイラスト", "https://example.com/s1.png", "https://example.com/ts1.png", "合格のイラスト")
+        scene_low = IrasutoyaImage("合格発表を見に行って落ち込む人のイラスト", "https://example.com/s2.png", "https://example.com/ts2.png", "合格")
+
+        self.assertTrue(is_callout_asset(callout, "合格"))
+        self.assertFalse(is_callout_asset(scene_low, "合格"))
+
+        ranked = rank_relevant_images([callout, scene_low, scene_archetype], "合格")
+        self.assertEqual(ranked, [scene_archetype, scene_low, callout])
 
     def test_search_with_fallbacks(self):
         """Test candidate fallback execution when primary returns 0 results."""

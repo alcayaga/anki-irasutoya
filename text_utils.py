@@ -62,11 +62,15 @@ def extract_furigana_terms(raw_text: Optional[str]) -> Tuple[str, Optional[str]]
     if not raw_text:
         return "", None
 
-    # If no furigana bracket syntax present
-    if "[" not in raw_text or "]" not in raw_text:
-        return clean_search_query(raw_text), None
+    # Strip HTML tags, HTML entities, and Anki sound tags first
+    text = re.sub(r"<[^>]+>", " ", raw_text)
+    text = html.unescape(text).replace("\xa0", " ")
+    text = re.sub(r"\[sound:[^\]]+\]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
 
-    text = raw_text.strip()
+    # If no furigana bracket syntax present
+    if "[" not in text or "]" not in text:
+        return clean_search_query(text), None
     # Case 1: Simple single Kanji/counter word with furigana at the end: '林檎[りんご]', '漢字[かんじ]', '１杯[いっぱい]'
     # Must start with Kanji/alphanumeric and contain NO spaces or unbracketed prefix okurigana
     kanji_or_alnum = r"[\u4e00-\u9fff\u3400-\u4dbf々〆〇0-9\uff10-\uff19a-zA-Z\uff21-\uff3a\uff41-\uff5a]"

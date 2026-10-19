@@ -65,6 +65,10 @@ class TestTextUtils(unittest.TestCase):
         self.assertEqual(extract_furigana_terms("食べる[たべる]"), ("食べる", "たべる"))
         self.assertEqual(extract_furigana_terms("お茶[おちゃ]"), ("お茶", "おちゃ"))
         self.assertEqual(extract_furigana_terms("ご飯[ごはん]"), ("ご飯", "ごはん"))
+        # Fields with HTML wrappers or trailing sound tags
+        self.assertEqual(extract_furigana_terms("<div>其の儘[そのまま]</div>"), ("其の儘", "そのまま"))
+        self.assertEqual(extract_furigana_terms("食べ物[たべもの] [sound:x.mp3]"), ("食べ物", "たべもの"))
+        self.assertEqual(extract_furigana_terms("<div>林檎[りんご]</div> [sound:audio.mp3]"), ("林檎", "りんご"))
         self.assertEqual(extract_furigana_terms("猫"), ("猫", None))
         self.assertEqual(extract_furigana_terms(""), ("", None))
         self.assertEqual(extract_furigana_terms(None), ("", None))
