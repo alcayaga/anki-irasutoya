@@ -229,8 +229,9 @@ class TestTextUtils(unittest.TestCase):
         self.assertLess(terms_kaeru.index("帰る"), terms_kaeru.index("かえってくる"))
         self.assertNotIn("帰っる", terms_kaeru)
         # Speculative alternatives (帰う, 帰つ) appear after note reading
-        if "帰う" in terms_kaeru:
-            self.assertGreater(terms_kaeru.index("帰う"), terms_kaeru.index("かえってくる"))
+        before_reading = terms_kaeru[:terms_kaeru.index("かえってくる")]
+        self.assertNotIn("帰う", before_reading)
+        self.assertNotIn("帰つ", before_reading)
 
         note_matsu = {
             "Expression": "待っている",
@@ -241,8 +242,7 @@ class TestTextUtils(unittest.TestCase):
         self.assertIn("待つ", terms_matsu[:5])
         self.assertIn("まっている", terms_matsu[:5])
         self.assertLess(terms_matsu.index("待つ"), terms_matsu.index("まっている"))
-        if "待る" in terms_matsu:
-            self.assertGreater(terms_matsu.index("待る"), terms_matsu.index("まっている"))
+        self.assertNotIn("待る", terms_matsu[:terms_matsu.index("まっている")])
 
     def test_verb_conjugations(self):
         """Test Kanji-preserving verb inflection generation for Irasutoya titles."""
