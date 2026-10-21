@@ -1,10 +1,15 @@
 """Anki Irasutoya Add-on: Fill cards with Irasutoya illustrations from the Browser screen."""
 import logging
-from aqt import mw, gui_hooks
-from aqt.qt import QAction, QKeySequence, qconnect
-from aqt.utils import showInfo
-
 logger = logging.getLogger(__name__)
+
+try:
+    from aqt import mw, gui_hooks
+    from aqt.qt import QAction, QKeySequence, qconnect
+    from aqt.utils import showInfo
+    HAS_AQT = True
+except (ImportError, RuntimeError) as _aqt_exc:
+    HAS_AQT = False
+    print(f"Irasutoya add-on: Anki GUI APIs unavailable, hooks not registered ({_aqt_exc!r})")
 
 
 def on_add_irasutoya_images(browser) -> None:
@@ -55,5 +60,6 @@ def init_addon() -> None:
     gui_hooks.browser_will_show_context_menu.append(on_browser_will_show_context_menu)
 
 
-# Register hooks on load
-init_addon()
+# Register hooks on load if running inside Anki
+if HAS_AQT:
+    init_addon()

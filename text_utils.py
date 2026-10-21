@@ -4,6 +4,17 @@ import re
 from typing import Any, List, Optional, Sequence, Tuple
 import unicodedata
 
+try:
+    from .yomitan_parser import (
+        YomitanMetadata,
+        extract_yomitan_metadata_from_note,
+    )
+except ImportError:
+    from yomitan_parser import (
+        YomitanMetadata,
+        extract_yomitan_metadata_from_note,
+    )
+
 # Mapping from Arabic digits to Japanese Kanji numerals
 KANJI_NUMS = {
     "1": "一", "2": "二", "3": "三", "4": "四", "5": "五",
@@ -362,7 +373,7 @@ SINGLE_KANJI_ICHIDAN = {
 NON_VERB_GODAN_LOOKALIKES = frozenset({"全く", "暫く", "漸く", "恐らく", "悉く", "如く", "幾つ"})
 
 
-def conjugate_japanese_verb(text: str) -> List[str]:
+def conjugate_japanese_verb(text: str, verb_class: Optional[str] = None) -> List[str]:
     """Generate canonical Irasutoya title inflection forms (past/stative, masu-stem, volitional) for verbs containing Kanji."""
     if len(text) < 2 or not re.search(r"[\u4e00-\u9fff\u3400-\u4dbf々〆〇]", text):
         return []
@@ -401,10 +412,16 @@ def conjugate_japanese_verb(text: str) -> List[str]:
     forms: List[str] = []
 
     # Differentiate Ichidan vs Godan for verbs ending in る
-    is_ichidan = last_char == "る" and (
-        text in SINGLE_KANJI_ICHIDAN
-        or bool(stem and stem[-1] in "いきぎしじちにひびみりえけげせぜてでねへべめれ")
-    )
+    if verb_class and verb_class.startswith("v1") and last_char == "る":
+        is_ichidan = True
+    elif verb_class and verb_class.startswith("v5"):
+        is_ichidan = False
+    else:
+        is_ichidan = last_char == "る" and (
+            text in SINGLE_KANJI_ICHIDAN
+            or bool(stem and stem[-1] in "いきぎしじちにひびみりえけげせぜてでねへべめれ")
+        )
+
     if is_ichidan:
         # Ichidan: 食べる -> 食べた, 食べよう, 食べ; 疲れる -> 疲れた, 疲れよう, 疲れ; 見る -> 見た, 見よう
         forms.append(stem + "た")
@@ -416,7 +433,7 @@ def conjugate_japanese_verb(text: str) -> List[str]:
         a_row, i_row, te_stem, e_row, o_row = GODAN_ENDINGS[last_char]
         past_suffix = "だ" if last_char in ("ぐ", "ぬ", "ぶ", "む") else "た"
         # 行く is irregular in the past tense: 行った (not 行いた)
-        te = "っ" if text.endswith("行く") else te_stem
+        te = "っ" if (verb_class == "v5k-s" or text.endswith("行く")) else te_stem
         forms.append(stem + te + past_suffix)
         forms.append(stem + i_row)
         forms.append(stem + o_row + "う")
@@ -430,6 +447,38 @@ def conjugate_japanese_verb(text: str) -> List[str]:
     return out
 
 
+def _iter_note_readings(note: Any) -> List[Tuple[str, str, str]]:
+    """Extract (field_name, field_type, reading) from note reading and furigana fields."""
+    if not note or not hasattr(note, "__getitem__"):
+        return []
+    results = []
+    for rf in NOTE_READING_FIELDS:
+        if rf in note and note[rf]:
+            val = str(note[rf]).strip()
+            if val:
+                _, f_read = extract_furigana_terms(val)
+                reading_term = f_read if f_read else val
+                cleaned_read = clean_search_query(reading_term)
+                if cleaned_read and not is_grammar_function_word(cleaned_read):
+                    results.append((rf, "reading", cleaned_read))
+    for ff in NOTE_FURIGANA_FIELDS:
+        if ff in note and note[ff]:
+            f_val = str(note[ff]).strip()
+            if f_val:
+                _, f_read = extract_furigana_terms(f_val)
+                if f_read:
+                    cleaned_read = clean_search_query(f_read)
+                    if cleaned_read and not is_grammar_function_word(cleaned_read):
+                        results.append((ff, "furigana", cleaned_read))
+    return results
+
+
+def _find_note_reading(note: Any) -> Optional[str]:
+    """Extract first valid authoritative reading from note fields."""
+    readings = _iter_note_readings(note)
+    return readings[0][2] if readings else None
+
+
 def generate_search_candidates(
     raw_source: Optional[str],
     note: Optional[Any] = None,
@@ -440,9 +489,11 @@ def generate_search_candidates(
     
     Tiers:
         Tier 1 (Safe Lexical & Morphological): Zero homophone risk. Always automatic in both Batch & UI.
-                       (NFKC, Kanji numerals, Bikago prefixes, compound verb reductions, verb past/volitional forms, loanword Katakana).
+                       (NFKC, Kanji numerals, Bikago prefixes, compound verb reductions, verb past/volitional forms, loanword Katakana,
+                        Yomitan uk orthography kana readings, formsTable ★ canonical kanji variants).
         Tier 2 (Phonetic & Reading Fallbacks): Readings from separate note fields,
-                       same-field furigana, verb masu-stems, Katakana chōonpu expansion, heuristic compound deinflection.
+                       same-field furigana, verb masu-stems, Katakana chōonpu expansion, heuristic compound deinflection,
+                       Yomitan sense-specific kanji (esp.), Yomitan cross-references (see:).
     
     Returns:
         List of (candidate_query, reason_label, confidence_tier).
@@ -458,12 +509,14 @@ def generate_search_candidates(
             seen.add(cleaned)
             candidates.append((cleaned, reason, tier))
 
+    yomitan_meta = extract_yomitan_metadata_from_note(note) if note is not None else None
+
     # 1. Primary source field
     surface, same_field_reading = extract_furigana_terms(raw_source)
     add(surface, "primary", 1)
 
     # If surface is a pure grammar function word, suppress unanchored phonetic/reading fallbacks
-    if not surface or is_grammar_function_word(surface):
+    if not surface or is_grammar_function_word(surface) or (yomitan_meta and yomitan_meta.is_particle_or_aux):
         return candidates
 
     # 2. Tier 1 Safe Lexical & Morphological Expansions on primary term
@@ -472,13 +525,33 @@ def generate_search_candidates(
     if kanji_num:
         add(kanji_num, "kanji_numeral", 1)
 
+    # Yomitan canonical ★ Kanji variants from formsTable or forms list (e.g. 交代 <-> 交替, 一日 <-> １日)
+    if yomitan_meta and yomitan_meta.forms_star:
+        for star_form in yomitan_meta.forms_star[:3]:
+            add(star_form, "yomitan_star_form", 1)
+
+    # Yomitan 'uk' (usually written using kana alone) orthography promotion
+    # Headwords like 其の儘, 懸かる, ご免なさい are canonical in Kana in modern Japanese and on Irasutoya
+    if yomitan_meta and yomitan_meta.is_uk:
+        uk_reading = same_field_reading or _find_note_reading(note)
+        if uk_reading:
+            cleaned_uk = clean_search_query(uk_reading)
+            if (
+                cleaned_uk
+                and (len(cleaned_uk) >= 3 or cleaned_uk in SAFE_2MORA_LOANWORDS)
+                and not is_grammar_function_word(cleaned_uk)
+            ):
+                add(cleaned_uk, "yomitan_uk_reading", 1)
+                add(to_katakana(cleaned_uk), "yomitan_uk_katakana", 1)
+
     # Bikago polite prefix (e.g. 肉 -> お肉, 肌 -> お肌, 茶 -> お茶, 風呂 -> お風呂)
     bikago = expand_bikago_prefix(surface)
     if bikago:
         add(bikago, "bikago_prefix", 1)
 
-    # Verb stative/past and volitional inflections (e.g. 疲れる -> 疲れた; 勝つ -> 勝った, 勝とう; 売る -> 売った, 売ろう)
-    verb_inflections = conjugate_japanese_verb(surface)
+    # Verb stative/past and volitional inflections (guided by Yomitan verb_class if present)
+    verb_class = yomitan_meta.verb_class if yomitan_meta else None
+    verb_inflections = conjugate_japanese_verb(surface, verb_class=verb_class)
     for inflected in verb_inflections:
         if inflected.endswith(("た", "だ", "う")):
             add(inflected, "verb_inflection", 1)
@@ -490,7 +563,7 @@ def generate_search_candidates(
     ):
         add(to_katakana(surface), "loanword_katakana", 1)
 
-    # 3. Tier 2 Semantic & Phonetic Fallbacks (Validated Deinflection, Note Fields, Readings, Masu-Stems, Elongation, Speculative Deinflection)
+    # 3. Tier 2 Semantic & Phonetic Fallbacks (Validated Deinflection, Note Fields, Readings, Sense Kanji, Cross-References, Masu-Stems, Elongation, Speculative Deinflection)
     if allow_tier2:
         deinflections = deinflect_japanese(surface) if allow_deinflection else []
         # Primary validated deinflection from surface (e.g. 帰ってくる -> 帰る, 走っている -> 走る, 待っている -> 待つ)
@@ -499,36 +572,47 @@ def generate_search_candidates(
         if deinflections:
             add(deinflections[0], "deinflected_base", 2)
 
-        # Check dedicated reading fields on the note (authoritative dictionary readings)
-        if note and hasattr(note, "__getitem__"):
-            for rf in NOTE_READING_FIELDS:
-                if rf in note and note[rf]:
-                    val = str(note[rf]).strip()
-                    if val:
-                        _, f_read = extract_furigana_terms(val)
-                        reading_term = f_read if f_read else val
-                        cleaned_read = clean_search_query(reading_term)
-                        if cleaned_read and not is_grammar_function_word(cleaned_read):
-                            add(cleaned_read, f"note_reading_{rf}", 2)
-                            add(to_katakana(cleaned_read), f"note_reading_katakana_{rf}", 2)
-
-            # Check furigana fields on the note
-            for ff in NOTE_FURIGANA_FIELDS:
-                if ff in note and note[ff]:
-                    f_val = str(note[ff]).strip()
-                    if f_val:
-                        _, f_read = extract_furigana_terms(f_val)
-                        if f_read:
-                            cleaned_read = clean_search_query(f_read)
-                            if cleaned_read and not is_grammar_function_word(cleaned_read):
-                                add(cleaned_read, f"note_furigana_{ff}", 2)
-                                add(to_katakana(cleaned_read), f"note_furigana_katakana_{ff}", 2)
+        # Check dedicated reading and furigana fields on the note (authoritative dictionary readings)
+        for f_name, f_type, cleaned_read in _iter_note_readings(note):
+            prefix = f"note_{f_type}_{f_name}"
+            add(cleaned_read, prefix, 2)
+            add(to_katakana(cleaned_read), f"{prefix}_katakana", 2)
 
         # Same-field reading extracted from furigana brackets (e.g. 檸檬[れもん] -> れもん, 本[ほん] -> ほん)
         # Suppress single kana and grammar function words to avoid homophone collisions
         if same_field_reading and not is_grammar_function_word(same_field_reading):
             add(same_field_reading, "same_field_reading", 2)
             add(to_katakana(same_field_reading), "same_field_reading_katakana", 2)
+
+        # Yomitan sense-specific Kanji splits from notes (e.g. 止める -> esp. 停める, 留める)
+        if yomitan_meta and yomitan_meta.sense_kanji:
+            added_sense = 0
+            for sense_k in yomitan_meta.sense_kanji:
+                cleaned_k = clean_search_query(sense_k)
+                if (
+                    cleaned_k
+                    and cleaned_k not in seen
+                    and not is_grammar_function_word(cleaned_k)
+                ):
+                    add(cleaned_k, "yomitan_sense_kanji", 2)
+                    added_sense += 1
+                    if added_sense >= 3:
+                        break
+
+        # Yomitan 'see:' cross-references (e.g. 気づく -> 気がつく, 総理 -> 内閣総理大臣, 軽 -> 軽自動車)
+        if yomitan_meta and yomitan_meta.references:
+            added_refs = 0
+            for ref in yomitan_meta.references:
+                cleaned_ref = clean_search_query(ref)
+                if (
+                    cleaned_ref
+                    and cleaned_ref not in seen
+                    and not is_grammar_function_word(cleaned_ref)
+                ):
+                    add(cleaned_ref, "yomitan_see_reference", 2)
+                    added_refs += 1
+                    if added_refs >= 3:
+                        break
 
         # Masu-stems (e.g. 疲れ, 勝ち, 売り, 休み) can function as distinct nouns,
         # so classify them as Tier 2 fallbacks with audit tagging.

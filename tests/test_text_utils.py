@@ -418,6 +418,166 @@ class TestTextUtils(unittest.TestCase):
         self.assertEqual(len(cands_particle), 1)
         self.assertEqual(cands_particle[0], ("まで", "primary", 1))
 
+    def test_yomitan_uk_reading_promotion(self):
+        """Test that words tagged 'uk' promote their Kana and Katakana readings to Tier 1."""
+        from text_utils import generate_search_candidates
+        note = {
+            "Expression": "其の儘",
+            "ExpressionReading": "そのまま",
+            "MainDefinition": (
+                '<div class="yomitan-glossary"><ol><li data-dictionary="JMdict [2025-11-01]">'
+                '<i>(1, adj-no, adv, n, uk, JMdict [2025-11-01])</i> '
+                '<span><ul data-sc-content="glossary"><li>as is</li></ul></span></li></ol></div>'
+            )
+        }
+        cands = generate_search_candidates(note["Expression"], note=note, allow_tier2=True)
+        cand_map = {term: (reason, tier) for term, reason, tier in cands}
+        self.assertIn("そのまま", cand_map)
+        self.assertEqual(cand_map["そのまま"], ("yomitan_uk_reading", 1))
+        self.assertIn("ソノママ", cand_map)
+        self.assertEqual(cand_map["ソノママ"], ("yomitan_uk_katakana", 1))
+
+    def test_yomitan_secondary_uk_not_promoted(self):
+        """Test that uk on a secondary sense does NOT promote kana reading to Tier 1."""
+        from text_utils import generate_search_candidates
+        note = {
+            "Expression": "漢字",
+            "ExpressionReading": "かんじ",
+            "MainDefinition": (
+                '<div class="yomitan-glossary"><ol>'
+                '<li data-dictionary="JMdict [2025-11-01]"><i>(1, n, JMdict [2025-11-01])</i> <span>Chinese characters</span></li>'
+                '<li data-dictionary="JMdict [2025-11-01]"><i>(2, n, uk, JMdict [2025-11-01])</i> <span>secondary sense</span></li>'
+                '</ol></div>'
+            )
+        }
+        cands = generate_search_candidates(note["Expression"], note=note, allow_tier2=True)
+        cand_map = {term: (reason, tier) for term, reason, tier in cands}
+        # Kana reading should be Tier 2 fallback, NOT promoted to Tier 1
+        self.assertIn("かんじ", cand_map)
+        self.assertEqual(cand_map["かんじ"][1], 2)
+        reasons = [reason for term, reason, tier in cands]
+        self.assertNotIn("yomitan_uk_reading", reasons)
+
+    def test_yomitan_forms_star_promotion(self):
+        """Test that ★ forms from formsTable are promoted to Tier 1."""
+        from text_utils import generate_search_candidates
+        note = {
+            "Expression": "交代",
+            "ExpressionReading": "こうたい",
+            "MainDefinition": (
+                '<table data-sc-content="formsTable">'
+                '<tbody><tr><th></th><th>交代</th><th>交替</th></tr>'
+                '<tr><th>こうたい</th><td>★</td><td>★</td></tr></tbody></table>'
+            )
+        }
+        cands = generate_search_candidates(note["Expression"], note=note, allow_tier2=True)
+        cand_map = {term: (reason, tier) for term, reason, tier in cands}
+        self.assertIn("交替", cand_map)
+        self.assertEqual(cand_map["交替"], ("yomitan_star_form", 1))
+
+    def test_yomitan_deterministic_verb_conjugation(self):
+        """Test that exact JMdict verb class (v5r) fixes Godan verbs misclassified by heuristic."""
+        from text_utils import generate_search_candidates
+        # Without Yomitan metadata, 見くびる would be misclassified as Ichidan (stem ends in 'び')
+        note = {
+            "Expression": "見くびる",
+            "ExpressionReading": "みくびる",
+            "MainDefinition": (
+                '<ol><li data-dictionary="JMdict [2025-11-01]">'
+                '<i>(1, v5r, vt, JMdict [2025-11-01])</i> '
+                '<span>to underrate</span></li></ol>'
+            )
+        }
+        cands = generate_search_candidates(note["Expression"], note=note, allow_tier2=True)
+        cand_map = {term: (reason, tier) for term, reason, tier in cands}
+        # Correct Godan past tense (v5r: 見くびった) must be present in Tier 1
+        self.assertIn("見くびった", cand_map)
+        self.assertEqual(cand_map["見くびった"], ("verb_inflection", 1))
+        # Godan volitional form (見くびろう)
+        self.assertIn("見くびろう", cand_map)
+        self.assertEqual(cand_map["見くびろう"], ("verb_inflection", 1))
+        # Masu-stem (見くびり) in Tier 2
+        self.assertIn("見くびり", cand_map)
+        self.assertEqual(cand_map["見くびり"], ("verb_stem", 2))
+        # Wrong Ichidan past tense (見くびた) must NOT be present
+        self.assertNotIn("見くびた", cand_map)
+
+    def test_yomitan_references_and_sense_kanji(self):
+        """Test that 'see:' references and sense-specific kanji are emitted as Tier 2 fallbacks."""
+        from text_utils import generate_search_candidates
+        note = {
+            "Expression": "総理",
+            "ExpressionReading": "そうり",
+            "MainDefinition": (
+                '<div class="yomitan-glossary">'
+                '<ol><li data-dictionary="JMdict [2025-11-01]">'
+                '<i>(1, vs, n, JMdict [2025-11-01])</i> '
+                '<ul data-sc-content="references"><li>see: <a lang="ja" href="#"><span>内閣総理大臣</span></a>'
+                '<span data-sc-content="refGlosses"> prime minister</span></li></ul>'
+                '</li></ol></div>'
+            )
+        }
+        cands = generate_search_candidates(note["Expression"], note=note, allow_tier2=True)
+        cand_map = {term: (reason, tier) for term, reason, tier in cands}
+        self.assertIn("内閣総理大臣", cand_map)
+        self.assertEqual(cand_map["内閣総理大臣"], ("yomitan_see_reference", 2))
+
+        # Sense-specific kanji test (止める -> esp. 停める, 留める)
+        note_tomeru = {
+            "Expression": "止める",
+            "ExpressionReading": "とめる",
+            "MainDefinition": (
+                '<div class="yomitan-glossary">'
+                '<ol><li data-dictionary="JMdict [2025-11-01]">'
+                '<i>(1, v1, vt, JMdict [2025-11-01])</i> '
+                '<ul data-sc-content="notes"><li>esp. 止める, 停める</li></ul>'
+                '<ul data-sc-content="notes"><li>esp. 留める</li></ul>'
+                '</li></ol></div>'
+            )
+        }
+        cands_tomeru = generate_search_candidates(note_tomeru["Expression"], note=note_tomeru, allow_tier2=True)
+        cand_map_tomeru = {term: (reason, tier) for term, reason, tier in cands_tomeru}
+        self.assertIn("停める", cand_map_tomeru)
+        self.assertEqual(cand_map_tomeru["停める"], ("yomitan_sense_kanji", 2))
+        self.assertIn("留める", cand_map_tomeru)
+        self.assertEqual(cand_map_tomeru["留める"], ("yomitan_sense_kanji", 2))
+
+    def test_yomitan_particle_gating(self):
+        """Test that notes tagged 'prt' or 'conj' suppress unanchored fallbacks."""
+        from text_utils import generate_search_candidates
+        # 及び is not in GRAMMAR_FUNCTION_WORDS, so gating is driven purely by Yomitan metadata
+        note_oyobi = {
+            "Expression": "及び",
+            "ExpressionReading": "および",
+            "MainDefinition": (
+                '<ol><li data-dictionary="JMdict [2025-11-01]">'
+                '<i>(1, conj, JMdict [2025-11-01])</i> '
+                '<span>and; as well as</span></li></ol>'
+            )
+        }
+        cands = generate_search_candidates(note_oyobi["Expression"], note=note_oyobi, allow_tier2=True)
+        # Should only have the primary term
+        self.assertEqual(len(cands), 1)
+        self.assertEqual(cands[0], ("及び", "primary", 1))
+
+    def test_yomitan_vk_compound_conjugation(self):
+        """Test that ~てくる compounds with vk tag still conjugate correctly to ~てきた."""
+        from text_utils import generate_search_candidates
+        note_kaeru = {
+            "Expression": "帰ってくる",
+            "ExpressionReading": "かえってくる",
+            "MainDefinition": (
+                '<ol><li data-dictionary="JMdict [2025-11-01]">'
+                '<i>(1, vk, vi, JMdict [2025-11-01])</i> '
+                '<span>to come back</span></li></ol>'
+            )
+        }
+        cands = generate_search_candidates(note_kaeru["Expression"], note=note_kaeru, allow_tier2=True)
+        cand_map = {term: (reason, tier) for term, reason, tier in cands}
+        self.assertIn("帰ってきた", cand_map)
+        self.assertEqual(cand_map["帰ってきた"], ("verb_inflection", 1))
+        self.assertNotIn("帰ってくるた", cand_map)
+
 
 if __name__ == "__main__":
     unittest.main()
