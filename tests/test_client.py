@@ -2,6 +2,7 @@
 import json
 import unittest
 import urllib.error
+
 from client import IrasutoyaClient, IrasutoyaImage, is_decorative_asset, is_image_relevant, select_best_image
 
 
@@ -141,7 +142,7 @@ class TestIrasutoyaClient(unittest.TestCase):
 
     def test_https_only_redirect_handler(self):
         """Verify that HTTPRedirectHandler rejects non-HTTPS or untrusted redirect targets."""
-        from client import _HttpsOnlyRedirectHandler, InsecureRedirectError
+        from client import InsecureRedirectError, _HttpsOnlyRedirectHandler
         handler = _HttpsOnlyRedirectHandler()
         with self.assertRaises(InsecureRedirectError):
             handler.redirect_request(None, None, 302, "Found", {}, "http://insecure.target/img.png")
@@ -419,7 +420,6 @@ class TestIrasutoyaClient(unittest.TestCase):
 
     def test_select_best_image(self):
         """Test selecting the highest scoring image among candidates."""
-        from client import select_best_image
 
         img_bad = IrasutoyaImage(
             title="本を投げ捨てる問題児のイラスト",
@@ -438,7 +438,7 @@ class TestIrasutoyaClient(unittest.TestCase):
 
     def test_rank_relevant_images(self):
         """Verify rank_relevant_images orders non-callout illustrations before callouts even when callout scores higher."""
-        from client import rank_relevant_images, IrasutoyaImage, is_callout_asset
+        from client import IrasutoyaImage, is_callout_asset, rank_relevant_images
         callout = IrasutoyaImage("合格のイラスト文字", "https://example.com/c.png", "https://example.com/tc.png", "合格")
         scene_archetype = IrasutoyaImage("合格のイラスト", "https://example.com/s1.png", "https://example.com/ts1.png", "合格のイラスト")
         scene_low = IrasutoyaImage("合格発表を見に行って落ち込む人のイラスト", "https://example.com/s2.png", "https://example.com/ts2.png", "合格")
@@ -474,7 +474,6 @@ class TestIrasutoyaClient(unittest.TestCase):
 
     def test_search_with_fallbacks_propagates_search_exception(self):
         """Verify search_with_fallbacks propagates network/HTTP errors rather than falling back to Tier 2."""
-        import urllib.error
         client = IrasutoyaClient()
 
         def mock_failing_search(q, **kwargs):
@@ -662,7 +661,7 @@ class TestIrasutoyaClient(unittest.TestCase):
 
     def test_score_callout_text_heavy_penalty(self):
         """Test that illustrated text callouts receive heavy penalty instead of hard rejection."""
-        from client import score_candidate_image, is_image_relevant, is_decorative_asset, select_best_image
+        from client import is_decorative_asset, is_image_relevant, score_candidate_image
 
         img_callout = IrasutoyaImage(
             title="「決定！」のイラスト文字",
@@ -789,8 +788,8 @@ class TestIrasutoyaClient(unittest.TestCase):
 
     def test_candidate_regression_fixture(self):
         """Automated regression fixture verifying candidate generation and boundary matching on Mining and Kaishi 1.5k decks."""
-        from text_utils import generate_search_candidates, BATCH_MAX_CANDIDATES
         from client import classify_match_boundary
+        from text_utils import BATCH_MAX_CANDIDATES, generate_search_candidates
 
         # Mining vocabulary dataset: (card_term, reading, target_illustration_title)
         mining_dataset = [

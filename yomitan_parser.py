@@ -1,8 +1,8 @@
 """Parser for extracting structured JMdict metadata from Yomitan note HTML fields."""
-from dataclasses import dataclass, field
 import html
-from html.parser import HTMLParser
 import re
+from dataclasses import dataclass, field
+from html.parser import HTMLParser
 from typing import Any, List, Optional, Sequence, Set, Tuple
 
 # Common Yomitan definition/glossary field names in popular note models (Lapis, Senren, Jlab, etc.)

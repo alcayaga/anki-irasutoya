@@ -1,9 +1,9 @@
 """Unit tests for Yomitan HTML metadata extraction."""
 import unittest
+
 from yomitan_parser import (
-    parse_yomitan_html,
     extract_yomitan_metadata_from_note,
-    YomitanMetadata,
+    parse_yomitan_html,
 )
 
 

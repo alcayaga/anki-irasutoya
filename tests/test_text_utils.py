@@ -1,5 +1,6 @@
 """Unit tests for text query extraction and sanitization utilities."""
 import unittest
+
 from text_utils import clean_search_query
 
 
@@ -75,7 +76,7 @@ class TestTextUtils(unittest.TestCase):
 
     def test_kana_conversions(self):
         """Test Hiragana and Katakana bidirectional character conversions."""
-        from text_utils import to_katakana, to_hiragana
+        from text_utils import to_hiragana, to_katakana
         self.assertEqual(to_katakana("とまと"), "トマト")
         self.assertEqual(to_katakana("ぱん"), "パン")
         self.assertEqual(to_katakana("かめら"), "カメラ")
@@ -156,7 +157,7 @@ class TestTextUtils(unittest.TestCase):
     def test_generate_search_candidates(self):
         """Test candidate generation priority, tiers, and note field inspection."""
         from text_utils import generate_search_candidates
-        
+
         # Test 1: Direct furigana in primary term (Primary is Tier 1, readings are Tier 2 for audit)
         cands1 = generate_search_candidates("林檎[りんご]")
         terms1 = [c[0] for c in cands1]

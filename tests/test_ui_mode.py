@@ -3,10 +3,10 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 try:
-    from aqt.qt import QApplication, QHeaderView, QPushButton, QLabel
+    from aqt.qt import QApplication, QHeaderView, QPushButton
     app = QApplication.instance() or QApplication(["test", "-platform", "offscreen"])
-    from ui import IrasutoyaDialog, ImageCardWidget, CHEVRON_ICON_PATH, DIALOG_STYLESHEET
     from client import IrasutoyaImage
+    from ui import CHEVRON_ICON_PATH, DIALOG_STYLESHEET, ImageCardWidget, IrasutoyaDialog
     HAS_QT = True
 except Exception:
     HAS_QT = False

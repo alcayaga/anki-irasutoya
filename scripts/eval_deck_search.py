@@ -19,7 +19,7 @@ import time
 import unicodedata
 import urllib.error
 import urllib.request
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 # Ensure parent directory is on sys.path so we can import client and text_utils
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -27,17 +27,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from client import (
     IrasutoyaClient,
     IrasutoyaImage,
-    score_candidate_image,
-    select_best_image,
     is_decorative_asset,
     is_image_relevant,
 )
 from text_utils import (
-    clean_search_query,
-    generate_search_candidates,
     BATCH_MAX_CANDIDATES,
-    NOTE_READING_FIELDS,
-    NOTE_FURIGANA_FIELDS,
+    generate_search_candidates,
 )
 
 

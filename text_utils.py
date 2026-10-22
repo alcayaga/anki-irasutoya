@@ -1,17 +1,15 @@
 """Text utilities for sanitizing search queries and generating tiered fallback candidates from Anki card fields."""
 import html
 import re
-from typing import Any, List, Optional, Sequence, Tuple
 import unicodedata
+from typing import Any, List, Optional, Tuple
 
 try:
     from .yomitan_parser import (
-        YomitanMetadata,
         extract_yomitan_metadata_from_note,
     )
 except ImportError:
     from yomitan_parser import (
-        YomitanMetadata,
         extract_yomitan_metadata_from_note,
     )
 
