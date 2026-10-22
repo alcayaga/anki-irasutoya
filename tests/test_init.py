@@ -1,5 +1,6 @@
 """Unit tests for top-level add-on lifecycle and headless import safety."""
 from unittest.mock import MagicMock, patch
+import builtins
 import importlib
 import sys
 
@@ -31,6 +32,29 @@ class TestInitAddon:
                 sys.modules["aqt"] = orig_aqt
             else:
                 sys.modules.pop("aqt", None)
+
+    def test_headless_fresh_import_handles_runtime_error(self):
+        """Ensure a RuntimeError while importing aqt sets HAS_AQT to False."""
+        orig_init = sys.modules.get("__init__")
+        real_import = builtins.__import__
+
+        def import_raising_runtime_error(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "aqt":
+                raise RuntimeError("aqt GUI unavailable")
+            return real_import(name, globals, locals, fromlist, level)
+
+        try:
+            sys.modules.pop("__init__", None)
+            with patch.object(
+                builtins, "__import__", side_effect=import_raising_runtime_error
+            ):
+                addon_init = importlib.import_module("__init__")
+                assert addon_init.HAS_AQT is False
+        finally:
+            if orig_init is not None:
+                sys.modules["__init__"] = orig_init
+            else:
+                sys.modules.pop("__init__", None)
 
     def test_init_addon_noop_when_has_aqt_false(self):
         """Ensure init_addon safely no-ops without exception when HAS_AQT is False."""
