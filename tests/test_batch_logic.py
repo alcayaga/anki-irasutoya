@@ -1,7 +1,8 @@
 """Unit tests for batch processing logic, filename generation, and note evaluation."""
 import unittest
 import urllib.parse
-from batch import make_safe_media_filename, process_note_record, BatchStats
+
+from batch import BatchStats, make_safe_media_filename, process_note_record
 from client import IrasutoyaImage
 
 
@@ -72,7 +73,7 @@ class TestBatchLogic(unittest.TestCase):
             post_title="猫のイラスト"
         )
         client = MockIrasutoyaClient(search_results=[img])
-        
+
         written_files = []
         def mock_writer(filename, data):
             """Mock Anki media writer storing write arguments in memory."""
@@ -140,7 +141,7 @@ class TestBatchLogic(unittest.TestCase):
                     self.tags.remove(tag)
 
         note = MockNote({"Expression": "其の儘", "Reading": "そのまま", "DefinitionPicture": ""})
-        
+
         reading_img = IrasutoyaImage(
             title="そのままのイラスト",
             image_url="https://example.com/sonomama.png",
@@ -149,7 +150,7 @@ class TestBatchLogic(unittest.TestCase):
         )
         # Primary query returns empty, fallback query "そのまま" returns image
         client = MockIrasutoyaClient(search_mapping={"そのまま": [reading_img]})
-        
+
         status, mod = process_note_record(
             note=note,
             source_field="Expression",

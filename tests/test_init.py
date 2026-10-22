@@ -1,8 +1,8 @@
 """Unit tests for top-level add-on lifecycle and headless import safety."""
-from unittest.mock import MagicMock, patch
 import builtins
 import importlib
 import sys
+from unittest.mock import MagicMock, patch
 
 
 class TestInitAddon:

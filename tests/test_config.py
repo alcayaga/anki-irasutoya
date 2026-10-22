@@ -1,15 +1,15 @@
 """Unit tests for add-on configuration management and persistence."""
 import unittest
+
 import config
 from config import (
-    get_config,
-    save_config,
-    update_user_preferences,
+    CONFIG_KEY_FULL_DELAY,
+    CONFIG_KEY_OVERWRITE,
     CONFIG_KEY_SOURCE,
     CONFIG_KEY_TARGET,
-    CONFIG_KEY_OVERWRITE,
     CONFIG_KEY_THUMB_DELAY,
-    CONFIG_KEY_FULL_DELAY,
+    get_config,
+    update_user_preferences,
 )
 
 

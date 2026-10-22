@@ -4,7 +4,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 try:
-    from aqt import mw, gui_hooks
+    from aqt import gui_hooks, mw
     from aqt.qt import QAction, QKeySequence, qconnect
     from aqt.utils import showInfo
     HAS_AQT = True

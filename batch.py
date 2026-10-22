@@ -1,33 +1,29 @@
 """Batch processor for adding Irasutoya illustrations to Anki cards in the background."""
-from dataclasses import dataclass, field
 import logging
 import re
 import time
 import urllib.parse
+from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Sequence, Tuple
 
 try:
     from .client import (
         IrasutoyaClient,
-        IrasutoyaImage,
-        select_best_image,
-        score_candidate_image,
         is_decorative_asset,
         is_image_relevant,
+        select_best_image,
     )
-    from .config import get_config, CONFIG_KEY_FULL_DELAY, CONFIG_KEY_IMAGE_SIZE
-    from .text_utils import clean_search_query, generate_search_candidates, BATCH_MAX_CANDIDATES
+    from .config import CONFIG_KEY_FULL_DELAY, CONFIG_KEY_IMAGE_SIZE, get_config
+    from .text_utils import BATCH_MAX_CANDIDATES, generate_search_candidates
 except ImportError:
     from client import (
         IrasutoyaClient,
-        IrasutoyaImage,
-        select_best_image,
-        score_candidate_image,
         is_decorative_asset,
         is_image_relevant,
+        select_best_image,
     )
-    from config import get_config, CONFIG_KEY_FULL_DELAY, CONFIG_KEY_IMAGE_SIZE
-    from text_utils import clean_search_query, generate_search_candidates, BATCH_MAX_CANDIDATES
+    from config import CONFIG_KEY_FULL_DELAY, CONFIG_KEY_IMAGE_SIZE, get_config
+    from text_utils import BATCH_MAX_CANDIDATES, generate_search_candidates
 
 logger = logging.getLogger(__name__)
 
@@ -175,9 +171,9 @@ def run_batch_fill(
     on_finish: Optional[Callable[[BatchStats], None]] = None
 ) -> None:
     """Execute batch processing in background without holding collection lock during downloads."""
+    import aqt.operations.note
     from aqt import mw
     from aqt.operations import QueryOp
-    import aqt.operations.note
     from aqt.utils import tooltip
 
     unique_nids = list(dict.fromkeys(note_ids))

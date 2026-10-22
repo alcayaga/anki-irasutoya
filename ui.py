@@ -1,69 +1,66 @@
 """User interface for the Anki Irasutoya add-on."""
-from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from aqt import mw
 from aqt.qt import (
-    QDialog,
-    QVBoxLayout,
-    QHBoxLayout,
-    QLabel,
-    QComboBox,
-    QRadioButton,
+    QAbstractItemView,
     QButtonGroup,
-    QPushButton,
-    QLineEdit,
-    QScrollArea,
-    QWidget,
-    QGridLayout,
-    QPixmap,
-    Qt,
-    QCursor,
-    QFrame,
     QByteArray,
-    QApplication,
-    QTimer,
+    QColor,
+    QComboBox,
+    QCursor,
+    QDialog,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QPixmap,
+    QPushButton,
+    QRadioButton,
+    QScrollArea,
+    Qt,
     QTableWidget,
     QTableWidgetItem,
-    QHeaderView,
-    QAbstractItemView,
-    QColor,
+    QTimer,
+    QVBoxLayout,
+    QWidget,
 )
-from aqt.utils import tooltip, showWarning
+from aqt.utils import showWarning, tooltip
 
 try:
-    from .client import IrasutoyaClient, IrasutoyaImage, score_candidate_image, select_best_image
+    from .batch import make_safe_media_filename, run_batch_fill
+    from .client import IrasutoyaClient, IrasutoyaImage
     from .config import (
-        get_config,
-        update_user_preferences,
+        CONFIG_KEY_IMAGE_SIZE,
+        CONFIG_KEY_OVERWRITE,
         CONFIG_KEY_SOURCE,
         CONFIG_KEY_TARGET,
-        CONFIG_KEY_OVERWRITE,
         CONFIG_KEY_THUMB_DELAY,
-        CONFIG_KEY_FULL_DELAY,
-        CONFIG_KEY_IMAGE_SIZE,
+        get_config,
+        update_user_preferences,
     )
     from .text_utils import clean_search_query, generate_search_candidates
-    from .batch import run_batch_fill, make_safe_media_filename
 except ImportError:
-    from client import IrasutoyaClient, IrasutoyaImage, score_candidate_image, select_best_image
+    from batch import make_safe_media_filename, run_batch_fill
+    from client import IrasutoyaClient, IrasutoyaImage
     from config import (
-        get_config,
-        update_user_preferences,
+        CONFIG_KEY_IMAGE_SIZE,
+        CONFIG_KEY_OVERWRITE,
         CONFIG_KEY_SOURCE,
         CONFIG_KEY_TARGET,
-        CONFIG_KEY_OVERWRITE,
         CONFIG_KEY_THUMB_DELAY,
-        CONFIG_KEY_FULL_DELAY,
-        CONFIG_KEY_IMAGE_SIZE,
+        get_config,
+        update_user_preferences,
     )
     from text_utils import clean_search_query, generate_search_candidates
-    from batch import run_batch_fill, make_safe_media_filename
 
 logger = logging.getLogger(__name__)
 
@@ -496,7 +493,7 @@ class IrasutoyaDialog(QDialog):
     def _init_batch_view(self, main_layout: QVBoxLayout) -> None:
         """Build UI elements for multi-note batch mode with live summary chips and stable preview table."""
         intro_label = QLabel(
-            f"Batch Mode: Searches Irasutoya for each card using the Source Field "
+            "Batch Mode: Searches Irasutoya for each card using the Source Field "
             "and inserts the illustration into the Target Field.",
             self
         )
@@ -911,12 +908,12 @@ class IrasutoyaDialog(QDialog):
         def background_search() -> None:
             """Fetch search results on a background thread using fallback queries."""
             try:
-                images, matched_cand, best_img = self.client.search_with_fallbacks(
+                images, matched_cand, _best_img = self.client.search_with_fallbacks(
                     search_candidates, max_results=12, image_size=image_size
                 )
             except Exception as e:
                 logger.exception("Search failed: %s", e)
-                images, matched_cand, best_img = [], None, None
+                images, matched_cand, _best_img = [], None, None
             self._run_on_main(lambda: self._on_search_finished(
                 current_gen, query, display_chips, matched_cand, images, restore_term
             ))

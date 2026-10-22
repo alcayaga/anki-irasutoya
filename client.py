@@ -1,7 +1,5 @@
 """Client for searching and downloading illustrations from Irasutoya (いらすとや)."""
-from dataclasses import dataclass
 import html
-from html.parser import HTMLParser
 import json
 import logging
 import re
@@ -11,23 +9,23 @@ import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass
+from html.parser import HTMLParser
 from typing import Callable, List, Optional, Sequence, Tuple
 
 try:
     from .text_utils import (
-        is_grammar_function_word,
-        conjugate_japanese_verb,
         SAFE_2MORA_LOANWORDS,
-        COMMON_I_ADJECTIVES,
+        conjugate_japanese_verb,
         is_adjective_ending,
+        is_grammar_function_word,
     )
 except ImportError:
     from text_utils import (
-        is_grammar_function_word,
-        conjugate_japanese_verb,
         SAFE_2MORA_LOANWORDS,
-        COMMON_I_ADJECTIVES,
+        conjugate_japanese_verb,
         is_adjective_ending,
+        is_grammar_function_word,
     )
 
 logger = logging.getLogger(__name__)
@@ -266,7 +264,6 @@ def is_image_relevant(img: IrasutoyaImage, query: str) -> bool:
     if not clean_q:
         return False
     title = img.title.strip()
-    post_title = img.post_title.strip()
 
     # 1. Title boundary classification
     qual_title = classify_match_boundary(title, clean_q)
@@ -422,7 +419,7 @@ class _HttpsOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 class IrasutoyaClient:
     """Queries Irasutoya's public Blogger JSON feeds to search and retrieve images."""
-    
+
     BASE_URL = "https://www.irasutoya.com"
     DEFAULT_USER_AGENT = (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
