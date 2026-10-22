@@ -10,18 +10,20 @@
 ## How to Validate
 1. **Automated Unit Tests**:
    ```bash
-   # Set ANKI_PACKAGES to your Anki app_packages directory (macOS default shown)
-   PYTHONPATH="${ANKI_PACKAGES:-/Applications/Anki.app/Contents/Resources/app_packages}:." python3 -m unittest discover -s tests -p "test_*.py" -v
+   # In conda anki-irasutoya environment (or with ANKI_PACKAGES):
+   python3 -m unittest discover -s tests -p "test_*.py" -v
    ```
-2. **Code Quality**:
+2. **Code Quality & Linting**:
    ```bash
+   ruff check .
    coderabbit review --agent --base main
    ```
 3. **Manual Validation in Anki**:
    <!-- Clear, actionable reproduction steps to verify in Anki Browser and Visual Picker -->
 
 ## Pre-Merge Checklist
-- [ ] All unit tests pass in Anki environment
+- [ ] All unit tests pass in Anki environment (92/92 tests)
+- [ ] Code passes `ruff check .` with 0 errors
 - [ ] CodeRabbit review completed with 0 findings
 - [ ] Working tree clean and git commits formatted according to Conventional Commits standard
 - [ ] Tested in macOS dark mode and light mode

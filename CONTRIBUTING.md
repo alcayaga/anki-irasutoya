@@ -38,6 +38,26 @@ New-Item -ItemType SymbolicLink -Path "$env:APPDATA\Anki2\addons21\anki-irasutoy
 
 Restart Anki to load changes.
 
+### 2. Local Conda Development Environment
+
+We provide a standard [`environment.yml`](environment.yml) matching modern Anki's bundled Python runtime (Python 3.13) with `ruff` and `aqt` pre-configured:
+
+```bash
+# Create and activate development environment
+conda env create -f environment.yml
+conda activate anki-irasutoya
+```
+
+Inside this environment, you can lint and run the full test suite (including Qt UI tests) directly:
+
+```bash
+# Run linter
+ruff check .
+
+# Run all unit tests (including Qt UI dialogs)
+python3 -m unittest discover tests -v
+```
+
 ---
 
 ## Testing Standards & Philosophy
@@ -136,7 +156,8 @@ To avoid false positive image matches during automated Batch operations (the **"
 
 ## Coding Standards
 
-- **Python 3.9+ Compatibility**: Maintain compatibility across modern Anki versions (23.10+).
+- **Code Quality & Linting**: All code must pass `ruff check .` with zero errors.
+- **Python 3.9+ Compatibility**: Maintain syntax and runtime compatibility across modern Anki versions (23.10+).
 - **Type Annotations**: Provide explicit type hints for public functions and class members.
 - **Preserve Documentation**: Maintain docstrings and inline commentary.
 - **Defensive Parsing**: Use `html.unescape()` when extracting image URLs or titles from Blogger feeds to avoid broken `&amp;` attributes.

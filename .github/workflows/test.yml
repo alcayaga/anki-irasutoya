@@ -1,0 +1,97 @@
+name: Test Suite
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint & Code Quality (Ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Ruff Linter
+        uses: astral-sh/ruff-action@v3
+        with:
+          args: "check ."
+
+  hermetic-tests:
+    name: Hermetic Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.9', '3.10', '3.11', '3.12', '3.13']
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Validate Python syntax compilation
+        run: python -m compileall -q .
+
+      - name: Run Hermetic Unit Tests
+        run: python -m unittest discover -s tests -p "test_*.py" -v
+
+  anki-ui-tests:
+    name: Anki & Qt UI Tests (Python 3.13 + aqt + Xvfb)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+
+      - name: Install system dependencies for Qt and Xvfb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb \
+            libxkbcommon-x11-0 \
+            libxcb-cursor0 \
+            libxcb-xinerama0 \
+            libxcb-icccm4 \
+            libxcb-image0 \
+            libxcb-keysyms1 \
+            libxcb-randr0 \
+            libxcb-render-util0 \
+            libgl1 \
+            libegl1
+
+      - name: Install Anki desktop GUI dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install aqt
+
+      - name: Run Full Test Suite under Xvfb
+        shell: bash
+        run: |
+          set -o pipefail
+          xvfb-run -a python -m unittest discover -s tests -p "test_*.py" -v 2>&1 | tee test_results.log
+          if ! grep -q "test_ui_mode" test_results.log; then
+            echo "::error::UI tests from test_ui_mode did not run!"
+            exit 1
+          fi
+          if grep -qE "skipped=| \.\.\. skipped" test_results.log; then
+            echo "::error::Tests were skipped in anki-ui-tests job!"
+            exit 1
+          fi
