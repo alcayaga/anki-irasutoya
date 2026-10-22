@@ -1,0 +1,10 @@
+name: anki-irasutoya
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.13
+  - ruff
+  - pip
+  - pip:
+      - aqt>=23.10

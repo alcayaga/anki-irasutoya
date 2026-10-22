@@ -3,6 +3,7 @@
 Enrich your Anki flashcards with illustrations from [いらすとや (Irasutoya)](https://www.irasutoya.com/) directly from the Anki Browser.
 
 ![Anki](https://img.shields.io/badge/Anki-23.10%2B-blue)
+[![Tests](https://github.com/alcayaga/anki-irasutoya/actions/workflows/test.yml/badge.svg)](https://github.com/alcayaga/anki-irasutoya/actions/workflows/test.yml)
 ![License](https://img.shields.io/badge/license-AGPL--3.0-blue)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)
 

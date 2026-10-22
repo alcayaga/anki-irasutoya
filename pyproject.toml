@@ -1,0 +1,19 @@
+[tool.ruff]
+target-version = "py39"
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes (unused imports, undefined names)
+    "I",   # isort (import sorting)
+]
+ignore = [
+    "E501",  # Line length handled naturally in docstrings/comments
+    "W293",  # Blank line whitespace in multiline docstrings
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Allow unused imports in top-level __init__ if needed
+"__init__.py" = ["F401"]
