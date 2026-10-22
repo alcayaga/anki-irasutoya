@@ -1,5 +1,6 @@
 """Anki Irasutoya Add-on: Fill cards with Irasutoya illustrations from the Browser screen."""
 import logging
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -9,7 +10,7 @@ try:
     HAS_AQT = True
 except (ImportError, RuntimeError) as _aqt_exc:
     HAS_AQT = False
-    print(f"Irasutoya add-on: Anki GUI APIs unavailable, hooks not registered ({_aqt_exc!r})")
+    logger.debug("Anki GUI APIs unavailable, hooks not registered: %s", _aqt_exc)
 
 
 def on_add_irasutoya_images(browser) -> None:
@@ -55,7 +56,9 @@ def on_browser_will_show_context_menu(browser, menu) -> None:
 
 
 def init_addon() -> None:
-    """Register all hooks with Anki."""
+    """Register all hooks with Anki if GUI environment is available."""
+    if not HAS_AQT:
+        return
     gui_hooks.browser_menus_did_init.append(on_browser_menus_did_init)
     gui_hooks.browser_will_show_context_menu.append(on_browser_will_show_context_menu)
 
