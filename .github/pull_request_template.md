@@ -10,8 +10,11 @@
 ## How to Validate
 1. **Automated Unit Tests**:
    ```bash
-   # In conda anki-irasutoya environment (or with ANKI_PACKAGES):
+   # Option A: In conda anki-irasutoya environment
    python -m unittest discover -s tests -p "test_*.py" -v
+
+   # Option B: With Anki's bundled packages (macOS default shown)
+   PYTHONPATH="${ANKI_PACKAGES:-/Applications/Anki.app/Contents/Resources/app_packages}:." python -m unittest discover -s tests -p "test_*.py" -v
    ```
 2. **Code Quality & Linting**:
    ```bash
