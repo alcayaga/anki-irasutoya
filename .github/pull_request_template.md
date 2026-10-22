@@ -11,7 +11,7 @@
 1. **Automated Unit Tests**:
    ```bash
    # In conda anki-irasutoya environment (or with ANKI_PACKAGES):
-   python3 -m unittest discover -s tests -p "test_*.py" -v
+   python -m unittest discover -s tests -p "test_*.py" -v
    ```
 2. **Code Quality & Linting**:
    ```bash

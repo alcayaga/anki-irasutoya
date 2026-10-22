@@ -55,7 +55,7 @@ Inside this environment, you can lint and run the full test suite (including Qt 
 ruff check .
 
 # Run all unit tests (including Qt UI dialogs)
-python3 -m unittest discover tests -v
+python -m unittest discover tests -v
 ```
 
 ---
