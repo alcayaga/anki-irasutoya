@@ -85,6 +85,7 @@ class CatalogStore:
         self._lock = threading.Lock()
         self._index: Optional[CatalogIndex] = None
         self._info: Optional[CatalogInfo] = None
+        self._load_failed: bool = False
 
     def get_index(self) -> Optional[CatalogIndex]:
         """Lazy, load all records into memory once under a lock, then immediately close connection.
@@ -93,10 +94,14 @@ class CatalogStore:
         """
         if self._index is not None:
             return self._index
+        if self._load_failed:
+            return None
 
         with self._lock:
             if self._index is not None:
                 return self._index
+            if self._load_failed:
+                return None
 
             if not os.path.isfile(self.path):
                 return None
@@ -123,6 +128,7 @@ class CatalogStore:
                             SCHEMA_VERSION,
                             row["value"] if row else "missing",
                         )
+                        self._load_failed = True
                         return None
 
                     # Cache info
@@ -136,7 +142,7 @@ class CatalogStore:
                         max_updated=meta_dict.get("max_updated", ""),
                     )
 
-                    # Query all images joined with post details and aggregated categories
+                    # Query all images joined with post details, categories, and enriched keywords
                     cursor.execute(
                         """
                         SELECT
@@ -147,7 +153,12 @@ class CatalogStore:
                             p.title AS post_title,
                             p.description,
                             p.image_count,
-                            GROUP_CONCAT(c.name, '\x1f') AS categories
+                            GROUP_CONCAT(c.name, '\x1f') AS categories,
+                            COALESCE((
+                                SELECT GROUP_CONCAT(ik.keyword, ' ')
+                                FROM image_keywords ik
+                                WHERE ik.image_id = i.id
+                            ), '') AS keywords
                         FROM images i
                         JOIN posts p ON i.post_id = p.id
                         LEFT JOIN post_categories pc ON pc.post_id = p.id
@@ -165,7 +176,10 @@ class CatalogStore:
                         desc = r["description"] or ""
                         cats_raw = r["categories"]
                         cats = tuple(cats_raw.split("\x1f")) if cats_raw else ()
+                        kw_raw = r["keywords"] or ""
                         haystack = f"{title}\x00{post_title}\x00{desc}\x00{' '.join(cats)}"
+                        if kw_raw:
+                            haystack = f"{haystack}\x00{kw_raw}"
 
                         records.append(
                             _CatalogImageRecord(
@@ -186,15 +200,20 @@ class CatalogStore:
                     conn.close()
             except Exception as e:
                 logger.warning("Failed to load catalog index from %s: %s", self.path, e)
+                self._load_failed = True
                 return None
 
     def is_loaded(self) -> bool:
         """Return True if index is already loaded into memory."""
         return self._index is not None
 
+    def is_load_failed(self) -> bool:
+        """Return True if catalog loading was attempted and failed."""
+        return self._load_failed
+
     def warm_async(self) -> None:
         """Asynchronously load the catalog into memory in a background daemon thread."""
-        if self._index is not None or not os.path.isfile(self.path):
+        if self._index is not None or self._load_failed or not os.path.isfile(self.path):
             return
         thread = threading.Thread(target=self.get_index, name="CatalogWarmThread", daemon=True)
         thread.start()

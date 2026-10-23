@@ -124,6 +124,15 @@ class TestBuildCatalog(unittest.TestCase):
         out = buf.getvalue()
         self.assertIn("Posts added:   1", out)
         self.assertIn("Posts updated: 1", out)
+
+        # Incompatible old catalog schema is non-fatal
+        incompatible_db = os.path.join(self.temp_dir.name, "incompatible.sqlite")
+        inc_conn = sqlite3.connect(incompatible_db)
+        inc_conn.execute("CREATE TABLE foo (bar TEXT)")
+        inc_conn.close()
+        # Should not raise exception
+        compare_with_old(new_conn, incompatible_db)
+
         new_conn.close()
 
     def test_validation_gates_success(self):

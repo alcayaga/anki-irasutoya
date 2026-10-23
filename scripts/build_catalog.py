@@ -228,8 +228,12 @@ def compare_with_old(conn: sqlite3.Connection, old_path: str) -> None:
         old_cur = old_conn.cursor()
         new_cur = conn.cursor()
 
-        old_cur.execute("SELECT blogger_id, updated FROM posts")
-        old_posts = {row[0]: row[1] for row in old_cur.fetchall()}
+        try:
+            old_cur.execute("SELECT blogger_id, updated FROM posts")
+            old_posts = {row[0]: row[1] for row in old_cur.fetchall()}
+        except sqlite3.Error as e:
+            logger.warning("Cannot read previous catalog %s: %s. Skipping comparison.", old_path, e)
+            return
 
         new_cur.execute("SELECT blogger_id, updated FROM posts")
         new_posts = {row[0]: row[1] for row in new_cur.fetchall()}

@@ -290,6 +290,7 @@ class IrasutoyaDialog(QDialog):
         self._thumb_executor = ThreadPoolExecutor(max_workers=4)
         self._thumb_lock = threading.Lock()
         self._last_thumb_request_time = 0.0
+        self.backend_lbl: Optional[QLabel] = None
 
         self._init_ui()
 
@@ -301,6 +302,10 @@ class IrasutoyaDialog(QDialog):
             if self.client.backend == "auto":
                 return "Live search"
             return "Offline catalog (missing)"
+        if self.store.is_load_failed():
+            if self.client.backend == "auto":
+                return "Live search (catalog failed)"
+            return "Offline catalog (failed)"
         if not self.store.is_loaded():
             return "Offline catalog (loading...)"
         info = self.store.info()
@@ -308,6 +313,23 @@ class IrasutoyaDialog(QDialog):
             date_str = info.built_at[:10] if info.built_at else ""
             return f"Offline catalog · {info.post_count:,} posts" + (f" · built {date_str}" if date_str else "")
         return "Offline catalog"
+
+    def _schedule_backend_status_refresh(self) -> None:
+        """Poll until the background catalog finishes loading, then update the status label."""
+        def tick() -> None:
+            if not hasattr(self, "backend_lbl") or self.backend_lbl is None:
+                return
+            try:
+                if not self.isVisible():
+                    return
+            except Exception:
+                return
+            self.backend_lbl.setText(self._get_backend_status_text())
+            if not self.store.is_loaded() and not self.store.is_load_failed() and os.path.isfile(self.store.path):
+                QTimer.singleShot(250, tick)
+
+        if not self.store.is_loaded() and not self.store.is_load_failed() and os.path.isfile(self.store.path):
+            QTimer.singleShot(250, tick)
 
     def _get_cached_note(self, nid: int) -> Optional[any]:
         """Fetch a note with in-dialog memory caching to prevent redundant collection reads."""
@@ -572,9 +594,10 @@ class IrasutoyaDialog(QDialog):
 
         # Action Buttons
         button_layout = QHBoxLayout()
-        backend_lbl = QLabel(self._get_backend_status_text(), self)
-        backend_lbl.setStyleSheet("color: #8E8E93; font-size: 11px;")
-        button_layout.addWidget(backend_lbl)
+        self.backend_lbl = QLabel(self._get_backend_status_text(), self)
+        self.backend_lbl.setStyleSheet("color: #8E8E93; font-size: 11px;")
+        button_layout.addWidget(self.backend_lbl)
+        self._schedule_backend_status_refresh()
         button_layout.addStretch()
 
         btn_cancel = QPushButton("Cancel", self)
@@ -841,9 +864,10 @@ class IrasutoyaDialog(QDialog):
 
         # Single Note Action Buttons
         button_layout = QHBoxLayout()
-        backend_lbl = QLabel(self._get_backend_status_text(), self)
-        backend_lbl.setStyleSheet("color: #8E8E93; font-size: 11px;")
-        button_layout.addWidget(backend_lbl)
+        self.backend_lbl = QLabel(self._get_backend_status_text(), self)
+        self.backend_lbl.setStyleSheet("color: #8E8E93; font-size: 11px;")
+        button_layout.addWidget(self.backend_lbl)
+        self._schedule_backend_status_refresh()
         button_layout.addStretch()
 
         btn_cancel = QPushButton("Cancel", self)

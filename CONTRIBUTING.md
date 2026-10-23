@@ -143,11 +143,12 @@ python3 scripts/eval_deck_search.py --deck "Mining" --limit 100 --delay 0.5
 | `--source-field` | Auto-detect | Source vocabulary field (`Expression`, `Word`, `Vocab`, `Front`). |
 | `--limit` | `50` | Maximum number of notes to evaluate. |
 | `--delay` | `0.25` | Polite delay (in seconds) between live HTTP requests to Irasutoya. |
+| `--backend` | `"both"` | Search backend to benchmark (`"live"`, `"catalog"`, or `"both"`). |
 | `--disable-tier2` | False | Disables Tier 2 reading fallbacks to test only syntactic normalizations. |
 | `--verbose`, `-v` | False | Displays detailed fallback candidate chains and image titles. |
 | `--anki-url` | `http://localhost:8765` | URL of AnkiConnect API endpoint. |
 
-The evaluation script prints an immediate visual progress log, followed by a summary report displaying **Legacy Search Recall**, **New Search Recall**, **Absolute/Relative Recall Gains**, and an **Exemplars Table** of recovered vocabulary.
+The evaluation script prints an immediate visual progress log, followed by a summary report displaying **Legacy Search Recall**, **Live Search Recall**, and/or **Offline Catalog Search Recall**, plus a **Selection Differences Table** comparing live vs catalog picks when running with `--backend both`.
 
 ---
 

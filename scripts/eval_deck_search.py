@@ -166,18 +166,18 @@ def run_evaluation(
     print(f"Retrieved {len(notes)} notes. Starting search benchmark...\n")
 
     cat_store = default_store()
-    cat_store.warm_async()
+    if backend in ("catalog", "both"):
+        if cat_store.get_index() is None:
+            print("\n[ERROR] Offline catalog is missing or unreadable. Build it with scripts/build_catalog.py.\n")
+            sys.exit(1)
+    else:
+        cat_store.warm_async()
     cat_client = IrasutoyaClient(catalog=cat_store, backend="catalog")
     live_client = IrasutoyaClient(backend="live")
 
     legacy_hits = 0
     live_hits = 0
     cat_hits = 0
-    both_hits = 0
-    primary_improvements = 0
-    tier1_improvements = 0
-    tier2_improvements = 0
-    both_failed = 0
     failed_requests = 0
 
     results = []
@@ -282,27 +282,22 @@ def run_evaluation(
             matched_tier = matched_cand[2] if matched_cand else 0
 
             if leg_found and new_found:
-                both_hits += 1
                 status = "BOTH_HIT"
                 status_marker = " ✓"
             elif not leg_found and new_found:
                 if matched_reason == "primary":
-                    primary_improvements += 1
                     status = "NEW_HIT_PRIMARY"
                     status_marker = "★P"
                 elif matched_tier == 1:
-                    tier1_improvements += 1
                     status = "NEW_HIT_T1"
                     status_marker = "★1"
                 else:
-                    tier2_improvements += 1
                     status = "NEW_HIT_T2"
                     status_marker = "★2"
             elif leg_found and not new_found:
                 status = "LEGACY_ONLY"
                 status_marker = "  "
             else:
-                both_failed += 1
                 status = "NOT_FOUND"
                 status_marker = " ✗"
 
@@ -328,6 +323,17 @@ def run_evaluation(
             f"Legacy: {'ERR' if leg_error else ('YES' if leg_found else 'NO '):3s} | "
             f"{display_desc:22s}"
         )
+        if verbose:
+            if new_found and matched_cand:
+                print(
+                    f"      ↳ Matched: '{matched_cand[0]}' ({matched_cand[1]}, tier {matched_cand[2]}) -> "
+                    f"'{best_img.title if best_img else ''}'"
+                )
+            if leg_found and leg_results:
+                print(f"      ↳ Legacy matched: '{leg_query}' -> '{leg_results[0].title}'")
+            if not leg_found and not new_found:
+                tried_terms = [c[0] for c in batch_candidates]
+                print(f"      ↳ Tried candidates: {', '.join(repr(t) for t in tried_terms)}")
 
     # --- SUMMARY REPORT ---
     total = len(results)

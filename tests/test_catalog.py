@@ -237,3 +237,43 @@ class TestCatalog(unittest.TestCase):
         conn2.close()
 
         self.assertEqual([k[1] for k in keys1], [k[1] for k in keys2])
+
+    def test_catalog_load_failure_caching(self):
+        """Verify load failure is cached so corrupt files don't re-trigger parsing."""
+        with open(self.db_path, "w") as f:
+            f.write("not a sqlite database")
+
+        store = CatalogStore(self.db_path)
+        self.assertFalse(store.is_loaded())
+        self.assertFalse(store.is_load_failed())
+
+        # First load fails
+        self.assertIsNone(store.get_index())
+        self.assertFalse(store.is_loaded())
+        self.assertTrue(store.is_load_failed())
+
+        # Second load short-circuits without error
+        self.assertIsNone(store.get_index())
+        self.assertTrue(store.is_load_failed())
+
+    def test_image_keywords_search_matching(self):
+        """Verify keywords from image_keywords table are indexed and searchable."""
+        conn = sqlite3.connect(self.db_path)
+        write_posts(conn, self._sample_posts())
+        # Add enriched keyword to the black cat image
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM images WHERE title LIKE '%黒猫%'")
+        img_id = cursor.fetchone()[0]
+        cursor.execute(
+            "INSERT INTO image_keywords (image_id, keyword, source, weight) VALUES (?, ?, ?, ?)",
+            (img_id, "black_cat_synonym", "llm", 1.0),
+        )
+        conn.commit()
+        conn.close()
+
+        store = CatalogStore(self.db_path)
+        index = store.get_index()
+        self.assertIsNotNone(index)
+        results = index.search("black_cat_synonym")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].title, "かわいい黒猫のイラスト")
