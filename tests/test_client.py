@@ -372,6 +372,43 @@ class TestIrasutoyaClient(unittest.TestCase):
         self.assertEqual(healed_b, "https://1.bp.blogspot.com/s800/img_b.png")
         self.assertEqual(len(fetch_calls), 1)
 
+    def test_self_heal_retries_on_subsequent_call_if_first_failed(self):
+        """Verify failed entry fetch is not cached as None so subsequent call retries network request."""
+        client = IrasutoyaClient()
+        post_json = {
+            "entry": {
+                "id": {"$t": "tag:blogger.com,1999:blog-1.post-123"},
+                "title": {"$t": "猫のイラスト"},
+                "content": {
+                    "$t": '<a href="https://1.bp.blogspot.com/s800/cat.png"><img alt="猫" src="https://1.bp.blogspot.com/s800/cat.png" /></a>'
+                },
+            }
+        }
+        attempts = 0
+
+        def flaky_request(url, timeout=10):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise urllib.error.URLError("Temporary network timeout")
+            return json.dumps(post_json).encode("utf-8")
+
+        client._make_request = flaky_request
+
+        target_img = IrasutoyaImage("猫", "https://old.example.com/s800/cat.png", "t", "猫", post_id="123")
+
+        # First attempt: network error, returns None, nothing cached
+        first_result = client._self_heal_image_url(target_img, target_img.image_url)
+        self.assertIsNone(first_result)
+        self.assertEqual(attempts, 1)
+        self.assertNotIn(("123", "s800"), client._healed_posts_cache)
+
+        # Second attempt: succeeds and populates cache
+        second_result = client._self_heal_image_url(target_img, target_img.image_url)
+        self.assertEqual(second_result, "https://1.bp.blogspot.com/s800/cat.png")
+        self.assertEqual(attempts, 2)
+        self.assertIn(("123", "s800"), client._healed_posts_cache)
+
     def test_download_image_reraises_on_non_404_or_failed_heal(self):
         """Verify download_image re-raises errors when status is not 404/410 or healing is impossible."""
         client = IrasutoyaClient()

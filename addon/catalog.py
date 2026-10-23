@@ -50,7 +50,7 @@ class CatalogIndex:
 
     def search(self, query: str, image_size: str = "s800") -> List[IrasutoyaImage]:
         """Search illustrations by query keyword substring matching against title/post_title/description."""
-        clean_q = query.strip()
+        clean_q = query.strip().casefold()
         if not clean_q:
             return []
 
@@ -179,9 +179,9 @@ class CatalogStore:
                         cats_raw = r["categories"]
                         cats = tuple(cats_raw.split("\x1f")) if cats_raw else ()
                         kw_raw = r["keywords"] or ""
-                        haystack = f"{title}\x00{post_title}\x00{desc}\x00{' '.join(cats)}"
+                        haystack = f"{title}\x00{post_title}\x00{desc}\x00{' '.join(cats)}".casefold()
                         if kw_raw:
-                            haystack = f"{haystack}\x00{kw_raw}"
+                            haystack = f"{haystack}\x00{kw_raw.casefold()}"
 
                         records.append(
                             _CatalogImageRecord(

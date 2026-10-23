@@ -1,4 +1,5 @@
 """Unit tests for catalog builder scripts, fixture ingestion, keywords merge, and gates."""
+import hashlib
 import json
 import os
 import sqlite3
@@ -192,3 +193,47 @@ class TestBuildCatalog(unittest.TestCase):
         self.assertFalse(os.path.exists(tmp_path))
         with open(self.db_path, "r") as f:
             self.assertEqual(f.read(), "ORIGINAL_CONTENT")
+
+    def test_compile_and_publish_catalog_success(self):
+        """Verify compile_and_publish_catalog atomically replaces existing catalog and creates valid sha256 sidecar."""
+        # Pre-create an old file to ensure atomic replacement
+        with open(self.db_path, "w") as f:
+            f.write("OLD_CATALOG_CONTENT")
+
+        post = ParsedPost("1", "猫", "desc", "pub", "upd", (), [IrasutoyaImage("猫", "https://1.bp.blogspot.com/cat.png", "t", "猫")])
+
+        published_path = compile_and_publish_catalog(
+            out_path=self.db_path,
+            posts=[post],
+            total_results=1,
+            require_probes=False,
+        )
+
+        self.assertEqual(published_path, self.db_path)
+        self.assertTrue(os.path.exists(self.db_path))
+
+        # Ensure temp file was cleaned up / replaced
+        tmp_path = f"{self.db_path}.tmp"
+        self.assertFalse(os.path.exists(tmp_path))
+
+        # Check published SQLite database integrity and contents
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM posts")
+        self.assertEqual(cur.fetchone()[0], 1)
+        conn.close()
+
+        # Check sha256 sidecar
+        sha_path = f"{self.db_path}.sha256"
+        self.assertTrue(os.path.exists(sha_path))
+
+        hasher = hashlib.sha256()
+        with open(self.db_path, "rb") as f:
+            hasher.update(f.read())
+        expected_digest = hasher.hexdigest()
+
+        with open(sha_path, "r", encoding="utf-8") as f:
+            sha_content = f.read()
+
+        basename = os.path.basename(self.db_path)
+        self.assertEqual(sha_content, f"{expected_digest}  {basename}\n")

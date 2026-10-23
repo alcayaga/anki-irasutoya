@@ -202,6 +202,49 @@ class TestCatalog(unittest.TestCase):
         self.assertEqual(index.search("   "), [])
         self.assertEqual(index.search("存在しないワード"), [])
 
+    def test_catalog_index_case_insensitive_latin_matching(self):
+        """Verify CatalogIndex performs case-insensitive matching for Latin letters in titles, descriptions, and keywords."""
+        conn = sqlite3.connect(self.db_path)
+        create_schema(conn)
+        post = ParsedPost(
+            blogger_id="2001",
+            title="SNSトラブルのイラスト",
+            description="スマートフォンでSNSを利用しているイラストです。",
+            published="2026-01-01T00:00:00Z",
+            updated="2026-01-01T00:00:00Z",
+            categories=("IT",),
+            images=[
+                IrasutoyaImage(
+                    title="SNSアイコン",
+                    image_url="https://1.bp.blogspot.com/s800/sns.png",
+                    thumb_url="https://1.bp.blogspot.com/s120-c/sns.png",
+                    post_title="SNSトラブルのイラスト",
+                    post_id="2001",
+                )
+            ],
+        )
+        write_posts(conn, [post])
+        conn.execute(
+            "INSERT INTO image_keywords (image_id, keyword, source) "
+            "SELECT id, 'YouTube', 'manual' FROM images WHERE title = 'SNSアイコン'"
+        )
+        conn.commit()
+        conn.close()
+
+        store = CatalogStore(self.db_path)
+        index = store.get_index()
+        self.assertIsNotNone(index)
+
+        # Title matching in lowercase, uppercase, and mixed case
+        self.assertEqual(len(index.search("sns")), 1)
+        self.assertEqual(len(index.search("SNS")), 1)
+        self.assertEqual(len(index.search("Sns")), 1)
+
+        # Keyword matching in lowercase, uppercase, and mixed case
+        self.assertEqual(len(index.search("youtube")), 1)
+        self.assertEqual(len(index.search("YOUTUBE")), 1)
+        self.assertEqual(len(index.search("YouTube")), 1)
+
     def test_catalog_index_image_size_upgrade(self):
         """Verify CatalogIndex rewrites resolution codes on search output."""
         conn = sqlite3.connect(self.db_path)

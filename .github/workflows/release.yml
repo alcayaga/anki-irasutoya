@@ -54,6 +54,12 @@ jobs:
           name: catalog-sqlite
           path: addon/data
 
+      - name: Verify catalog checksum
+        env:
+          EXPECTED_SHA: ${{ needs.build-catalog.outputs.catalog-sha }}
+        run: |
+          echo "${EXPECTED_SHA}  addon/data/catalog.sqlite" | sha256sum --check -
+
       - name: Package Add-on
         run: |
           VERSION="${GITHUB_REF_NAME#v}"

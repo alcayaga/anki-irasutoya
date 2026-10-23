@@ -234,19 +234,21 @@ class IrasutoyaClient:
 
         cache_key = (post_id, size_token)
         with self._healed_posts_lock:
-            if cache_key in self._healed_posts_cache:
-                post = self._healed_posts_cache[cache_key]
-            else:
-                post = None
-                url = f"{self.BASE_URL}/feeds/posts/default/{post_id}?alt=json"
-                try:
-                    raw_data = self._make_request(url, timeout=10)
-                    data = json.loads(raw_data.decode("utf-8"))
-                    entry = data.get("entry", data)
-                    post = parse_entry(entry, image_size=size_token)
-                except Exception as e:
-                    logger.warning("Failed to self-heal image URL for post %s: %s", post_id, e)
-                self._healed_posts_cache[cache_key] = post
+            post = self._healed_posts_cache.get(cache_key)
+
+        if post is None:
+            url = f"{self.BASE_URL}/feeds/posts/default/{post_id}?alt=json"
+            try:
+                raw_data = self._make_request(url, timeout=10)
+                data = json.loads(raw_data.decode("utf-8"))
+                entry = data.get("entry", data)
+                parsed_post = parse_entry(entry, image_size=size_token)
+                with self._healed_posts_lock:
+                    self._healed_posts_cache[cache_key] = parsed_post
+                post = parsed_post
+            except Exception as e:
+                logger.warning("Failed to self-heal image URL for post %s: %s", post_id, e)
+                return None
 
         if post is None or not post.images:
             return None

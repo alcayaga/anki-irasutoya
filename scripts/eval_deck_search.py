@@ -329,8 +329,8 @@ def run_evaluation(
                     f"      ↳ Matched: '{matched_cand[0]}' ({matched_cand[1]}, tier {matched_cand[2]}) -> "
                     f"'{best_img.title if best_img else ''}'"
                 )
-            if leg_found and leg_results:
-                print(f"      ↳ Legacy matched: '{leg_query}' -> '{leg_results[0].title}'")
+            if leg_found:
+                print(f"      ↳ Legacy matched: '{leg_query}' -> '{valid_leg_results[0].title}'")
             if not leg_found and not new_found:
                 tried_terms = [c[0] for c in batch_candidates]
                 print(f"      ↳ Tried candidates: {', '.join(repr(t) for t in tried_terms)}")
