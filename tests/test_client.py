@@ -339,6 +339,39 @@ class TestIrasutoyaClient(unittest.TestCase):
         healed = client._self_heal_image_url(target_img, target_img.image_url)
         self.assertEqual(healed, "https://1.bp.blogspot.com/s800/img_b.png")
 
+    def test_self_heal_caches_post_entry_across_multiple_images(self):
+        """Verify _self_heal_image_url fetches post entry once and reuses cache for same post_id."""
+        client = IrasutoyaClient()
+        post_json = {
+            "entry": {
+                "id": {"$t": "tag:blogger.com,1999:blog-1.post-123"},
+                "title": {"$t": "猫のイラスト"},
+                "content": {
+                    "$t": (
+                        '<a href="https://1.bp.blogspot.com/s800/img_a.png"><img alt="黒猫" src="https://1.bp.blogspot.com/s800/img_a.png" /></a>'
+                        '<a href="https://1.bp.blogspot.com/s800/img_b.png"><img alt="白猫" src="https://1.bp.blogspot.com/s800/img_b.png" /></a>'
+                    )
+                },
+            }
+        }
+        fetch_calls = []
+
+        def mock_request(url, timeout=10):
+            fetch_calls.append(url)
+            return json.dumps(post_json).encode("utf-8")
+
+        client._make_request = mock_request
+
+        img_a = IrasutoyaImage("黒猫", "https://old.example.com/s800/img_a.png", "t", "猫", post_id="123")
+        img_b = IrasutoyaImage("白猫", "https://old.example.com/s800/img_b.png", "t", "猫", post_id="123")
+
+        healed_a = client._self_heal_image_url(img_a, img_a.image_url)
+        healed_b = client._self_heal_image_url(img_b, img_b.image_url)
+
+        self.assertEqual(healed_a, "https://1.bp.blogspot.com/s800/img_a.png")
+        self.assertEqual(healed_b, "https://1.bp.blogspot.com/s800/img_b.png")
+        self.assertEqual(len(fetch_calls), 1)
+
     def test_download_image_reraises_on_non_404_or_failed_heal(self):
         """Verify download_image re-raises errors when status is not 404/410 or healing is impossible."""
         client = IrasutoyaClient()

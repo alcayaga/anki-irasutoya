@@ -3,14 +3,15 @@ import json
 import logging
 import re
 import socket
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Callable, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from .catalog import CatalogStore
-from .feed import IrasutoyaImage, is_allowed_image_host, parse_entries, parse_entry, upgrade_image_url
+from .feed import IrasutoyaImage, ParsedPost, is_allowed_image_host, parse_entries, parse_entry, upgrade_image_url
 from .ranking import is_decorative_asset, is_image_relevant, rank_relevant_images
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,8 @@ class IrasutoyaClient:
             logger.warning("Unknown search backend '%s'; defaulting to 'auto'", backend)
             backend = "auto"
         self.backend = backend
+        self._healed_posts_cache: Dict[Tuple[str, str], Optional[ParsedPost]] = {}
+        self._healed_posts_lock = threading.Lock()
 
     def uses_catalog(self) -> bool:
         """Return True if client is configured to query the offline metadata catalog."""
@@ -229,28 +232,38 @@ class IrasutoyaClient:
             if match:
                 size_token = match.group(1)
 
-        url = f"{self.BASE_URL}/feeds/posts/default/{post_id}?alt=json"
-        try:
-            raw_data = self._make_request(url, timeout=10)
-            data = json.loads(raw_data.decode("utf-8"))
-            entry = data.get("entry", data)
-            post = parse_entry(entry, image_size=size_token)
-            if not post.images:
-                return None
-            # 1. Match by image filename (most specific across multi-image posts)
-            target_base = image.image_url.split("/")[-1]
-            for img in post.images:
-                if img.image_url.split("/")[-1] == target_base:
-                    return upgrade_image_url(img.image_url, size_token)
+        cache_key = (post_id, size_token)
+        with self._healed_posts_lock:
+            if cache_key in self._healed_posts_cache:
+                post = self._healed_posts_cache[cache_key]
+            else:
+                post = None
+                url = f"{self.BASE_URL}/feeds/posts/default/{post_id}?alt=json"
+                try:
+                    raw_data = self._make_request(url, timeout=10)
+                    data = json.loads(raw_data.decode("utf-8"))
+                    entry = data.get("entry", data)
+                    post = parse_entry(entry, image_size=size_token)
+                except Exception as e:
+                    logger.warning("Failed to self-heal image URL for post %s: %s", post_id, e)
+                self._healed_posts_cache[cache_key] = post
 
-            # 2. Match by title only if unambiguous (exactly 1 match)
-            title_matches = [img for img in post.images if img.title == image.title]
-            if len(title_matches) == 1:
-                return upgrade_image_url(title_matches[0].image_url, size_token)
+        if post is None or not post.images:
+            return None
 
-            # 3. Fallback to single image if post only has 1 image
-            if len(post.images) == 1:
-                return upgrade_image_url(post.images[0].image_url, size_token)
-        except Exception as e:
-            logger.warning("Failed to self-heal image URL for post %s: %s", post_id, e)
+        # 1. Match by image filename (most specific across multi-image posts)
+        target_base = image.image_url.split("/")[-1]
+        for img in post.images:
+            if img.image_url.split("/")[-1] == target_base:
+                return upgrade_image_url(img.image_url, size_token)
+
+        # 2. Match by title only if unambiguous (exactly 1 match)
+        title_matches = [img for img in post.images if img.title == image.title]
+        if len(title_matches) == 1:
+            return upgrade_image_url(title_matches[0].image_url, size_token)
+
+        # 3. Fallback to single image if post only has 1 image
+        if len(post.images) == 1:
+            return upgrade_image_url(post.images[0].image_url, size_token)
+
         return None
