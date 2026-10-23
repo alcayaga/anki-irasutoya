@@ -55,8 +55,10 @@ class CatalogIndex:
             return []
 
         matching: List[IrasutoyaImage] = []
+        seen_urls: Set[str] = set()
         for rec in self._records:
-            if clean_q in rec.haystack:
+            if clean_q in rec.haystack and rec.url_s0 not in seen_urls:
+                seen_urls.add(rec.url_s0)
                 matching.append(
                     IrasutoyaImage(
                         title=rec.title,

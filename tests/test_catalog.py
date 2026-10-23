@@ -238,6 +238,23 @@ class TestCatalog(unittest.TestCase):
 
         self.assertEqual([k[1] for k in keys1], [k[1] for k in keys2])
 
+    def test_catalog_search_deduplicates_identical_urls(self):
+        """Verify CatalogIndex.search deduplicates identical image URLs across multiple posts."""
+        img1 = IrasutoyaImage("黒猫 単体", "https://1.bp.blogspot.com/s800/cat.png", "t", "黒猫", post_id="1")
+        img2 = IrasutoyaImage("黒猫 セット", "https://1.bp.blogspot.com/s800/cat.png", "t", "猫セット", post_id="2")
+        p1 = ParsedPost("1", "黒猫", "desc", "pub", "upd", (), [img1])
+        p2 = ParsedPost("2", "猫セット", "desc", "pub", "upd", (), [img2])
+
+        conn = sqlite3.connect(self.db_path)
+        write_posts(conn, [p1, p2])
+        conn.close()
+
+        store = CatalogStore(self.db_path)
+        index = store.get_index()
+        results = index.search("猫")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].title, "黒猫 単体")
+
     def test_catalog_load_failure_caching(self):
         """Verify load failure is cached so corrupt files don't re-trigger parsing."""
         with open(self.db_path, "w") as f:
