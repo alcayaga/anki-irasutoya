@@ -45,6 +45,11 @@ Enrich your Anki flashcards with illustrations from [いらすとや (Irasutoya)
 - **Decoupled Pacing & Server Politeness**:
   - Rapid parallel thumbnail streaming (50ms delay) for instantaneous visual picking.
   - Steady polite delay (300ms) for batch full-resolution downloads to respect Irasutoya's servers and prevent HTTP 429 throttling.
+- **Offline Metadata Catalog & Sub-Millisecond Search**:
+  - Ships with an immutable SQLite database indexing ~25,000 Irasutoya posts and ~42,000 illustrations.
+  - Searches run locally in memory via substring matching in 2–3 ms, handling 1-2 character queries with zero network delay.
+  - Transparent 404/410 self-healing: if an image binary link becomes stale, the add-on automatically re-fetches the post entry from Blogger once to resolve the new image URL.
+  - Search backend is configurable via `config.json` (`"search_backend": "auto"` / `"catalog"` / `"live"`).
 - **Native Undo Support**:
   - Modifies notes via Anki's native operations framework. Press `Cmd+Z` / `Ctrl+Z` to revert batch or single additions at any time.
 

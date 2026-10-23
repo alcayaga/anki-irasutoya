@@ -9,3 +9,4 @@ This add-on allows you to automatically enrich your cards with illustrations fro
 - `thumbnail_delay_ms`: Rapid delay in milliseconds between gallery preview thumbnail downloads (default: `50`).
 - `full_image_delay_ms`: Polite delay in milliseconds between consecutive full image card downloads in batch mode (default: `300`).
 - `image_size`: Resolution of fetched images (`"s800"` for max 800px width/height, or `"s0"` for full original size).
+- `search_backend`: Search index backend to query: `"auto"` (offline catalog if bundled, live fallback), `"catalog"` (offline only), or `"live"` (always live Blogger search).

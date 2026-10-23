@@ -4,5 +4,6 @@
   "last_overwrite_mode": "skip",
   "thumbnail_delay_ms": 50,
   "full_image_delay_ms": 300,
-  "image_size": "s800"
+  "image_size": "s800",
+  "search_backend": "auto"
 }

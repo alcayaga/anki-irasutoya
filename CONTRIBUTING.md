@@ -82,6 +82,10 @@ We enforce strict separation between **Hermetic Unit Tests** and **Live Integrat
   - `tests/test_config.py`: Fallback defaults and schema access.
   - `tests/test_ui_mode.py`: Visual picker dialogs, preview tables, and Apple HIG components.
   - `tests/test_init.py`: Headless import safety and Anki browser hook registration.
+  - `tests/test_catalog.py`: SQLite schema, post/image indexing, memory loading, error handling, and search probes.
+  - `tests/test_catalog_parity.py`: Exact parity verification between live Blogger feed parsing and offline catalog indexing.
+  - `tests/test_build_catalog.py`: Feed fixture ingestion, keyword merging, and build validation gates.
+  - `tests/test_package_addon.py`: Distribution archive packaging, allowlist enforcement, and version stamping.
 
 #### Running Unit Tests
 
@@ -139,11 +143,12 @@ python3 scripts/eval_deck_search.py --deck "Mining" --limit 100 --delay 0.5
 | `--source-field` | Auto-detect | Source vocabulary field (`Expression`, `Word`, `Vocab`, `Front`). |
 | `--limit` | `50` | Maximum number of notes to evaluate. |
 | `--delay` | `0.25` | Polite delay (in seconds) between live HTTP requests to Irasutoya. |
+| `--backend` | `"both"` | Search backend to benchmark (`"live"`, `"catalog"`, or `"both"`). |
 | `--disable-tier2` | False | Disables Tier 2 reading fallbacks to test only syntactic normalizations. |
 | `--verbose`, `-v` | False | Displays detailed fallback candidate chains and image titles. |
 | `--anki-url` | `http://localhost:8765` | URL of AnkiConnect API endpoint. |
 
-The evaluation script prints an immediate visual progress log, followed by a summary report displaying **Legacy Search Recall**, **New Search Recall**, **Absolute/Relative Recall Gains**, and an **Exemplars Table** of recovered vocabulary.
+The evaluation script prints an immediate visual progress log, followed by a summary report displaying **Legacy Search Recall**, **Live Search Recall**, and/or **Offline Catalog Search Recall**, plus a **Selection Differences Table** comparing live vs catalog picks when running with `--backend both`.
 
 ---
 
@@ -164,6 +169,47 @@ To avoid false positive image matches during automated Batch operations (the **"
   - Verb and compound heuristic deinflections (`帰ってくる` $\rightarrow$ `帰る`, `走っている` $\rightarrow$ `走る`) (available in Single Card Picker UI; disabled in Batch Mode to avoid semantic drift).
   - In **Single Card Visual Picker UI**: Displays a transparent notification banner with clickable suggestion chips to switch queries in 1 click.
   - In **Batch Mode**: Automatically applies reading fallbacks, and **tags the note with `irasutoya::fallback_reading`** so users can filter and review fallback images at their convenience (heuristic deinflection is disabled in Batch Mode).
+
+---
+
+## Building and Packaging the Offline Catalog
+
+### 1. Building the Catalog (`scripts/build_catalog.py`)
+
+To build or refresh the offline SQLite metadata catalog from live Blogger feeds:
+
+```bash
+python scripts/build_catalog.py --out addon/data/catalog.sqlite
+```
+
+Options:
+- `--delay 1.0`: Polite delay between feed requests (default: 1.0s).
+- `--cache .catalog_cache`: Cache downloaded feed pages to enable resuming interrupted builds.
+- `--keywords <dir>`: Optional directory containing `.jsonl` keyword enrichment files.
+- `--from-fixtures <dir>`: Build catalog from local JSON feed fixtures instead of querying the network.
+- `--compare-with <old.sqlite>`: Compare new database with an older build and display added/updated post stats.
+
+The builder runs validation gates automatically:
+- Gate 1: `PRAGMA integrity_check` returns `ok`.
+- Gate 2: Post count is $\ge 98\%$ of Blogger's reported total results.
+- Gate 3: In-memory search probes (`猫`, `りんご`, `走る`) return valid illustrations.
+- Gate 4: Database file size is below 40 MB.
+
+### 2. Packaging the Add-on (`scripts/package_addon.py`)
+
+To assemble a distribution-ready `.ankiaddon` archive:
+
+```bash
+python scripts/package_addon.py --version 1.0.0 --out dist/
+```
+
+Packaging strictly enforces an allowlist (`*.py`, `manifest.json`, `config.json`, `config.md`, `icons/**`, `data/catalog.sqlite`). It automatically excludes OS and bytecode junk (`.DS_Store`, `*.pyc`, `__pycache__/`) and rejects any build containing private add-on state (`meta.json`, `user_files/`) to prevent corrupted uploads to AnkiWeb. It also stamps `manifest.json` with `"human_version": "<version>"`.
+
+### 3. Release Process
+
+1. Push a release tag: `git tag v1.0.0 && git push origin v1.0.0` (or `v1.0.0-rc1` for a pre-release).
+2. The GitHub Actions release workflow (`.github/workflows/release.yml`) builds the fresh catalog, packages the `.ankiaddon`, and publishes a GitHub Release with the archive and sha256 checksum.
+3. Upload the generated `.ankiaddon` file manually to AnkiWeb (AnkiWeb has no programmatic upload API).
 
 ---
 

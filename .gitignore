@@ -185,3 +185,10 @@ cython_debug/
 
 # Anki runtime metadata
 meta.json
+
+# Add-on catalog & packaging
+addon/data/catalog.sqlite*
+addon/user_files/
+addon/meta.json
+.catalog_cache/
+dist/

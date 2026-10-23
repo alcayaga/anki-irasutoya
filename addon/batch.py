@@ -6,8 +6,14 @@ import urllib.parse
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Sequence, Tuple
 
+from .catalog import default_store
 from .client import IrasutoyaClient
-from .config import CONFIG_KEY_FULL_DELAY, CONFIG_KEY_IMAGE_SIZE, get_config
+from .config import (
+    CONFIG_KEY_FULL_DELAY,
+    CONFIG_KEY_IMAGE_SIZE,
+    CONFIG_KEY_SEARCH_BACKEND,
+    get_config,
+)
 from .ranking import (
     is_decorative_asset,
     is_image_relevant,
@@ -120,7 +126,7 @@ def process_note_record(
             return "not_found", None
 
 
-        img_bytes = client.download_image(best_img.image_url)
+        img_bytes = client.download_image(best_img.image_url, image=best_img)
         if not img_bytes:
             return "not_found", None
 
@@ -178,7 +184,10 @@ def run_batch_fill(
         delay_ms = 300.0
     delay_sec = max(0.05, delay_ms / 1000.0)
     image_size = config.get(CONFIG_KEY_IMAGE_SIZE, "s800")
-    client = IrasutoyaClient()
+    search_backend = config.get(CONFIG_KEY_SEARCH_BACKEND, "auto")
+    store = default_store()
+    store.warm_async()
+    client = IrasutoyaClient(catalog=store, backend=search_backend)
 
     def read_notes_task(col: any) -> Tuple[List[Tuple[any, List[Tuple[str, str, int]], bool]], int, int]:
         """Read note terms in a short collection-backed task and generate candidate search queries."""
@@ -256,7 +265,7 @@ def run_batch_fill(
                     continue
 
                 pace_request()
-                img_bytes = client.download_image(best_img.image_url)
+                img_bytes = client.download_image(best_img.image_url, image=best_img)
                 if not img_bytes:
                     stats.not_found += 1
                     continue

@@ -1,14 +1,17 @@
 """Client for searching and downloading illustrations from Irasutoya (いらすとや)."""
 import json
 import logging
+import re
 import socket
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Callable, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
-from .feed import IrasutoyaImage, is_allowed_image_host, parse_entries
+from .catalog import CatalogStore
+from .feed import IrasutoyaImage, ParsedPost, is_allowed_image_host, parse_entries, parse_entry, upgrade_image_url
 from .ranking import is_decorative_asset, is_image_relevant, rank_relevant_images
 
 logger = logging.getLogger(__name__)
@@ -42,10 +45,31 @@ class IrasutoyaClient:
         "Chrome/120.0.0.0 Safari/537.36 (Anki-Irasutoya/1.0)"
     )
 
-    def __init__(self, user_agent: Optional[str] = None):
-        """Initialize the Irasutoya client with custom or default User-Agent."""
+    def __init__(
+        self,
+        user_agent: Optional[str] = None,
+        catalog: Optional[CatalogStore] = None,
+        backend: str = "auto",
+    ):
+        """Initialize the Irasutoya client with custom or default User-Agent and catalog backend."""
         self.user_agent = user_agent or self.DEFAULT_USER_AGENT
         self._opener = urllib.request.build_opener(_HttpsOnlyRedirectHandler)
+        self.catalog = catalog
+        supported_backends = ("auto", "catalog", "live")
+        if backend not in supported_backends:
+            logger.warning("Unknown search backend '%s'; defaulting to 'auto'", backend)
+            backend = "auto"
+        self.backend = backend
+        self._healed_posts_cache: Dict[Tuple[str, str], Optional[ParsedPost]] = {}
+        self._healed_posts_lock = threading.Lock()
+
+    def uses_catalog(self) -> bool:
+        """Return True if client is configured to query the offline metadata catalog."""
+        return (
+            self.backend != "live"
+            and self.catalog is not None
+            and self.catalog.get_index() is not None
+        )
 
     def _make_request(self, url: str, timeout: int = 10, max_retries: int = 2) -> bytes:
         """Execute HTTP GET with User-Agent, handling rate-limit backoff."""
@@ -100,6 +124,18 @@ class IrasutoyaClient:
         if not clean_q:
             return []
 
+        if self.backend == "catalog":
+            if not self.uses_catalog():
+                logger.warning("Catalog backend requested but offline catalog index is unavailable.")
+                return []
+            index = self.catalog.get_index()
+            return index.search(clean_q, image_size=image_size) if index else []
+
+        if self.uses_catalog():
+            index = self.catalog.get_index()
+            if index is not None:
+                return index.search(clean_q, image_size=image_size)
+
         params: dict = {
             "alt": "json",
             "q": clean_q,
@@ -137,7 +173,7 @@ class IrasutoyaClient:
         """
         for cand in candidates:
             term = cand[0]
-            if pace_callback is not None:
+            if pace_callback is not None and not self.uses_catalog():
                 pace_callback()
             images = self.search(term, max_results=max_results, image_size=image_size, orderby=orderby)
 
@@ -148,17 +184,88 @@ class IrasutoyaClient:
             ]
             if illustration_candidates:
                 ranked = rank_relevant_images(illustration_candidates, term)
+                if max_results:
+                    ranked = ranked[:max_results]
                 best = ranked[0]
                 return ranked, cand, best
 
         return [], None, None
 
-    def download_image(self, url: str, timeout: int = 15) -> bytes:
-        """Download raw image binary data from an allowlisted HTTPS URL."""
+    def download_image(
+        self,
+        url: str,
+        timeout: int = 15,
+        *,
+        image: Optional[IrasutoyaImage] = None,
+    ) -> bytes:
+        """Download raw image binary data from an allowlisted HTTPS URL.
+
+        If HTTP 404 or 410 occurs and image metadata includes a post_id,
+        attempts a one-time self-heal by re-fetching the Blogger post entry.
+        """
         parsed = urllib.parse.urlparse(url)
         if parsed.scheme != "https":
             raise ValueError(f"Refusing non-HTTPS image URL: {url}")
         host = (parsed.hostname or "").lower()
         if not is_allowed_image_host(host):
             raise ValueError(f"Refusing image download from untrusted host: {host}")
-        return self._make_request(url, timeout=timeout)
+
+        try:
+            return self._make_request(url, timeout=timeout)
+        except urllib.error.HTTPError as e:
+            if e.code in (404, 410) and image is not None and getattr(image, "post_id", None):
+                refetched_url = self._self_heal_image_url(image, original_url=url)
+                if refetched_url and refetched_url != url:
+                    logger.info("Self-healed image URL for %s from %s to %s", image.title, url, refetched_url)
+                    return self._make_request(refetched_url, timeout=timeout)
+            raise
+
+    def _self_heal_image_url(self, image: IrasutoyaImage, original_url: Optional[str] = None) -> Optional[str]:
+        """Fetch the single Blogger post entry to locate an updated image URL after a 404/410."""
+        post_id = getattr(image, "post_id", "").strip()
+        if not post_id:
+            return None
+
+        size_token = "s800"
+        if original_url:
+            match = re.search(r"/(s\d+(-c)?|s0)/", original_url)
+            if match:
+                size_token = match.group(1)
+
+        cache_key = (post_id, size_token)
+        with self._healed_posts_lock:
+            post = self._healed_posts_cache.get(cache_key)
+
+        if post is None:
+            url = f"{self.BASE_URL}/feeds/posts/default/{post_id}?alt=json"
+            try:
+                raw_data = self._make_request(url, timeout=10)
+                data = json.loads(raw_data.decode("utf-8"))
+                entry = data.get("entry", data)
+                parsed_post = parse_entry(entry, image_size=size_token)
+                with self._healed_posts_lock:
+                    self._healed_posts_cache[cache_key] = parsed_post
+                post = parsed_post
+            except Exception as e:
+                logger.warning("Failed to self-heal image URL for post %s: %s", post_id, e)
+                return None
+
+        if post is None or not post.images:
+            return None
+
+        # 1. Match by image filename (most specific across multi-image posts)
+        target_base = image.image_url.split("/")[-1]
+        for img in post.images:
+            if img.image_url.split("/")[-1] == target_base:
+                return upgrade_image_url(img.image_url, size_token)
+
+        # 2. Match by title only if unambiguous (exactly 1 match)
+        title_matches = [img for img in post.images if img.title == image.title]
+        if len(title_matches) == 1:
+            return upgrade_image_url(title_matches[0].image_url, size_token)
+
+        # 3. Fallback to single image if post only has 1 image
+        if len(post.images) == 1:
+            return upgrade_image_url(post.images[0].image_url, size_token)
+
+        return None

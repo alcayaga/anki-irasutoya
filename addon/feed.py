@@ -65,6 +65,8 @@ class IrasutoyaImage:
     post_title: str
     description: str = ""
     is_single_image_post: bool = True
+    post_id: str = ""
+    categories: Tuple[str, ...] = ()
 
 
 @dataclass
@@ -188,6 +190,8 @@ def parse_entry(
                 thumb_url=thumb,
                 post_title=post_title,
                 description=post_desc,
+                post_id=blogger_id,
+                categories=categories,
             )
         )
 
@@ -209,6 +213,8 @@ def parse_entry(
                             thumb_url=to_thumbnail_url(thumb, "s120-c"),
                             post_title=post_title,
                             description=post_desc,
+                            post_id=blogger_id,
+                            categories=categories,
                         )
                     )
 
