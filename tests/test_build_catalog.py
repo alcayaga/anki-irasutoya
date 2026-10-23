@@ -9,6 +9,7 @@ from addon.catalog import write_posts
 from addon.feed import IrasutoyaImage, ParsedPost
 from scripts.build_catalog import (
     compare_with_old,
+    compile_and_publish_catalog,
     load_from_fixtures,
     merge_keywords,
     validate_catalog,
@@ -175,23 +176,19 @@ class TestBuildCatalog(unittest.TestCase):
         with open(self.db_path, "w") as f:
             f.write("ORIGINAL_CONTENT")
 
-        # Simulate builder creating a tmp_path that fails validation
-        tmp_path = f"{self.db_path}.tmp"
-        conn = sqlite3.connect(tmp_path)
         post = ParsedPost("1", "猫", "desc", "pub", "upd", (), [IrasutoyaImage("猫", "https://1.bp.blogspot.com/cat.png", "t", "猫")])
-        write_posts(conn, [post])
-        conn.close()
 
         # Gate 2 failure (expected 1000 posts, only 1 present)
         with self.assertRaises(RuntimeError):
-            try:
-                validate_catalog(tmp_path, total_results=1000, require_probes=False)
-            except Exception:
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-                raise
+            compile_and_publish_catalog(
+                out_path=self.db_path,
+                posts=[post],
+                total_results=1000,
+                require_probes=False,
+            )
 
         # Original db content is untouched, tmp_path is removed
+        tmp_path = f"{self.db_path}.tmp"
         self.assertFalse(os.path.exists(tmp_path))
         with open(self.db_path, "r") as f:
             self.assertEqual(f.read(), "ORIGINAL_CONTENT")

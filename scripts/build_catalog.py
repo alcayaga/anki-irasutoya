@@ -10,7 +10,7 @@ import sys
 import time
 import urllib.parse
 import urllib.request
-from typing import List, Optional, Set, Tuple
+from typing import List, Optional, Sequence, Set, Tuple
 
 # Ensure repository root is on sys.path
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -314,6 +314,67 @@ def validate_catalog(
     logger.info("All validation gates passed successfully!")
 
 
+def compile_and_publish_catalog(
+    out_path: str,
+    posts: Sequence[ParsedPost],
+    total_results: int,
+    keywords_dir: Optional[str] = None,
+    compare_with: Optional[str] = None,
+    require_probes: bool = True,
+    max_size_mb: float = 40.0,
+) -> str:
+    """Compile parsed posts into a temporary SQLite database, run validation gates, atomically publish, and write sha256 checksum."""
+    out_path = os.path.abspath(out_path)
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+
+    tmp_path = f"{out_path}.tmp"
+    if os.path.exists(tmp_path):
+        os.remove(tmp_path)
+
+    logger.info("Writing %d posts to temporary database at %s...", len(posts), tmp_path)
+    conn = sqlite3.connect(tmp_path)
+    try:
+        write_posts(conn, posts, source_total_results=total_results)
+        if keywords_dir:
+            merge_keywords(conn, keywords_dir)
+
+        if compare_with:
+            compare_with_old(conn, compare_with)
+
+        logger.info("Optimizing database with VACUUM and journal_mode=DELETE...")
+        conn.execute("PRAGMA journal_mode = DELETE")
+        conn.execute("VACUUM")
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Validate temporary file BEFORE publishing
+    try:
+        validate_catalog(tmp_path, total_results, require_probes=require_probes, max_size_mb=max_size_mb)
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
+
+    # Atomically replace final catalog
+    os.replace(tmp_path, out_path)
+    logger.info("Successfully published catalog to %s", out_path)
+
+    # Compute sha256 checksum
+    hasher = hashlib.sha256()
+    with open(out_path, "rb") as f:
+        while chunk := f.read(65536):
+            hasher.update(chunk)
+    digest = hasher.hexdigest()
+
+    sha_path = f"{out_path}.sha256"
+    basename = os.path.basename(out_path)
+    with open(sha_path, "w", encoding="utf-8") as f:
+        f.write(f"{digest}  {basename}\n")
+    logger.info("Wrote SHA256 checksum to %s", sha_path)
+    return out_path
+
+
 def main() -> None:
     """CLI entrypoint for building and validating the Irasutoya SQLite catalog."""
     parser = argparse.ArgumentParser(description="Build offline Irasutoya SQLite catalog.")
@@ -339,51 +400,14 @@ def main() -> None:
         posts, total_results = crawl_live_feed(cache_dir=args.cache, delay=args.delay)
         require_probes = not args.skip_probes
 
-    tmp_path = f"{out_path}.tmp"
-    if os.path.exists(tmp_path):
-        os.remove(tmp_path)
-
-    logger.info("Writing %d posts to temporary database at %s...", len(posts), tmp_path)
-    conn = sqlite3.connect(tmp_path)
-    try:
-        write_posts(conn, posts, source_total_results=total_results)
-        if args.keywords:
-            merge_keywords(conn, args.keywords)
-
-        if args.compare_with:
-            compare_with_old(conn, args.compare_with)
-
-        logger.info("Optimizing database with VACUUM and journal_mode=DELETE...")
-        conn.execute("PRAGMA journal_mode = DELETE")
-        conn.execute("VACUUM")
-        conn.commit()
-    finally:
-        conn.close()
-
-    # Validate temporary file BEFORE publishing
-    try:
-        validate_catalog(tmp_path, total_results, require_probes=require_probes)
-    except Exception:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
-        raise
-
-    # Atomically replace final catalog
-    os.replace(tmp_path, out_path)
-    logger.info("Successfully published catalog to %s", out_path)
-
-    # Compute sha256 checksum
-    hasher = hashlib.sha256()
-    with open(out_path, "rb") as f:
-        while chunk := f.read(65536):
-            hasher.update(chunk)
-    digest = hasher.hexdigest()
-
-    sha_path = f"{out_path}.sha256"
-    basename = os.path.basename(out_path)
-    with open(sha_path, "w", encoding="utf-8") as f:
-        f.write(f"{digest}  {basename}\n")
-    logger.info("Wrote SHA256 checksum to %s", sha_path)
+    compile_and_publish_catalog(
+        out_path=out_path,
+        posts=posts,
+        total_results=total_results,
+        keywords_dir=args.keywords,
+        compare_with=args.compare_with,
+        require_probes=require_probes,
+    )
 
 
 if __name__ == "__main__":

@@ -256,6 +256,10 @@ def run_evaluation(
                     )
                 )
 
+        matched_term = matched_cand[0] if matched_cand else ""
+        matched_reason = matched_cand[1] if matched_cand else ""
+        matched_tier = matched_cand[2] if matched_cand else 0
+
         if eval_error or leg_error:
             failed_requests += 1
             status = "REQUEST_ERROR"
@@ -276,10 +280,6 @@ def run_evaluation(
                 cat_hits += 1
             if live_best:
                 live_hits += 1
-
-            matched_term = matched_cand[0] if matched_cand else ""
-            matched_reason = matched_cand[1] if matched_cand else ""
-            matched_tier = matched_cand[2] if matched_cand else 0
 
             if leg_found and new_found:
                 status = "BOTH_HIT"
@@ -364,6 +364,9 @@ def run_evaluation(
         if len(diff_table) > 15:
             print(f"... and {len(diff_table) - 15} more differences.")
     print("=" * 72)
+    if failed_requests:
+        print(f"\n[ERROR] {failed_requests} note(s) had failed search requests and were excluded from recall.\n")
+        sys.exit(1)
 
 
 def main():
