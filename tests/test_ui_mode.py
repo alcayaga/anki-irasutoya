@@ -5,8 +5,8 @@ from unittest.mock import MagicMock, patch
 try:
     from aqt.qt import QApplication, QHeaderView, QPushButton
     app = QApplication.instance() or QApplication(["test", "-platform", "offscreen"])
-    from client import IrasutoyaImage
-    from ui import CHEVRON_ICON_PATH, DIALOG_STYLESHEET, ImageCardWidget, IrasutoyaDialog
+    from addon.feed import IrasutoyaImage
+    from addon.ui import CHEVRON_ICON_PATH, DIALOG_STYLESHEET, ImageCardWidget, IrasutoyaDialog
     HAS_QT = True
 except Exception:
     HAS_QT = False
@@ -91,7 +91,7 @@ class TestUIMode(unittest.TestCase):
         mock_note = {"Expression": "本", "Reading": "ほん", "DefinitionPicture": ""}
         mock_mw.col.get_note.return_value = mock_note
 
-        with patch("ui.mw", mock_mw), patch("threading.Thread", _SyncThread):
+        with patch("addon.ui.mw", mock_mw), patch("threading.Thread", _SyncThread):
             dlg = IrasutoyaDialog(parent=None, browser=None, note_ids=[1001])
             dlg._thumb_executor.submit = MagicMock()
             dlg._run_on_main = lambda cb: cb()
@@ -137,7 +137,7 @@ class TestUIMode(unittest.TestCase):
         mock_note = {"Expression": "本", "Reading": "ほん", "DefinitionPicture": ""}
         mock_mw.col.get_note.return_value = mock_note
 
-        with patch("ui.mw", mock_mw), patch("threading.Thread", _SyncThread):
+        with patch("addon.ui.mw", mock_mw), patch("threading.Thread", _SyncThread):
             dlg = IrasutoyaDialog(parent=None, browser=None, note_ids=[1001])
             dlg._thumb_executor.submit = MagicMock()
             dlg._run_on_main = lambda cb: cb()
@@ -177,7 +177,7 @@ class TestUIMode(unittest.TestCase):
         mock_note = {"Expression": "本", "Reading": "ほん", "DefinitionPicture": ""}
         mock_mw.col.get_note.return_value = mock_note
 
-        with patch("ui.mw", mock_mw), patch("threading.Thread", _SyncThread):
+        with patch("addon.ui.mw", mock_mw), patch("threading.Thread", _SyncThread):
             dlg = IrasutoyaDialog(parent=None, browser=None, note_ids=[1001])
             dlg._thumb_executor.submit = MagicMock()
             dlg._run_on_main = lambda cb: cb()
@@ -203,7 +203,7 @@ class TestUIMode(unittest.TestCase):
         mock_note = {"Expression": "本", "Reading": "ほん", "Vocab": "猫", "EmptyField": ""}
         mock_mw.col.get_note.return_value = mock_note
 
-        with patch("ui.mw", mock_mw), patch("threading.Thread", _SyncThread):
+        with patch("addon.ui.mw", mock_mw), patch("threading.Thread", _SyncThread):
             dlg = IrasutoyaDialog(parent=None, browser=None, note_ids=[1001])
             dlg._thumb_executor.submit = MagicMock()
             dlg._run_on_main = lambda cb: cb()

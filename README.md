@@ -53,17 +53,17 @@ Enrich your Anki flashcards with illustrations from [いらすとや (Irasutoya)
 ## Installation
 
 ### From Source / Symlink (Recommended for Development)
-Link this repository into your Anki `addons21` folder:
+Link the `addon` directory into your Anki `addons21` folder:
 
 ```bash
 # On macOS:
-ln -s /path/to/anki-irasutoya ~/Library/Application\ Support/Anki2/addons21/anki-irasutoya
+ln -s /path/to/anki-irasutoya/addon ~/Library/Application\ Support/Anki2/addons21/anki-irasutoya
 
 # On Linux:
-ln -s /path/to/anki-irasutoya ~/.local/share/Anki2/addons21/anki-irasutoya
+ln -s /path/to/anki-irasutoya/addon ~/.local/share/Anki2/addons21/anki-irasutoya
 
 # On Windows (PowerShell Run as Admin):
-New-Item -ItemType SymbolicLink -Path "$env:APPDATA\Anki2\addons21\anki-irasutoya" -Target "C:\path\to\anki-irasutoya"
+New-Item -ItemType SymbolicLink -Path "$env:APPDATA\Anki2\addons21\anki-irasutoya" -Target "C:\path\to\anki-irasutoya\addon"
 ```
 
 Restart Anki after linking.

@@ -15,10 +15,7 @@ except (ImportError, RuntimeError) as _aqt_exc:
 
 def on_add_irasutoya_images(browser) -> None:
     """Invoked when user clicks 'Add Irasutoya Images...'."""
-    try:
-        from .ui import IrasutoyaDialog
-    except ImportError:
-        from ui import IrasutoyaDialog
+    from .ui import IrasutoyaDialog
 
     selected_nids = browser.selected_notes()
     if not selected_nids:

@@ -24,13 +24,10 @@ from typing import Any, Dict, List, Optional
 # Ensure parent directory is on sys.path so we can import client and text_utils
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from client import (
-    IrasutoyaClient,
-    IrasutoyaImage,
-    is_decorative_asset,
-    is_image_relevant,
-)
-from text_utils import (
+from addon.client import IrasutoyaClient
+from addon.feed import IrasutoyaImage
+from addon.ranking import is_decorative_asset, is_image_relevant
+from addon.text_utils import (
     BATCH_MAX_CANDIDATES,
     generate_search_candidates,
 )

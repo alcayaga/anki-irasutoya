@@ -1,7 +1,7 @@
 """Unit tests for text query extraction and sanitization utilities."""
 import unittest
 
-from text_utils import clean_search_query
+from addon.text_utils import clean_search_query
 
 
 class TestTextUtils(unittest.TestCase):
@@ -58,7 +58,7 @@ class TestTextUtils(unittest.TestCase):
 
     def test_extract_furigana_terms(self):
         """Test extracting surface kanji and bracketed readings."""
-        from text_utils import extract_furigana_terms
+        from addon.text_utils import extract_furigana_terms
         self.assertEqual(extract_furigana_terms("林檎[りんご]"), ("林檎", "りんご"))
         self.assertEqual(extract_furigana_terms("動[うご]かす"), ("動かす", "うごかす"))
         self.assertEqual(extract_furigana_terms("１杯[いっぱい]"), ("1杯", "いっぱい"))
@@ -76,7 +76,7 @@ class TestTextUtils(unittest.TestCase):
 
     def test_kana_conversions(self):
         """Test Hiragana and Katakana bidirectional character conversions."""
-        from text_utils import to_hiragana, to_katakana
+        from addon.text_utils import to_hiragana, to_katakana
         self.assertEqual(to_katakana("とまと"), "トマト")
         self.assertEqual(to_katakana("ぱん"), "パン")
         self.assertEqual(to_katakana("かめら"), "カメラ")
@@ -85,7 +85,7 @@ class TestTextUtils(unittest.TestCase):
 
     def test_expand_katakana_chouon(self):
         """Test expanding Katakana terms missing trailing vowel elongation marks."""
-        from text_utils import expand_katakana_chouon
+        from addon.text_utils import expand_katakana_chouon
         self.assertEqual(expand_katakana_chouon("メンバ"), ["メンバー"])
         self.assertEqual(expand_katakana_chouon("サーバ"), ["サーバー"])
         self.assertEqual(expand_katakana_chouon("フォルダ"), ["フォルダー"])
@@ -95,7 +95,7 @@ class TestTextUtils(unittest.TestCase):
 
     def test_convert_to_kanji_numerals(self):
         """Test converting Arabic numerals with Japanese counters into Kanji numerals."""
-        from text_utils import convert_to_kanji_numerals
+        from addon.text_utils import convert_to_kanji_numerals
         self.assertEqual(convert_to_kanji_numerals("1杯"), "一杯")
         self.assertEqual(convert_to_kanji_numerals("2人"), "二人")
         self.assertEqual(convert_to_kanji_numerals("3つ"), "三つ")
@@ -113,7 +113,7 @@ class TestTextUtils(unittest.TestCase):
 
     def test_deinflect_japanese(self):
         """Test heuristic deinflection of verb and compound forms."""
-        from text_utils import deinflect_japanese
+        from addon.text_utils import deinflect_japanese
         kaeru_forms = deinflect_japanese("帰ってくる")
         self.assertIn("帰る", kaeru_forms)
         self.assertNotIn("帰っる", kaeru_forms)
@@ -156,7 +156,7 @@ class TestTextUtils(unittest.TestCase):
 
     def test_generate_search_candidates(self):
         """Test candidate generation priority, tiers, and note field inspection."""
-        from text_utils import generate_search_candidates
+        from addon.text_utils import generate_search_candidates
 
         # Test 1: Direct furigana in primary term (Primary is Tier 1, readings are Tier 2 for audit)
         cands1 = generate_search_candidates("林檎[りんご]")
@@ -247,7 +247,7 @@ class TestTextUtils(unittest.TestCase):
 
     def test_verb_conjugations(self):
         """Test Kanji-preserving verb inflection generation for Irasutoya titles."""
-        from text_utils import conjugate_japanese_verb
+        from addon.text_utils import conjugate_japanese_verb
         # Godan verbs
         katsu = conjugate_japanese_verb("勝つ")
         self.assertIn("勝った", katsu)
@@ -356,7 +356,7 @@ class TestTextUtils(unittest.TestCase):
 
     def test_bikago_prefix(self):
         """Test canonical polite お prefix expansion for everyday nouns."""
-        from text_utils import expand_bikago_prefix
+        from addon.text_utils import expand_bikago_prefix
         self.assertEqual(expand_bikago_prefix("肉"), "お肉")
         self.assertEqual(expand_bikago_prefix("肌"), "お肌")
         self.assertEqual(expand_bikago_prefix("茶"), "お茶")
@@ -367,7 +367,7 @@ class TestTextUtils(unittest.TestCase):
 
     def test_grammar_function_words(self):
         """Test identification of pure grammar particles and function words."""
-        from text_utils import is_grammar_function_word
+        from addon.text_utils import is_grammar_function_word
         self.assertTrue(is_grammar_function_word("よ"))
         self.assertTrue(is_grammar_function_word("ね"))
         self.assertTrue(is_grammar_function_word("から"))
@@ -384,7 +384,7 @@ class TestTextUtils(unittest.TestCase):
 
     def test_segmented_and_prefixed_furigana(self):
         """Test extracting segmented furigana with prefixes and spaces."""
-        from text_utils import extract_furigana_terms
+        from addon.text_utils import extract_furigana_terms
         self.assertEqual(extract_furigana_terms("お 前[まえ]"), ("お前", "おまえ"))
         self.assertEqual(extract_furigana_terms("この 世[よ]"), ("この世", "このよ"))
         self.assertEqual(extract_furigana_terms("其[そ]の 儘[まま]"), ("其の儘", "そのまま"))
@@ -393,7 +393,7 @@ class TestTextUtils(unittest.TestCase):
 
     def test_candidate_tiers_morphology(self):
         """Test that verb inflections and bikago run in Tier 1 while readings run in Tier 2."""
-        from text_utils import generate_search_candidates
+        from addon.text_utils import generate_search_candidates
         # Verb past/volitional inflection is Tier 1, while masu-stem is Tier 2
         cands_verb = generate_search_candidates("勝つ")
         cand_map_verb = {term: (reason, tier) for term, reason, tier in cands_verb}
@@ -421,7 +421,7 @@ class TestTextUtils(unittest.TestCase):
 
     def test_yomitan_uk_reading_promotion(self):
         """Test that words tagged 'uk' promote their Kana and Katakana readings to Tier 1."""
-        from text_utils import generate_search_candidates
+        from addon.text_utils import generate_search_candidates
         note = {
             "Expression": "其の儘",
             "ExpressionReading": "そのまま",
@@ -440,7 +440,7 @@ class TestTextUtils(unittest.TestCase):
 
     def test_yomitan_secondary_uk_not_promoted(self):
         """Test that uk on a secondary sense does NOT promote kana reading to Tier 1."""
-        from text_utils import generate_search_candidates
+        from addon.text_utils import generate_search_candidates
         note = {
             "Expression": "漢字",
             "ExpressionReading": "かんじ",
@@ -461,7 +461,7 @@ class TestTextUtils(unittest.TestCase):
 
     def test_yomitan_forms_star_promotion(self):
         """Test that ★ forms from formsTable are promoted to Tier 1."""
-        from text_utils import generate_search_candidates
+        from addon.text_utils import generate_search_candidates
         note = {
             "Expression": "交代",
             "ExpressionReading": "こうたい",
@@ -478,7 +478,7 @@ class TestTextUtils(unittest.TestCase):
 
     def test_yomitan_deterministic_verb_conjugation(self):
         """Test that exact JMdict verb class (v5r) fixes Godan verbs misclassified by heuristic."""
-        from text_utils import generate_search_candidates
+        from addon.text_utils import generate_search_candidates
         # Without Yomitan metadata, 見くびる would be misclassified as Ichidan (stem ends in 'び')
         note = {
             "Expression": "見くびる",
@@ -505,7 +505,7 @@ class TestTextUtils(unittest.TestCase):
 
     def test_yomitan_references_and_sense_kanji(self):
         """Test that 'see:' references and sense-specific kanji are emitted as Tier 2 fallbacks."""
-        from text_utils import generate_search_candidates
+        from addon.text_utils import generate_search_candidates
         note = {
             "Expression": "総理",
             "ExpressionReading": "そうり",
@@ -545,7 +545,7 @@ class TestTextUtils(unittest.TestCase):
 
     def test_yomitan_particle_gating(self):
         """Test that notes tagged 'prt' or 'conj' suppress unanchored fallbacks."""
-        from text_utils import generate_search_candidates
+        from addon.text_utils import generate_search_candidates
         # 及び is not in GRAMMAR_FUNCTION_WORDS, so gating is driven purely by Yomitan metadata
         note_oyobi = {
             "Expression": "及び",
@@ -563,7 +563,7 @@ class TestTextUtils(unittest.TestCase):
 
     def test_yomitan_vk_compound_conjugation(self):
         """Test that ~てくる compounds with vk tag still conjugate correctly to ~てきた."""
-        from text_utils import generate_search_candidates
+        from addon.text_utils import generate_search_candidates
         note_kaeru = {
             "Expression": "帰ってくる",
             "ExpressionReading": "かえってくる",
