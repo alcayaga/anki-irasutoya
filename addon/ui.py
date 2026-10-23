@@ -35,32 +35,19 @@ from aqt.qt import (
 )
 from aqt.utils import showWarning, tooltip
 
-try:
-    from .batch import make_safe_media_filename, run_batch_fill
-    from .client import IrasutoyaClient, IrasutoyaImage
-    from .config import (
-        CONFIG_KEY_IMAGE_SIZE,
-        CONFIG_KEY_OVERWRITE,
-        CONFIG_KEY_SOURCE,
-        CONFIG_KEY_TARGET,
-        CONFIG_KEY_THUMB_DELAY,
-        get_config,
-        update_user_preferences,
-    )
-    from .text_utils import clean_search_query, generate_search_candidates
-except ImportError:
-    from batch import make_safe_media_filename, run_batch_fill
-    from client import IrasutoyaClient, IrasutoyaImage
-    from config import (
-        CONFIG_KEY_IMAGE_SIZE,
-        CONFIG_KEY_OVERWRITE,
-        CONFIG_KEY_SOURCE,
-        CONFIG_KEY_TARGET,
-        CONFIG_KEY_THUMB_DELAY,
-        get_config,
-        update_user_preferences,
-    )
-    from text_utils import clean_search_query, generate_search_candidates
+from .batch import make_safe_media_filename, run_batch_fill
+from .client import IrasutoyaClient
+from .config import (
+    CONFIG_KEY_IMAGE_SIZE,
+    CONFIG_KEY_OVERWRITE,
+    CONFIG_KEY_SOURCE,
+    CONFIG_KEY_TARGET,
+    CONFIG_KEY_THUMB_DELAY,
+    get_config,
+    update_user_preferences,
+)
+from .feed import IrasutoyaImage
+from .text_utils import clean_search_query, generate_search_candidates
 
 logger = logging.getLogger(__name__)
 

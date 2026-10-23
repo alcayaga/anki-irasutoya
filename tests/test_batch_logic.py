@@ -2,8 +2,8 @@
 import unittest
 import urllib.parse
 
-from batch import BatchStats, make_safe_media_filename, process_note_record
-from client import IrasutoyaImage
+from addon.batch import BatchStats, make_safe_media_filename, process_note_record
+from addon.feed import IrasutoyaImage
 
 
 class MockIrasutoyaClient:

@@ -6,24 +6,14 @@ import urllib.parse
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Sequence, Tuple
 
-try:
-    from .client import (
-        IrasutoyaClient,
-        is_decorative_asset,
-        is_image_relevant,
-        select_best_image,
-    )
-    from .config import CONFIG_KEY_FULL_DELAY, CONFIG_KEY_IMAGE_SIZE, get_config
-    from .text_utils import BATCH_MAX_CANDIDATES, generate_search_candidates
-except ImportError:
-    from client import (
-        IrasutoyaClient,
-        is_decorative_asset,
-        is_image_relevant,
-        select_best_image,
-    )
-    from config import CONFIG_KEY_FULL_DELAY, CONFIG_KEY_IMAGE_SIZE, get_config
-    from text_utils import BATCH_MAX_CANDIDATES, generate_search_candidates
+from .client import IrasutoyaClient
+from .config import CONFIG_KEY_FULL_DELAY, CONFIG_KEY_IMAGE_SIZE, get_config
+from .ranking import (
+    is_decorative_asset,
+    is_image_relevant,
+    select_best_image,
+)
+from .text_utils import BATCH_MAX_CANDIDATES, generate_search_candidates
 
 logger = logging.getLogger(__name__)
 

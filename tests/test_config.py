@@ -1,8 +1,8 @@
 """Unit tests for add-on configuration management and persistence."""
 import unittest
 
-import config
-from config import (
+import addon.config as config
+from addon.config import (
     CONFIG_KEY_FULL_DELAY,
     CONFIG_KEY_OVERWRITE,
     CONFIG_KEY_SOURCE,

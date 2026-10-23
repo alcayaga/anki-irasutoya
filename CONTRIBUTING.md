@@ -6,16 +6,19 @@ Thank you for your interest in contributing to **anki-irasutoya**! This guide de
 
 ## Architecture Overview
 
-The codebase is organized into cleanly decoupled layers:
+The codebase is organized into cleanly decoupled layers inside the `addon/` package:
 
 | Module | Description | Dependencies |
 | :--- | :--- | :--- |
-| [`text_utils.py`](text_utils.py) | Query sanitization, Japanese script normalization (NFKC, loanword Katakana, chōonpu expansion, Kanji numeral conversion, heuristic deinflection), and Tiered candidate generation. | Standard Library only (`re`, `unicodedata`, `html`). **No Anki/Qt dependency.** |
-| [`client.py`](client.py) | Irasutoya scraper client, Blogger feed HTML parser, high-res URL upgrading, archetype & relevance scoring, and fallback search pipeline. | Standard Library only (`urllib`, `html.parser`, `json`). **No Anki/Qt dependency.** |
-| [`batch.py`](batch.py) | Batch processing worker, preview table data models, rate-limited downloads, and audit tagging (`irasutoya::fallback_reading`). | Anki collection operations & UI abstractions. |
-| [`ui.py`](ui.py) | Apple HIG native modal dialogs, visual thumbnail gallery, suggestion chips, transparency banners, and batch configuration views. | `aqt` (PyQt6). |
-| [`config.py`](config.py) | User configuration management with schema fallback defaults. | `aqt.mw.addonManager`. |
-| [`scripts/eval_deck_search.py`](scripts/eval_deck_search.py) | Standalone CLI tool to evaluate search recall against real Anki decks via AnkiConnect. | Standard Library + `client` + `text_utils`. |
+| [`addon/text_utils.py`](addon/text_utils.py) | Query sanitization, Japanese script normalization (NFKC, loanword Katakana, chōonpu expansion, Kanji numeral conversion, heuristic deinflection), and Tiered candidate generation. | Standard Library only (`re`, `unicodedata`, `html`). **No Anki/Qt dependency.** |
+| [`addon/yomitan_parser.py`](addon/yomitan_parser.py) | Structured JMdict POS, orthography, and furigana table extraction from Yomitan HTML. | Standard Library only (`html.parser`). **No Anki/Qt dependency.** |
+| [`addon/feed.py`](addon/feed.py) | Blogger feed HTML parser, high-res URL upgrading, thumbnail helpers, and entry models. | Standard Library only (`urllib`, `html.parser`, `unicodedata`). **No Anki/Qt dependency.** |
+| [`addon/ranking.py`](addon/ranking.py) | Morphological boundary classification, noise keyword filtering, and archetype relevance scoring engine. | Standard Library + `text_utils` + `feed`. **No Anki/Qt dependency.** |
+| [`addon/client.py`](addon/client.py) | Irasutoya scraper client, HTTPS redirect validation, and candidate fallback search pipeline. | Standard Library + `feed` + `ranking`. **No Anki/Qt dependency.** |
+| [`addon/batch.py`](addon/batch.py) | Batch processing worker, preview table data models, rate-limited downloads, and audit tagging (`irasutoya::fallback_reading`). | Anki collection operations & UI abstractions. |
+| [`addon/ui.py`](addon/ui.py) | Apple HIG native modal dialogs, visual thumbnail gallery, suggestion chips, transparency banners, and batch configuration views. | `aqt` (PyQt6). |
+| [`addon/config.py`](addon/config.py) | User configuration management with schema fallback defaults. | `aqt.mw.addonManager`. |
+| [`scripts/eval_deck_search.py`](scripts/eval_deck_search.py) | Standalone CLI tool to evaluate search recall against real Anki decks via AnkiConnect. | Standard Library + `addon.*`. |
 
 ---
 
@@ -23,17 +26,17 @@ The codebase is organized into cleanly decoupled layers:
 
 ### 1. Linking Add-on for Development
 
-To test live in Anki, symlink this repository directly into your Anki `addons21` directory:
+To test live in Anki, symlink the `addon` directory directly into your Anki `addons21` directory:
 
 ```bash
 # macOS
-ln -s "$(pwd)" ~/Library/Application\ Support/Anki2/addons21/anki-irasutoya
+ln -s "$(pwd)/addon" ~/Library/Application\ Support/Anki2/addons21/anki-irasutoya
 
 # Linux
-ln -s "$(pwd)" ~/.local/share/Anki2/addons21/anki-irasutoya
+ln -s "$(pwd)/addon" ~/.local/share/Anki2/addons21/anki-irasutoya
 
 # Windows (PowerShell as Administrator)
-New-Item -ItemType SymbolicLink -Path "$env:APPDATA\Anki2\addons21\anki-irasutoya" -Target (Get-Location).Path
+New-Item -ItemType SymbolicLink -Path "$env:APPDATA\Anki2\addons21\anki-irasutoya" -Target "$((Get-Location).Path)\addon"
 ```
 
 Restart Anki to load changes.
@@ -71,23 +74,33 @@ We enforce strict separation between **Hermetic Unit Tests** and **Live Integrat
 - **Mocking Strategy**: Use stubbed responses or mock clients (such as `MockIrasutoyaClient`) to verify logic deterministically in milliseconds.
 - **Coverage**:
   - `tests/test_text_utils.py`: Text cleaning, middle dot preservation, numeral conversion, katakana loanwords, vowel elongation, heuristic deinflection, candidate tiers.
-  - `tests/test_client.py`: High-res URL upgrades, standalone vs anchor `<img>` tags, HTML unescaping, archetype relevance scoring, fallback queries.
+  - `tests/test_yomitan_parser.py`: Yomitan HTML parsing, JMdict POS tags, uk orthography, and formsTable promotion.
+  - `tests/test_feed.py`: Blogger HTML parsing, standalone vs anchor `<img>` tags, HTML unescaping, URL upgrades.
+  - `tests/test_ranking.py`: Boundary classification, noise keyword filtering, archetype relevance scoring, regression fixtures.
+  - `tests/test_client.py`: HTTP request handling, HTTPS redirect security, and fallback search pipeline.
   - `tests/test_batch_logic.py`: Skip/overwrite logic, safe filename generation, fallback audit tagging (`irasutoya::fallback_reading`).
   - `tests/test_config.py`: Fallback defaults and schema access.
   - `tests/test_ui_mode.py`: Visual picker dialogs, preview tables, and Apple HIG components.
+  - `tests/test_init.py`: Headless import safety and Anki browser hook registration.
 
 #### Running Unit Tests
 
-Run all unit tests using standard Python:
+Run all unit tests using pytest (recommended):
 
 ```bash
-python3 -m unittest discover tests -v
+python3 -m pytest tests -v
+```
+
+Or using standard `unittest`:
+
+```bash
+python3 -m unittest discover -s tests -p "test_*.py" -v
 ```
 
 Or run with Anki's bundled Python packages (to execute Qt/UI tests):
 
 ```bash
-PYTHONPATH="/Applications/Anki.app/Contents/Resources/app_packages:." python3 -m unittest discover tests -v
+PYTHONPATH="/Applications/Anki.app/Contents/Resources/app_packages:." python3 -m pytest tests -v
 ```
 
 ---

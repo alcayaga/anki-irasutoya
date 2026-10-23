@@ -4,14 +4,9 @@ import re
 import unicodedata
 from typing import Any, List, Optional, Tuple
 
-try:
-    from .yomitan_parser import (
-        extract_yomitan_metadata_from_note,
-    )
-except ImportError:
-    from yomitan_parser import (
-        extract_yomitan_metadata_from_note,
-    )
+from .yomitan_parser import (
+    extract_yomitan_metadata_from_note,
+)
 
 # Mapping from Arabic digits to Japanese Kanji numerals
 KANJI_NUMS = {
