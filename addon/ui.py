@@ -36,6 +36,7 @@ from aqt.qt import (
 from aqt.utils import showWarning, tooltip
 
 from .batch import make_safe_media_filename, run_batch_fill
+from .catalog import default_store
 from .client import IrasutoyaClient
 from .config import (
     CONFIG_KEY_IMAGE_SIZE,
@@ -258,7 +259,10 @@ class IrasutoyaDialog(QDialog):
         self.browser = browser
         self.note_ids = list(dict.fromkeys(note_ids))
         self.config = get_config()
-        self.client = IrasutoyaClient()
+        search_backend = self.config.get("search_backend", "auto")
+        self.store = default_store()
+        self.store.warm_async()
+        self.client = IrasutoyaClient(catalog=self.store, backend=search_backend)
 
         self.selected_card_widget: Optional[ImageCardWidget] = None
         self.image_cards: List[ImageCardWidget] = []
@@ -288,6 +292,16 @@ class IrasutoyaDialog(QDialog):
         self._last_thumb_request_time = 0.0
 
         self._init_ui()
+
+    def _get_backend_status_text(self) -> str:
+        """Format human-readable backend indicator."""
+        if self.client.uses_catalog():
+            info = self.store.info()
+            if info and info.post_count > 0:
+                date_str = info.built_at[:10] if info.built_at else ""
+                return f"Offline catalog · {info.post_count:,} posts" + (f" · built {date_str}" if date_str else "")
+            return "Offline catalog"
+        return "Live search"
 
     def _get_cached_note(self, nid: int) -> Optional[any]:
         """Fetch a note with in-dialog memory caching to prevent redundant collection reads."""
@@ -552,6 +566,9 @@ class IrasutoyaDialog(QDialog):
 
         # Action Buttons
         button_layout = QHBoxLayout()
+        backend_lbl = QLabel(self._get_backend_status_text(), self)
+        backend_lbl.setStyleSheet("color: #8E8E93; font-size: 11px;")
+        button_layout.addWidget(backend_lbl)
         button_layout.addStretch()
 
         btn_cancel = QPushButton("Cancel", self)
@@ -818,6 +835,9 @@ class IrasutoyaDialog(QDialog):
 
         # Single Note Action Buttons
         button_layout = QHBoxLayout()
+        backend_lbl = QLabel(self._get_backend_status_text(), self)
+        backend_lbl.setStyleSheet("color: #8E8E93; font-size: 11px;")
+        button_layout.addWidget(backend_lbl)
         button_layout.addStretch()
 
         btn_cancel = QPushButton("Cancel", self)
@@ -1071,7 +1091,7 @@ class IrasutoyaDialog(QDialog):
         if gen != self._search_generation:
             return
         try:
-            thumb_data = self.client.download_image(card.image.thumb_url, timeout=8)
+            thumb_data = self.client.download_image(card.image.thumb_url, timeout=8, image=card.image)
         except Exception:
             thumb_data = b""
 
@@ -1145,7 +1165,7 @@ class IrasutoyaDialog(QDialog):
         def background_apply() -> None:
             """Background worker to download the chosen high-res illustration."""
             try:
-                img_bytes = self.client.download_image(best_img.image_url)
+                img_bytes = self.client.download_image(best_img.image_url, image=best_img)
                 if not img_bytes:
                     raise ValueError("Received empty image data from server")
 

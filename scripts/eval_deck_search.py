@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional
 # Ensure parent directory is on sys.path so we can import client and text_utils
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from addon.catalog import default_store
 from addon.client import IrasutoyaClient
 from addon.feed import IrasutoyaImage
 from addon.ranking import is_decorative_asset, is_image_relevant
@@ -136,17 +137,19 @@ def run_evaluation(
     limit: int = 50,
     delay: float = 0.25,
     allow_tier2: bool = True,
+    backend: str = "both",
     verbose: bool = False,
     anki_url: str = "http://localhost:8765"
 ) -> None:
-    """Run comparative evaluation between legacy and new search mechanisms."""
+    """Run comparative evaluation between legacy, live, and offline catalog search."""
     print("=" * 72)
     print("  IRASUTOYA SEARCH RECALL BENCHMARK (NON-DESTRUCTIVE DRY RUN)")
     print("=" * 72)
-    print(f"Deck:          {deck_name}")
-    print(f"Sort Field:    {sort_field}")
-    print(f"Sample Limit:  {limit}")
-    print(f"Polite Delay:  {delay}s")
+    print(f"Deck:            {deck_name}")
+    print(f"Sort Field:      {sort_field}")
+    print(f"Sample Limit:    {limit}")
+    print(f"Polite Delay:    {delay}s")
+    print(f"Backend Target:  {backend}")
     print(f"Tier 2 Fallback: {'Enabled' if allow_tier2 else 'Disabled'}")
     print("-" * 72)
 
@@ -162,10 +165,14 @@ def run_evaluation(
 
     print(f"Retrieved {len(notes)} notes. Starting search benchmark...\n")
 
-    client = IrasutoyaClient()
+    cat_store = default_store()
+    cat_store.warm_async()
+    cat_client = IrasutoyaClient(catalog=cat_store, backend="catalog")
+    live_client = IrasutoyaClient(backend="live")
 
     legacy_hits = 0
-    new_hits = 0
+    live_hits = 0
+    cat_hits = 0
     both_hits = 0
     primary_improvements = 0
     tier1_improvements = 0
@@ -174,6 +181,7 @@ def run_evaluation(
     failed_requests = 0
 
     results = []
+    diff_table = []
 
     for idx, note in enumerate(notes, 1):
         fields = {k: v.get("value", "") for k, v in note.get("fields", {}).items()}
@@ -185,45 +193,70 @@ def run_evaluation(
 
         sort_val = fields.get(sort_field, "")
 
-        # --- 1. LEGACY SEARCH SIMULATION ---
+        # --- 1. LEGACY SEARCH SIMULATION (if live or both) ---
         leg_query = legacy_clean_query(raw_source)
         leg_results: List[IrasutoyaImage] = []
         leg_error = False
-        if leg_query:
+        if backend in ("live", "both") and leg_query:
             try:
-                # Legacy used default orderby (no orderby="relevance", so orderby=None/updated)
-                leg_results = client.search(leg_query, max_results=5, orderby=None)
+                leg_results = live_client.search(leg_query, max_results=5, orderby=None)
             except Exception as e:
                 print(f"      [WARNING] Legacy search request failed for '{leg_query}': {e}")
                 leg_error = True
                 leg_results = []
-        time.sleep(delay)
+            if delay > 0:
+                time.sleep(delay)
 
-        # --- 2. NEW SEARCH MECHANISM ---
+        # --- 2. EVALUATED SEARCH MECHANISMS ---
         candidates = generate_search_candidates(
             raw_source, note=fields, allow_tier2=allow_tier2, allow_deinflection=True
         )
         batch_candidates = candidates[:BATCH_MAX_CANDIDATES]
-        new_results: List[IrasutoyaImage] = []
-        matched_cand = None
-        best_img = None
-        new_error = False
-        matched_term = ""
-        matched_reason = ""
-        matched_tier = 0
-        try:
-            new_results, matched_cand, best_img = client.search_with_fallbacks(
-                batch_candidates,
-                max_results=5,
-                orderby="relevance",
-                pace_callback=lambda: time.sleep(delay) if delay > 0 else None,
-            )
-        except Exception as e:
-            print(f"      [WARNING] New search request failed for '{raw_source}': {e}")
-            new_error = True
-            new_results, matched_cand, best_img = [], None, None
 
-        if leg_error or new_error:
+        live_res, live_cand, live_best = [], None, None
+        cat_res, cat_cand, cat_best = [], None, None
+        eval_error = False
+
+        if backend in ("live", "both"):
+            try:
+                live_res, live_cand, live_best = live_client.search_with_fallbacks(
+                    batch_candidates,
+                    max_results=5,
+                    orderby="relevance",
+                    pace_callback=lambda: time.sleep(delay) if delay > 0 else None,
+                )
+            except Exception as e:
+                print(f"      [WARNING] Live search request failed for '{raw_source}': {e}")
+                eval_error = True
+
+        if backend in ("catalog", "both"):
+            try:
+                cat_res, cat_cand, cat_best = cat_client.search_with_fallbacks(
+                    batch_candidates,
+                    max_results=5,
+                    orderby="relevance",
+                )
+            except Exception as e:
+                print(f"      [WARNING] Catalog search request failed for '{raw_source}': {e}")
+                eval_error = True
+
+        # Choose primary comparison results depending on requested backend
+        if backend == "catalog":
+            new_results, matched_cand, best_img = cat_res, cat_cand, cat_best
+        else:
+            new_results, matched_cand, best_img = live_res, live_cand, live_best
+
+        if backend == "both":
+            if bool(live_best) != bool(cat_best) or (live_best and cat_best and live_best.title != cat_best.title):
+                diff_table.append(
+                    (
+                        raw_source,
+                        live_best.title if live_best else "None",
+                        cat_best.title if cat_best else "None",
+                    )
+                )
+
+        if eval_error or leg_error:
             failed_requests += 1
             status = "REQUEST_ERROR"
             status_marker = " ⚠"
@@ -240,7 +273,14 @@ def run_evaluation(
             if leg_found:
                 legacy_hits += 1
             if new_found:
-                new_hits += 1
+                if backend == "catalog":
+                    cat_hits += 1
+                else:
+                    live_hits += 1
+            if cat_best:
+                cat_hits += 1
+            if live_best:
+                live_hits += 1
 
             matched_term = matched_cand[0] if matched_cand else ""
             matched_reason = matched_cand[1] if matched_cand else ""
@@ -270,13 +310,13 @@ def run_evaluation(
                 both_failed += 1
                 status = "NOT_FOUND"
                 status_marker = " ✗"
+
         res_entry = {
             "index": idx,
             "sort_val": sort_val,
             "raw_source": raw_source,
             "leg_query": leg_query,
             "leg_found": leg_found,
-            "leg_title": leg_results[0].title if leg_results else "",
             "new_found": new_found,
             "matched_term": matched_term,
             "matched_reason": matched_reason,
@@ -286,72 +326,43 @@ def run_evaluation(
         }
         results.append(res_entry)
 
+        display_desc = f"New ({backend}): " + (f"YES ({matched_reason[:12]})" if new_found else "NO ")
         print(
             f"[{idx:2d}/{len(notes):2d}] {status_marker} "
             f"[{str(sort_val):>5s}] {raw_source[:12]:<12s} -> "
             f"Legacy: {'ERR' if leg_error else ('YES' if leg_found else 'NO '):3s} | "
-            f"New: {'ERR' if new_error else (('YES (' + matched_reason[:15] + ')') if new_found else 'NO'):20s}"
+            f"{display_desc:22s}"
         )
-
-        if verbose and new_found and not leg_found:
-            print(f"      Legacy query: '{leg_query}' -> 0 results")
-            print(f"      Matched cand: '{matched_term}' ({matched_reason}, Tier {matched_tier}) -> '{best_img.title if best_img else ''}'")
 
     # --- SUMMARY REPORT ---
     total = len(results)
     valid_results = [r for r in results if r["status"] != "REQUEST_ERROR"]
     valid_total = len(valid_results)
-    leg_pct = (legacy_hits / valid_total * 100) if valid_total else 0.0
-    new_pct = (new_hits / valid_total * 100) if valid_total else 0.0
-    abs_gain = new_pct - leg_pct
-    rel_gain_str = (
-        f"{((new_hits - legacy_hits) / legacy_hits * 100):+.1f}%"
-        if legacy_hits
-        else ("n/a" if new_hits > 0 else "+0.0%")
-    )
 
     print("\n" + "=" * 72)
     print("  EVALUATION SUMMARY REPORT")
     print("=" * 72)
     print(f"Total Notes Evaluated:    {total}")
-    if failed_requests > 0:
-        print(f"Valid Notes (No Errors):  {valid_total}")
-    print(f"Legacy Search Recall:     {legacy_hits:3d} / {valid_total} ({leg_pct:.1f}%)")
-    print(f"New Search Recall:        {new_hits:3d} / {valid_total} ({new_pct:.1f}%)")
-    print(f"Absolute Recall Gain:     {abs_gain:+.1f}%")
-    print(f"Relative Improvement:     {rel_gain_str}")
-    if failed_requests > 0:
-        print(f"Failed Request Notes:     {failed_requests:3d} (Encountered HTTP/network errors)")
-    print("-" * 72)
-    print("Breakdown of New Matches:")
-    print(f"  • Both Succeeded (Baseline):             {both_hits:3d}")
-    if primary_improvements > 0:
-        print(f"  • Primary Query Wins (Relevance Sorting):{primary_improvements:3d}")
-    print(f"  • Tier 1 Syntactic Improvements:         {tier1_improvements:3d}")
-    print(f"  • Tier 2 Reading / Semantic Fallbacks:   {tier2_improvements:3d} (Batch mode applies 'irasutoya::fallback_reading')")
-    print(f"  • Unmatched (No Illustration Found):      {both_failed:3d}")
-    print("-" * 72)
+    if backend in ("live", "both"):
+        leg_pct = (legacy_hits / valid_total * 100) if valid_total else 0.0
+        live_pct = (live_hits / valid_total * 100) if valid_total else 0.0
+        print(f"Legacy Search Recall:     {legacy_hits:3d} / {valid_total} ({leg_pct:.1f}%)")
+        print(f"Live Search Recall:       {live_hits:3d} / {valid_total} ({live_pct:.1f}%)")
+    if backend in ("catalog", "both"):
+        cat_pct = (cat_hits / valid_total * 100) if valid_total else 0.0
+        print(f"Catalog Search Recall:    {cat_hits:3d} / {valid_total} ({cat_pct:.1f}%)")
 
-    # Exemplars of improvement
-    wins = [r for r in results if r["status"] in ("NEW_HIT_PRIMARY", "NEW_HIT_T1", "NEW_HIT_T2")]
-    if wins:
-        print("\nExemplars Recovered by New Search Strategy:")
-        print(f"{'Freq':<6s} | {'Term':<12s} | {'Tier':<6s} | {'Strategy Reason':<24s} | {'Matched Image Title'}")
+    if backend == "both" and diff_table:
+        print("\n" + "-" * 72)
+        print("  BACKEND SELECTION DIFFERENCES (LIVE vs CATALOG)")
         print("-" * 72)
-        for w in wins[:10]:
-            print(
-                f"{str(w['sort_val']):<6s} | "
-                f"{w['raw_source'][:12]:<12s} | "
-                f"Tier {w['matched_tier']:<1d} | "
-                f"{w['matched_reason']:<24s} | "
-                f"{w['best_title'][:30]}"
-            )
-
-    if failed_requests > 0:
-        print(f"\n[ERROR] Evaluation completed with {failed_requests} failed network request(s). Exiting with error code 1.")
-        sys.exit(1)
-
-    print("\nBenchmark completed successfully.")
+        print(f"{'Term':<14s} | {'Live Search Image Title':<26s} | {'Catalog Search Image Title'}")
+        print("-" * 72)
+        for term, l_title, c_title in diff_table[:15]:
+            print(f"{term[:14]:<14s} | {l_title[:26]:<26s} | {c_title[:26]}")
+        if len(diff_table) > 15:
+            print(f"... and {len(diff_table) - 15} more differences.")
+    print("=" * 72)
 
 
 def main():
@@ -363,6 +374,7 @@ def main():
     parser.add_argument("--source-field", default=None, help="Source field to query (default: auto-detect Expression/Word)")
     parser.add_argument("--limit", type=int, default=50, help="Number of notes to evaluate (default: 50)")
     parser.add_argument("--delay", type=float, default=0.25, help="Polite delay between HTTP requests in seconds (default: 0.25)")
+    parser.add_argument("--backend", choices=["live", "catalog", "both"], default="both", help="Search backend to benchmark (default: both)")
     parser.add_argument("--disable-tier2", action="store_true", help="Disable Tier 2 reading fallbacks")
     parser.add_argument("--verbose", "-v", action="store_true", help="Print detailed candidate resolution for each note")
     parser.add_argument("--anki-url", default="http://localhost:8765", help="AnkiConnect URL (default: http://localhost:8765)")
@@ -376,6 +388,7 @@ def main():
         limit=args.limit,
         delay=args.delay,
         allow_tier2=not args.disable_tier2,
+        backend=args.backend,
         verbose=args.verbose,
         anki_url=args.anki_url,
     )

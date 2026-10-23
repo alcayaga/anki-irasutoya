@@ -7,6 +7,7 @@ CONFIG_KEY_OVERWRITE = "last_overwrite_mode"
 CONFIG_KEY_THUMB_DELAY = "thumbnail_delay_ms"
 CONFIG_KEY_FULL_DELAY = "full_image_delay_ms"
 CONFIG_KEY_IMAGE_SIZE = "image_size"
+CONFIG_KEY_SEARCH_BACKEND = "search_backend"
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     CONFIG_KEY_SOURCE: "Expression",
@@ -15,6 +16,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     CONFIG_KEY_THUMB_DELAY: 50,  # 50ms fast delay for gallery thumbnails
     CONFIG_KEY_FULL_DELAY: 300,  # 300ms polite delay for batch full image downloads
     CONFIG_KEY_IMAGE_SIZE: "s800",  # "s800" or "s0"
+    CONFIG_KEY_SEARCH_BACKEND: "auto",  # "auto", "catalog", or "live"
 }
 
 _memory_config: Dict[str, Any] = {}

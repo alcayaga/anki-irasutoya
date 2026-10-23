@@ -21,7 +21,7 @@ class MockIrasutoyaClient:
             return self.search_mapping[query]
         return self.search_results
 
-    def download_image(self, url: str, timeout: int = 15):
+    def download_image(self, url: str, timeout: int = 15, *, image=None):
         """Return preset binary image data."""
         return self.image_data
 
