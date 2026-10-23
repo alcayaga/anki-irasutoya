@@ -33,20 +33,27 @@ ALLOWLIST_PATTERNS = [
     "data/catalog.sqlite",
 ]
 
+# Patterns representing private add-on state that MUST reject packaging
 FORBIDDEN_PATTERNS = [
     "meta.json",
     "user_files*",
+]
+
+# Patterns representing bytecode and OS artifacts to silently exclude
+IGNORED_PATTERNS = [
     "__pycache__*",
     "*.pyc",
     "*.pyo",
     ".DS_Store",
+    "Thumbs.db",
 ]
 
 
 def is_allowlisted(rel_path: str) -> bool:
-    """Return True if relative path matches any allowlist pattern and no forbidden pattern."""
+    """Return True if relative path matches any allowlist pattern and no forbidden/ignored pattern."""
     rel_posix = rel_path.replace("\\", "/")
-    if any(fnmatch.fnmatch(rel_posix, pat) for pat in FORBIDDEN_PATTERNS):
+    fname = os.path.basename(rel_posix)
+    if any(fnmatch.fnmatch(rel_posix, pat) or fnmatch.fnmatch(fname, pat) for pat in FORBIDDEN_PATTERNS + IGNORED_PATTERNS):
         return False
     return any(fnmatch.fnmatch(rel_posix, pat) for pat in ALLOWLIST_PATTERNS)
 
@@ -62,14 +69,25 @@ def collect_payload_files(addon_dir: str, catalog_path: str) -> List[Tuple[str, 
         )
 
     for root, dirs, files in os.walk(addon_dir):
-        # Prevent traversing into forbidden dirs
-        dirs[:] = [d for d in dirs if not any(fnmatch.fnmatch(d, p) for p in FORBIDDEN_PATTERNS)]
+        # Reject forbidden directory structures (like user_files/)
+        for d in dirs:
+            if any(fnmatch.fnmatch(d, p) for p in FORBIDDEN_PATTERNS):
+                rel_d = os.path.relpath(os.path.join(root, d), addon_dir).replace("\\", "/")
+                raise RuntimeError(f"Forbidden directory detected in addon directory: {rel_d}")
+
+        # Silently prune bytecode and junk directories from traversal
+        dirs[:] = [d for d in dirs if not any(fnmatch.fnmatch(d, p) for p in IGNORED_PATTERNS)]
 
         for fname in files:
             abs_path = os.path.join(root, fname)
             rel_path = os.path.relpath(abs_path, addon_dir).replace("\\", "/")
 
-            if any(fnmatch.fnmatch(rel_path, p) or fnmatch.fnmatch(fname, p) for p in FORBIDDEN_PATTERNS):
+            # Silently skip junk files (.DS_Store, *.pyc, etc.)
+            if any(fnmatch.fnmatch(fname, p) or fnmatch.fnmatch(rel_path, p) for p in IGNORED_PATTERNS):
+                continue
+
+            # Reject forbidden private state files
+            if any(fnmatch.fnmatch(fname, p) or fnmatch.fnmatch(rel_path, p) for p in FORBIDDEN_PATTERNS):
                 raise RuntimeError(f"Forbidden file detected in addon directory: {rel_path}")
 
             if is_allowlisted(rel_path):

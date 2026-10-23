@@ -203,7 +203,7 @@ To assemble a distribution-ready `.ankiaddon` archive:
 python scripts/package_addon.py --version 1.0.0 --out dist/
 ```
 
-Packaging strictly enforces an allowlist (`*.py`, `manifest.json`, `config.json`, `config.md`, `icons/**`, `data/catalog.sqlite`) and rejects any build containing `meta.json`, `user_files/`, or `__pycache__`. It also stamps `manifest.json` with `"human_version": "<version>"`.
+Packaging strictly enforces an allowlist (`*.py`, `manifest.json`, `config.json`, `config.md`, `icons/**`, `data/catalog.sqlite`). It automatically excludes OS and bytecode junk (`.DS_Store`, `*.pyc`, `__pycache__/`) and rejects any build containing private add-on state (`meta.json`, `user_files/`) to prevent corrupted uploads to AnkiWeb. It also stamps `manifest.json` with `"human_version": "<version>"`.
 
 ### 3. Release Process
 

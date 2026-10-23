@@ -104,6 +104,43 @@ class TestPackageAddon(unittest.TestCase):
             )
         self.assertIn("Forbidden file detected", str(cm.exception))
 
+    def test_package_addon_refuses_forbidden_user_files_dir(self):
+        """Verify package_addon raises RuntimeError if user_files directory is present."""
+        user_files_dir = os.path.join(self.mock_addon, "user_files")
+        os.makedirs(user_files_dir, exist_ok=True)
+
+        with self.assertRaises(RuntimeError) as cm:
+            package_addon(
+                version="1.0.0",
+                catalog_path=self.catalog_path,
+                out_dir=self.out_dir,
+                addon_dir=self.mock_addon,
+            )
+        self.assertIn("Forbidden directory detected", str(cm.exception))
+
+    def test_package_addon_skips_os_and_bytecode_junk(self):
+        """Verify package_addon silently excludes .DS_Store, *.pyc, and __pycache__ from archive."""
+        with open(os.path.join(self.mock_addon, ".DS_Store"), "wb") as f:
+            f.write(b"junk")
+        with open(os.path.join(self.mock_addon, "client.pyc"), "wb") as f:
+            f.write(b"bytecode")
+        pycache_dir = os.path.join(self.mock_addon, "__pycache__")
+        os.makedirs(pycache_dir, exist_ok=True)
+        with open(os.path.join(pycache_dir, "test.cpython-313.pyc"), "wb") as f:
+            f.write(b"bytecode")
+
+        out_archive = package_addon(
+            version="1.5.0",
+            catalog_path=self.catalog_path,
+            out_dir=self.out_dir,
+            addon_dir=self.mock_addon,
+        )
+        with zipfile.ZipFile(out_archive, "r") as zf:
+            names = set(zf.namelist())
+            self.assertNotIn(".DS_Store", names)
+            self.assertNotIn("client.pyc", names)
+            self.assertFalse(any("__pycache__" in n for n in names))
+
     def test_package_addon_refuses_missing_catalog(self):
         """Verify package_addon raises FileNotFoundError if catalog.sqlite is missing."""
         missing_catalog = os.path.join(self.temp_dir.name, "missing.sqlite")
