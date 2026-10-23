@@ -2,16 +2,17 @@
 import builtins
 import importlib
 import sys
+import unittest
 from unittest.mock import MagicMock, patch
 
 
-class TestInitAddon:
+class TestInitAddon(unittest.TestCase):
     """Validate __init__.py import safety and hook registration."""
 
     def test_has_aqt_boolean_exposed(self):
         """Ensure HAS_AQT is exposed as a boolean flag."""
         import addon as addon_init
-        assert isinstance(addon_init.HAS_AQT, bool)
+        self.assertIsInstance(addon_init.HAS_AQT, bool)
 
     def test_headless_fresh_import_sets_has_aqt_false(self):
         """Ensure fresh import without aqt sets HAS_AQT to False and registers no hooks."""
@@ -22,7 +23,7 @@ class TestInitAddon:
             sys.modules.pop("addon", None)
             with patch.dict(sys.modules, {"aqt": None}):
                 addon_init = importlib.import_module("addon")
-                assert addon_init.HAS_AQT is False
+                self.assertFalse(addon_init.HAS_AQT)
         finally:
             if orig_init is not None:
                 sys.modules["addon"] = orig_init
@@ -49,7 +50,7 @@ class TestInitAddon:
                 builtins, "__import__", side_effect=import_raising_runtime_error
             ):
                 addon_init = importlib.import_module("addon")
-                assert addon_init.HAS_AQT is False
+                self.assertFalse(addon_init.HAS_AQT)
         finally:
             if orig_init is not None:
                 sys.modules["addon"] = orig_init
@@ -88,14 +89,14 @@ class TestInitAddon:
                 },
             ):
                 addon_init = importlib.import_module("addon")
-                assert addon_init.HAS_AQT is True
-                assert (
-                    addon_init.on_browser_menus_did_init
-                    in mock_aqt.gui_hooks.browser_menus_did_init
+                self.assertTrue(addon_init.HAS_AQT)
+                self.assertIn(
+                    addon_init.on_browser_menus_did_init,
+                    mock_aqt.gui_hooks.browser_menus_did_init,
                 )
-                assert (
-                    addon_init.on_browser_will_show_context_menu
-                    in mock_aqt.gui_hooks.browser_will_show_context_menu
+                self.assertIn(
+                    addon_init.on_browser_will_show_context_menu,
+                    mock_aqt.gui_hooks.browser_will_show_context_menu,
                 )
         finally:
             if orig_init is not None:
@@ -122,8 +123,8 @@ class TestInitAddon:
         with patch.object(addon_init, "HAS_AQT", new=True), \
              patch.object(addon_init, "gui_hooks", mock_gui_hooks, create=True):
             addon_init.init_addon()
-            assert addon_init.on_browser_menus_did_init in mock_gui_hooks.browser_menus_did_init
-            assert addon_init.on_browser_will_show_context_menu in mock_gui_hooks.browser_will_show_context_menu
+            self.assertIn(addon_init.on_browser_menus_did_init, mock_gui_hooks.browser_menus_did_init)
+            self.assertIn(addon_init.on_browser_will_show_context_menu, mock_gui_hooks.browser_will_show_context_menu)
 
     def test_on_browser_will_show_context_menu_empty_selection(self):
         """Ensure context menu is untouched when no cards are selected."""

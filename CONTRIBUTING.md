@@ -85,16 +85,22 @@ We enforce strict separation between **Hermetic Unit Tests** and **Live Integrat
 
 #### Running Unit Tests
 
-Run all unit tests using standard Python:
+Run all unit tests using pytest (recommended):
 
 ```bash
-python3 -m unittest discover tests -v
+python3 -m pytest tests -v
+```
+
+Or using standard `unittest`:
+
+```bash
+python3 -m unittest discover -s tests -p "test_*.py" -v
 ```
 
 Or run with Anki's bundled Python packages (to execute Qt/UI tests):
 
 ```bash
-PYTHONPATH="/Applications/Anki.app/Contents/Resources/app_packages:." python3 -m unittest discover tests -v
+PYTHONPATH="/Applications/Anki.app/Contents/Resources/app_packages:." python3 -m pytest tests -v
 ```
 
 ---
