@@ -126,10 +126,7 @@ def process_note_record(
             return "not_found", None
 
 
-        try:
-            img_bytes = client.download_image(best_img.image_url, image=best_img)
-        except TypeError:
-            img_bytes = client.download_image(best_img.image_url)
+        img_bytes = client.download_image(best_img.image_url, image=best_img)
         if not img_bytes:
             return "not_found", None
 
@@ -268,10 +265,7 @@ def run_batch_fill(
                     continue
 
                 pace_request()
-                try:
-                    img_bytes = client.download_image(best_img.image_url, image=best_img)
-                except TypeError:
-                    img_bytes = client.download_image(best_img.image_url)
+                img_bytes = client.download_image(best_img.image_url, image=best_img)
                 if not img_bytes:
                     stats.not_found += 1
                     continue

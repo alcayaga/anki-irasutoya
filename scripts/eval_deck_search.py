@@ -272,11 +272,6 @@ def run_evaluation(
 
             if leg_found:
                 legacy_hits += 1
-            if new_found:
-                if backend == "catalog":
-                    cat_hits += 1
-                else:
-                    live_hits += 1
             if cat_best:
                 cat_hits += 1
             if live_best:

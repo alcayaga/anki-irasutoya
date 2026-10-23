@@ -1,6 +1,7 @@
 """Client for searching and downloading illustrations from Irasutoya (いらすとや)."""
 import json
 import logging
+import re
 import socket
 import time
 import urllib.error
@@ -9,7 +10,7 @@ import urllib.request
 from typing import Callable, List, Optional, Sequence, Tuple
 
 from .catalog import CatalogStore
-from .feed import IrasutoyaImage, is_allowed_image_host, parse_entries, parse_entry
+from .feed import IrasutoyaImage, is_allowed_image_host, parse_entries, parse_entry, upgrade_image_url
 from .ranking import is_decorative_asset, is_image_relevant, rank_relevant_images
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,10 @@ class IrasutoyaClient:
         self.user_agent = user_agent or self.DEFAULT_USER_AGENT
         self._opener = urllib.request.build_opener(_HttpsOnlyRedirectHandler)
         self.catalog = catalog
+        supported_backends = ("auto", "catalog", "live")
+        if backend not in supported_backends:
+            logger.warning("Unknown search backend '%s'; defaulting to 'auto'", backend)
+            backend = "auto"
         self.backend = backend
 
     def uses_catalog(self) -> bool:
@@ -115,6 +120,13 @@ class IrasutoyaClient:
         clean_q = query.strip()
         if not clean_q:
             return []
+
+        if self.backend == "catalog":
+            if not self.uses_catalog():
+                logger.warning("Catalog backend requested but offline catalog index is unavailable.")
+                return []
+            index = self.catalog.get_index()
+            return index.search(clean_q, image_size=image_size) if index else []
 
         if self.uses_catalog():
             index = self.catalog.get_index()
@@ -199,34 +211,41 @@ class IrasutoyaClient:
             return self._make_request(url, timeout=timeout)
         except urllib.error.HTTPError as e:
             if e.code in (404, 410) and image is not None and getattr(image, "post_id", None):
-                refetched_url = self._self_heal_image_url(image)
+                refetched_url = self._self_heal_image_url(image, original_url=url)
                 if refetched_url and refetched_url != url:
                     logger.info("Self-healed image URL for %s from %s to %s", image.title, url, refetched_url)
                     return self._make_request(refetched_url, timeout=timeout)
             raise
 
-    def _self_heal_image_url(self, image: IrasutoyaImage) -> Optional[str]:
+    def _self_heal_image_url(self, image: IrasutoyaImage, original_url: Optional[str] = None) -> Optional[str]:
         """Fetch the single Blogger post entry to locate an updated image URL after a 404/410."""
         post_id = getattr(image, "post_id", "").strip()
         if not post_id:
             return None
+
+        size_token = "s800"
+        if original_url:
+            match = re.search(r"/(s\d+(-c)?|s0)/", original_url)
+            if match:
+                size_token = match.group(1)
+
         url = f"{self.BASE_URL}/feeds/posts/default/{post_id}?alt=json"
         try:
             raw_data = self._make_request(url, timeout=10)
             data = json.loads(raw_data.decode("utf-8"))
             entry = data.get("entry", data)
-            post = parse_entry(entry)
+            post = parse_entry(entry, image_size=size_token)
             if not post.images:
                 return None
             for img in post.images:
                 if img.title == image.title:
-                    return img.image_url
+                    return upgrade_image_url(img.image_url, size_token)
             target_base = image.image_url.split("/")[-1]
             for img in post.images:
                 if img.image_url.split("/")[-1] == target_base:
-                    return img.image_url
+                    return upgrade_image_url(img.image_url, size_token)
             if len(post.images) == 1:
-                return post.images[0].image_url
+                return upgrade_image_url(post.images[0].image_url, size_token)
         except Exception as e:
             logger.warning("Failed to self-heal image URL for post %s: %s", post_id, e)
         return None

@@ -116,8 +116,14 @@ class TestBuildCatalog(unittest.TestCase):
         post_new2 = ParsedPost("2", "Title 2", "desc", "pub", "2026-01-05", (), [])  # added
         write_posts(new_conn, [post_new1, post_new2])
 
-        # compare_with_old executes cleanly
-        compare_with_old(new_conn, old_db)
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            compare_with_old(new_conn, old_db)
+        out = buf.getvalue()
+        self.assertIn("Posts added:   1", out)
+        self.assertIn("Posts updated: 1", out)
         new_conn.close()
 
     def test_validation_gates_success(self):

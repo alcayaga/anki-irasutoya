@@ -75,10 +75,10 @@ def collect_payload_files(addon_dir: str, catalog_path: str) -> List[Tuple[str, 
             if is_allowlisted(rel_path):
                 payload.append((abs_path, rel_path))
 
-    # Ensure catalog is included if outside standard data/ folder
+    # Ensure explicit catalog_path is packaged as data/catalog.sqlite
     catalog_arcname = "data/catalog.sqlite"
-    if not any(arc == catalog_arcname for _, arc in payload):
-        payload.append((os.path.abspath(catalog_path), catalog_arcname))
+    payload = [(p, a) for p, a in payload if a != catalog_arcname]
+    payload.append((os.path.abspath(catalog_path), catalog_arcname))
 
     return payload
 

@@ -294,14 +294,20 @@ class IrasutoyaDialog(QDialog):
         self._init_ui()
 
     def _get_backend_status_text(self) -> str:
-        """Format human-readable backend indicator."""
-        if self.client.uses_catalog():
-            info = self.store.info()
-            if info and info.post_count > 0:
-                date_str = info.built_at[:10] if info.built_at else ""
-                return f"Offline catalog · {info.post_count:,} posts" + (f" · built {date_str}" if date_str else "")
-            return "Offline catalog"
-        return "Live search"
+        """Format human-readable backend indicator without blocking on background catalog load."""
+        if self.client.backend == "live":
+            return "Live search"
+        if not os.path.isfile(self.store.path):
+            if self.client.backend == "auto":
+                return "Live search"
+            return "Offline catalog (missing)"
+        if not self.store.is_loaded():
+            return "Offline catalog (loading...)"
+        info = self.store.info()
+        if info and info.post_count > 0:
+            date_str = info.built_at[:10] if info.built_at else ""
+            return f"Offline catalog · {info.post_count:,} posts" + (f" · built {date_str}" if date_str else "")
+        return "Offline catalog"
 
     def _get_cached_note(self, nid: int) -> Optional[any]:
         """Fetch a note with in-dialog memory caching to prevent redundant collection reads."""

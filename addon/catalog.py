@@ -188,6 +188,10 @@ class CatalogStore:
                 logger.warning("Failed to load catalog index from %s: %s", self.path, e)
                 return None
 
+    def is_loaded(self) -> bool:
+        """Return True if index is already loaded into memory."""
+        return self._index is not None
+
     def warm_async(self) -> None:
         """Asynchronously load the catalog into memory in a background daemon thread."""
         if self._index is not None or not os.path.isfile(self.path):

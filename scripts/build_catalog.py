@@ -31,16 +31,26 @@ USER_AGENT = (
 )
 
 
-def fetch_page(url: str, cache_dir: Optional[str] = None, max_retries: int = 3) -> dict:
-    """Fetch a JSON feed page with local file caching and exponential backoff retries."""
+def fetch_page(
+    url: str,
+    cache_dir: Optional[str] = None,
+    max_retries: int = 3,
+    max_age_sec: float = 86400.0,
+) -> dict:
+    """Fetch a JSON feed page with local file caching, atomic writes, and exponential backoff."""
     cache_path = None
     if cache_dir:
         os.makedirs(cache_dir, exist_ok=True)
         url_hash = hashlib.sha256(url.encode("utf-8")).hexdigest()
         cache_path = os.path.join(cache_dir, f"page_{url_hash}.json")
         if os.path.isfile(cache_path):
-            with open(cache_path, "r", encoding="utf-8") as f:
-                return json.load(f)
+            file_age = time.time() - os.path.getmtime(cache_path)
+            if file_age <= max_age_sec:
+                try:
+                    with open(cache_path, "r", encoding="utf-8") as f:
+                        return json.load(f)
+                except Exception as e:
+                    logger.warning("Corrupt cache file %s: %s; treating as miss", cache_path, e)
 
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     last_error = None
@@ -49,8 +59,10 @@ def fetch_page(url: str, cache_dir: Optional[str] = None, max_retries: int = 3) 
             with urllib.request.urlopen(req, timeout=15) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
                 if cache_path:
-                    with open(cache_path, "w", encoding="utf-8") as f:
+                    tmp_cache = f"{cache_path}.tmp.{os.getpid()}"
+                    with open(tmp_cache, "w", encoding="utf-8") as f:
                         json.dump(data, f, ensure_ascii=False)
+                    os.replace(tmp_cache, cache_path)
                 return data
         except Exception as e:
             last_error = e

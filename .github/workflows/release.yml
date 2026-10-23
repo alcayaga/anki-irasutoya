@@ -69,6 +69,7 @@ jobs:
 
           gh release create "$TAG_NAME" \
             dist/*.ankiaddon \
+            addon/data/catalog.sqlite \
             addon/data/catalog.sqlite.sha256 \
             --title "Release $TAG_NAME" \
             --generate-notes \

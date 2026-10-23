@@ -216,6 +216,19 @@ class TestIrasutoyaClient(unittest.TestCase):
         client_none = IrasutoyaClient(catalog=None, backend="auto")
         self.assertFalse(client_none.uses_catalog())
 
+    def test_client_catalog_mode_never_falls_back_to_live(self):
+        """Verify backend='catalog' returns empty list and never falls through to live HTTP search."""
+        from unittest.mock import MagicMock
+        mock_store = MagicMock()
+        mock_store.get_index.return_value = None
+
+        client = IrasutoyaClient(catalog=mock_store, backend="catalog")
+        client._make_request = MagicMock()
+
+        results = client.search("猫")
+        self.assertEqual(results, [])
+        client._make_request.assert_not_called()
+
     def test_search_with_fallbacks_skips_pacing_in_catalog_mode(self):
         """Verify pace_callback is bypassed in offline catalog mode and invoked in live search."""
         from unittest.mock import MagicMock
@@ -283,6 +296,26 @@ class TestIrasutoyaClient(unittest.TestCase):
         self.assertIn(stale_url, call_log)
         self.assertIn("https://www.irasutoya.com/feeds/posts/default/9999?alt=json", call_log)
         self.assertIn(new_url, call_log)
+
+        # Test thumbnail URL healing preserves /s120-c/ size token
+        stale_thumb = image.thumb_url
+        new_thumb = "https://1.bp.blogspot.com/s120-c/fresh_cat.png"
+        call_log.clear()
+
+        def mock_thumb_request(url, timeout=15):
+            call_log.append(url)
+            if url == stale_thumb:
+                raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+            if "feeds/posts/default/9999" in url:
+                return json.dumps(refetched_post_json).encode("utf-8")
+            if url == new_thumb:
+                return b"FRESH_THUMB_BINARY"
+            raise ValueError(f"Unexpected URL: {url}")
+
+        client._make_request = mock_thumb_request
+        thumb_res = client.download_image(stale_thumb, image=image)
+        self.assertEqual(thumb_res, b"FRESH_THUMB_BINARY")
+        self.assertIn(new_thumb, call_log)
 
     def test_download_image_reraises_on_non_404_or_failed_heal(self):
         """Verify download_image re-raises errors when status is not 404/410 or healing is impossible."""
