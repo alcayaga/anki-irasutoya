@@ -339,11 +339,12 @@ def main() -> None:
         posts, total_results = crawl_live_feed(cache_dir=args.cache, delay=args.delay)
         require_probes = not args.skip_probes
 
-    logger.info("Writing %d posts to SQLite database at %s...", len(posts), out_path)
-    if os.path.exists(out_path):
-        os.remove(out_path)
+    tmp_path = f"{out_path}.tmp"
+    if os.path.exists(tmp_path):
+        os.remove(tmp_path)
 
-    conn = sqlite3.connect(out_path)
+    logger.info("Writing %d posts to temporary database at %s...", len(posts), tmp_path)
+    conn = sqlite3.connect(tmp_path)
     try:
         write_posts(conn, posts, source_total_results=total_results)
         if args.keywords:
@@ -359,6 +360,18 @@ def main() -> None:
     finally:
         conn.close()
 
+    # Validate temporary file BEFORE publishing
+    try:
+        validate_catalog(tmp_path, total_results, require_probes=require_probes)
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
+
+    # Atomically replace final catalog
+    os.replace(tmp_path, out_path)
+    logger.info("Successfully published catalog to %s", out_path)
+
     # Compute sha256 checksum
     hasher = hashlib.sha256()
     with open(out_path, "rb") as f:
@@ -371,9 +384,6 @@ def main() -> None:
     with open(sha_path, "w", encoding="utf-8") as f:
         f.write(f"{digest}  {basename}\n")
     logger.info("Wrote SHA256 checksum to %s", sha_path)
-
-    # Validate output
-    validate_catalog(out_path, total_results, require_probes=require_probes)
 
 
 if __name__ == "__main__":

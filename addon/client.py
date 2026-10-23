@@ -237,13 +237,18 @@ class IrasutoyaClient:
             post = parse_entry(entry, image_size=size_token)
             if not post.images:
                 return None
-            for img in post.images:
-                if img.title == image.title:
-                    return upgrade_image_url(img.image_url, size_token)
+            # 1. Match by image filename (most specific across multi-image posts)
             target_base = image.image_url.split("/")[-1]
             for img in post.images:
                 if img.image_url.split("/")[-1] == target_base:
                     return upgrade_image_url(img.image_url, size_token)
+
+            # 2. Match by title only if unambiguous (exactly 1 match)
+            title_matches = [img for img in post.images if img.title == image.title]
+            if len(title_matches) == 1:
+                return upgrade_image_url(title_matches[0].image_url, size_token)
+
+            # 3. Fallback to single image if post only has 1 image
             if len(post.images) == 1:
                 return upgrade_image_url(post.images[0].image_url, size_token)
         except Exception as e:

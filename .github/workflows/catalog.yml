@@ -39,6 +39,14 @@ jobs:
         run: |
           gh release download --pattern "catalog.sqlite" --dir /tmp/old_catalog || echo "No previous release catalog found"
 
+      - name: Cache Blogger Feed Crawl
+        uses: actions/cache@v4
+        with:
+          path: .catalog_cache
+          key: catalog-feed-cache-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            catalog-feed-cache-${{ runner.os }}-
+
       - name: Build and Validate Catalog
         run: |
           COMPARE_FLAG=""

@@ -317,6 +317,28 @@ class TestIrasutoyaClient(unittest.TestCase):
         self.assertEqual(thumb_res, b"FRESH_THUMB_BINARY")
         self.assertIn(new_thumb, call_log)
 
+    def test_self_heal_matches_filename_before_title(self):
+        """Verify _self_heal_image_url prioritizes matching image filename over non-unique titles."""
+        client = IrasutoyaClient()
+        post_json = {
+            "entry": {
+                "id": {"$t": "tag:blogger.com,1999:blog-1.post-123"},
+                "title": {"$t": "猫のイラスト"},
+                "content": {
+                    "$t": (
+                        '<a href="https://1.bp.blogspot.com/s800/img_a.png"><img alt="猫" src="https://1.bp.blogspot.com/s800/img_a.png" /></a>'
+                        '<a href="https://1.bp.blogspot.com/s800/img_b.png"><img alt="猫" src="https://1.bp.blogspot.com/s800/img_b.png" /></a>'
+                    )
+                },
+            }
+        }
+        client._make_request = lambda url, timeout=10: json.dumps(post_json).encode("utf-8")
+
+        # Looking for img_b.png even though both share alt="猫"
+        target_img = IrasutoyaImage("猫", "https://old.example.com/s800/img_b.png", "t", "猫", post_id="123")
+        healed = client._self_heal_image_url(target_img, target_img.image_url)
+        self.assertEqual(healed, "https://1.bp.blogspot.com/s800/img_b.png")
+
     def test_download_image_reraises_on_non_404_or_failed_heal(self):
         """Verify download_image re-raises errors when status is not 404/410 or healing is impossible."""
         client = IrasutoyaClient()

@@ -246,7 +246,7 @@ def run_evaluation(
         else:
             new_results, matched_cand, best_img = live_res, live_cand, live_best
 
-        if backend == "both":
+        if backend == "both" and not eval_error:
             if bool(live_best) != bool(cat_best) or (live_best and cat_best and live_best.title != cat_best.title):
                 diff_table.append(
                     (

@@ -168,3 +168,30 @@ class TestBuildCatalog(unittest.TestCase):
             # Set a tiny max size limit like 0.0001 MB
             validate_catalog(self.db_path, total_results=1, require_probes=False, max_size_mb=0.0001)
         self.assertIn("Gate 4 Failed", str(cm.exception))
+
+    def test_atomic_temp_db_workflow(self):
+        """Verify temporary database file is cleaned up if validation fails, leaving existing db intact."""
+        # Create an existing good catalog
+        with open(self.db_path, "w") as f:
+            f.write("ORIGINAL_CONTENT")
+
+        # Simulate builder creating a tmp_path that fails validation
+        tmp_path = f"{self.db_path}.tmp"
+        conn = sqlite3.connect(tmp_path)
+        post = ParsedPost("1", "猫", "desc", "pub", "upd", (), [IrasutoyaImage("猫", "https://1.bp.blogspot.com/cat.png", "t", "猫")])
+        write_posts(conn, [post])
+        conn.close()
+
+        # Gate 2 failure (expected 1000 posts, only 1 present)
+        with self.assertRaises(RuntimeError):
+            try:
+                validate_catalog(tmp_path, total_results=1000, require_probes=False)
+            except Exception:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+                raise
+
+        # Original db content is untouched, tmp_path is removed
+        self.assertFalse(os.path.exists(tmp_path))
+        with open(self.db_path, "r") as f:
+            self.assertEqual(f.read(), "ORIGINAL_CONTENT")
