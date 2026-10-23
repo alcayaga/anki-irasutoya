@@ -17,3 +17,7 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # Allow unused imports in top-level __init__ if needed
 "addon/__init__.py" = ["F401"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
