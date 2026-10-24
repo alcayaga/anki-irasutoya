@@ -525,6 +525,28 @@ class TestRanking(unittest.TestCase):
         self.assertEqual(score_none, score_verb)
         self.assertEqual(calculate_category_score((), "猫"), 0.0)
 
+        # Hermetic regression fixture: candidates with empty categories retain identical Phase 1 ranking order
+        candidates = [
+            IrasutoyaImage("猫のイラスト", "https://example.com/1.png", "https://example.com/t1.png", "猫のイラスト", categories=()),
+            IrasutoyaImage("黒猫のイラスト", "https://example.com/2.png", "https://example.com/t2.png", "黒猫のイラスト", categories=()),
+            IrasutoyaImage("かわいい猫のイラスト", "https://example.com/3.png", "https://example.com/t3.png", "かわいい猫のイラスト", categories=()),
+            IrasutoyaImage("「猫」のイラスト文字", "https://example.com/4.png", "https://example.com/t4.png", "「猫」のイラスト文字", categories=()),
+        ]
+        best = select_best_image(candidates, "猫", pos_type="noun")
+        self.assertEqual(best.title, "猫のイラスト")
+
+        ranked = rank_relevant_images(candidates, "猫", pos_type="noun")
+        ranked_titles = [img.title for img in ranked]
+        self.assertEqual(
+            ranked_titles,
+            [
+                "猫のイラスト",
+                "かわいい猫のイラスト",
+                "黒猫のイラスト",
+                "「猫」のイラスト文字",
+            ],
+        )
+
     def test_situational_hazard_penalties_and_exemption(self):
         """Verify hazard categories are penalized for normal queries but exempted when query is hazard."""
         img_accident = IrasutoyaImage(
