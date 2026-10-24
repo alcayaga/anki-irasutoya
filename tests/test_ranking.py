@@ -436,6 +436,46 @@ class TestRanking(unittest.TestCase):
         best = select_best_image([img_frame, img_mark, img_flower], "桜", pos_type="noun")
         self.assertEqual(best, img_flower)
 
+    def test_avoid_duplicate_title_and_category_penalties(self):
+        """Verify that when a title already receives a keyword noise penalty, category scoring skips duplicate penalty."""
+        img_title_accident = IrasutoyaImage(
+            title="交通事故のイラスト",
+            image_url="https://example.com/car.png",
+            thumb_url="https://example.com/t.png",
+            post_title="交通事故のイラスト",
+            categories=("事故",),
+        )
+        img_title_accident_no_cat = IrasutoyaImage(
+            title="交通事故のイラスト",
+            image_url="https://example.com/car.png",
+            thumb_url="https://example.com/t.png",
+            post_title="交通事故のイラスト",
+            categories=(),
+        )
+        # Score should not subtract 25 twice for 事故
+        score_with_cat = score_candidate_image(img_title_accident, "車")
+        score_without_cat = score_candidate_image(img_title_accident_no_cat, "車")
+        self.assertEqual(score_with_cat, score_without_cat)
+
+        # But when hazard keyword is NOT in title, category penalty applies
+        img_plain_with_hazard_cat = IrasutoyaImage(
+            title="車のイラスト",
+            image_url="https://example.com/car.png",
+            thumb_url="https://example.com/t.png",
+            post_title="車のイラスト",
+            categories=("事故",),
+        )
+        img_plain_clean = IrasutoyaImage(
+            title="車のイラスト",
+            image_url="https://example.com/car.png",
+            thumb_url="https://example.com/t.png",
+            post_title="車のイラスト",
+            categories=(),
+        )
+        score_hazard_cat = score_candidate_image(img_plain_with_hazard_cat, "車")
+        score_clean = score_candidate_image(img_plain_clean, "車")
+        self.assertEqual(score_hazard_cat - score_clean, -25.0)
+
     def test_graceful_degradation_without_categories(self):
         """Verify images with empty categories produce identical scores regardless of pos_type."""
         img_empty = IrasutoyaImage(

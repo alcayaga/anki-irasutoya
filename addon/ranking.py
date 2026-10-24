@@ -191,6 +191,14 @@ def calculate_category_score(
         if cat in cat_set and cat not in clean_q:
             if cat == "マーク" and is_canonical_mark:
                 continue
+            # Avoid applying duplicate penalty if title keyword already applied it
+            if title and (
+                (cat in ("フレーム", "テンプレート") and cat in title)
+                or (cat == "ライン" and ("ライン素材" in title or "ライン" in title))
+                or (cat == "マーク" and "マーク" in title)
+                or (cat == "文字" and ("イラスト文字" in title or title.endswith("文字")))
+            ):
+                continue
             anti_penalty += penalty
     score += max(anti_penalty, -70.0)
 
@@ -198,6 +206,9 @@ def calculate_category_score(
     hazard_penalty = 0.0
     for cat, penalty in SITUATIONAL_HAZARD_CATEGORIES.items():
         if cat in cat_set and cat not in clean_q:
+            # Avoid applying duplicate penalty if title keyword already applied it
+            if title and cat in SITUATIONAL_NOISE_KEYWORDS and cat in title:
+                continue
             hazard_penalty += penalty
 
     # 3. Positive archetype boost (capped at +35.0, gated by allow_boost)
