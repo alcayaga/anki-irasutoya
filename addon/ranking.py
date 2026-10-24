@@ -194,7 +194,7 @@ def calculate_category_score(
             # Avoid applying duplicate penalty if title keyword already applied it
             if title and (
                 (cat in ("フレーム", "テンプレート") and cat in title)
-                or (cat == "ライン" and ("ライン素材" in title or "ライン" in title))
+                or (cat == "ライン" and "ライン素材" in title)
                 or (cat == "マーク" and "マーク" in title)
                 or (cat == "文字" and ("イラスト文字" in title or title.endswith("文字")))
             ):
@@ -204,8 +204,10 @@ def calculate_category_score(
 
     # 2. Situational hazard penalty (skip if query itself is a hazard term)
     hazard_penalty = 0.0
+    has_unrelated_hazard = False
     for cat, penalty in SITUATIONAL_HAZARD_CATEGORIES.items():
         if cat in cat_set and cat not in clean_q:
+            has_unrelated_hazard = True
             # Avoid applying duplicate penalty if title keyword already applied it
             if title and cat in SITUATIONAL_NOISE_KEYWORDS and cat in title:
                 continue
@@ -232,7 +234,7 @@ def calculate_category_score(
                     boost += b
 
     # When unrelated hazard categories are present, suppress positive boosts to ensure net penalty
-    if hazard_penalty < 0.0:
+    if has_unrelated_hazard or hazard_penalty < 0.0:
         boost = 0.0
     else:
         boost = min(boost, 35.0)

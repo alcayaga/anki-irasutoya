@@ -476,6 +476,37 @@ class TestRanking(unittest.TestCase):
         score_clean = score_candidate_image(img_plain_clean, "車")
         self.assertEqual(score_hazard_cat - score_clean, -25.0)
 
+        # Hazard presence must suppress positive category boosts even when category penalty was deduplicated
+        img_accident_with_boost_cats = IrasutoyaImage(
+            title="交通事故のイラスト",
+            image_url="https://example.com/car.png",
+            thumb_url="https://example.com/t.png",
+            post_title="交通事故のイラスト",
+            categories=("事故", "車", "乗り物"),
+        )
+        score_accident_boosted = score_candidate_image(img_accident_with_boost_cats, "車", pos_type="noun")
+        self.assertEqual(score_accident_boosted, score_with_cat)
+
+        # Line dedup: title containing 'ライン' without 'ライン素材' still gets category penalty
+        img_line_no_sozai = IrasutoyaImage(
+            title="波線のラインのイラスト",
+            image_url="https://example.com/line.png",
+            thumb_url="https://example.com/t.png",
+            post_title="波線のラインのイラスト",
+            categories=("ライン",),
+        )
+        img_line_clean = IrasutoyaImage(
+            title="波線のラインのイラスト",
+            image_url="https://example.com/line.png",
+            thumb_url="https://example.com/t.png",
+            post_title="波線のラインのイラスト",
+            categories=(),
+        )
+        self.assertEqual(
+            score_candidate_image(img_line_no_sozai, "波線") - score_candidate_image(img_line_clean, "波線"),
+            -50.0,
+        )
+
     def test_graceful_degradation_without_categories(self):
         """Verify images with empty categories produce identical scores regardless of pos_type."""
         img_empty = IrasutoyaImage(
