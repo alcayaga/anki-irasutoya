@@ -184,6 +184,51 @@ class TestIrasutoyaClient(unittest.TestCase):
         self.assertEqual(images[0].title, "培養肉のイラスト")
         self.assertEqual(images[1].title, "「肉」のイラスト文字")
 
+    def test_search_with_fallbacks_pos_type_handling(self):
+        """Verify search_with_fallbacks preserves fallback candidate POS hints when pos_type=None."""
+        client = IrasutoyaClient()
+
+        # "かけぬける" without metadata or reason is an unclassified kana term (neutral None).
+        # Pairing it with cand_reason="verb_past" isolates that cand_reason is actively used.
+        img_action = IrasutoyaImage(
+            "かけぬける人のイラスト",
+            "https://example.com/1.png",
+            "https://example.com/t1.png",
+            "かけぬける人のイラスト",
+            categories=("ポーズ", "スポーツ"),
+        )
+        img_object = IrasutoyaImage(
+            "かけぬける本",
+            "https://example.com/2.png",
+            "https://example.com/t2.png",
+            "かけぬける本",
+            categories=("文房具", "本"),
+        )
+
+        def mock_search(q, max_results=12, image_size="s800", orderby="relevance"):
+            if q == "かけぬけた":
+                return []
+            if q == "かけぬける":
+                return [img_object, img_action]
+            return []
+
+        client.search = mock_search
+        candidates = [("かけぬけた", "primary", 1), ("かけぬける", "verb_past", 1)]
+
+        # Control: with a non-verb reason and no pos_type, no boost applies and the shorter object title wins
+        _, _, best_neutral = client.search_with_fallbacks(
+            [("かけぬけた", "primary", 1), ("かけぬける", "primary", 1)], pos_type=None
+        )
+        self.assertEqual(best_neutral, img_object)
+
+        # 1. When pos_type=None, "かけぬける" with reason "verb_past" infers "verb", boosting img_action
+        images_verb, matched_verb, best_verb = client.search_with_fallbacks(candidates, pos_type=None)
+        self.assertEqual(best_verb, img_action)
+
+        # 2. When pos_type="noun" is explicitly passed, noun archetype boost applies to img_object
+        images_noun, matched_noun, best_noun = client.search_with_fallbacks(candidates, pos_type="noun")
+        self.assertEqual(best_noun, img_object)
+
     def test_client_uses_catalog_when_available(self):
         """Verify client uses offline CatalogIndex when available."""
         from unittest.mock import MagicMock

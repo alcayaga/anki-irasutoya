@@ -1,10 +1,11 @@
 """Boundary classification, relevance scoring, and archetype ranking for Irasutoya illustrations."""
 import logging
 import re
-from typing import List, Optional, Sequence
+from typing import Any, List, Optional, Sequence
 
 from .feed import IrasutoyaImage
 from .text_utils import (
+    NON_VERB_GODAN_LOOKALIKES,
     SAFE_2MORA_LOANWORDS,
     conjugate_japanese_verb,
     is_adjective_ending,
@@ -23,10 +24,295 @@ DECORATIVE_NOISE_KEYWORDS = ("ライン素材", "背景", "フレーム", "枠",
 TEXT_CALLOUT_KEYWORDS = ("イラスト文字",)
 SITUATIONAL_NOISE_KEYWORDS = ("事故", "トラブル", "失敗", "注意", "禁止", "マーク")
 VERB_TERMINAL_ENDINGS = ("う", "く", "ぐ", "す", "つ", "ぬ", "ぶ", "む", "る", "た", "だ")
+SINGLE_CHAR_PARTICLES = ("の", "が", "を", "に", "で", "と", "は", "も", "へ", "や", "な", "か")
+MULTI_CHAR_PARTICLES = ("から", "より", "ながら", "など", "だけ", "ほど", "ばかり", "まで")
+ATTRIBUTIVE_ENDINGS = ("い",) + VERB_TERMINAL_ENDINGS
 COMMON_OKURIGANA_NOUNS = frozenset({
     "祭り", "祭", "周り", "香り", "祈り", "便り", "望み", "恵み", "答え", "知らせ",
     "怒り", "踊り", "誓い", "願い", "想い", "思い", "集まり", "始まり", "終わり",
+    "こたつ", "くつ", "ねずみ", "さる",
+    "一つ", "二つ", "三つ", "四つ", "五つ", "六つ", "七つ", "八つ", "九つ",
+    "近く", "遠く", "多く",
 })
+
+COMMON_KANA_VERBS = frozenset({
+    "はしる", "たべる", "あるく", "およぐ", "のむ", "あそぶ",
+    "みる", "きく", "ねる", "おきる", "たつ", "すわる",
+    "いう", "いく", "くる", "かう", "うる", "かく", "よむ",
+    "わらう", "なく", "おこる", "おどる", "うたう", "とぶ",
+    "はなす", "まつ", "もつ", "しぬ", "よぶ", "あらう",
+})
+
+COMMON_ABSTRACT_NOUNS = frozenset({
+    "禁止", "注意", "危険", "安全", "成功", "失敗", "平和", "関係", "状態",
+    "方法", "原因", "結果", "自由", "練習", "勉強", "努力", "希望", "夢",
+    "愛", "心", "気持ち", "思い出", "時間", "約束", "秘密", "ルール", "マナー",
+    "名前",
+})
+
+# Anti-archetype categories (callout typography, symbols, frames, decorative lines, templates)
+UNIVERSAL_ANTI_ARCHETYPE_CATEGORIES = {
+    "文字": -50.0,
+    "書体": -50.0,
+    "ペンキ書体": -50.0,
+    "白抜き書体": -50.0,
+    "マーク": -40.0,
+    "旗": -35.0,
+    "フレーム": -50.0,
+    "ライン": -50.0,
+    "パターン": -45.0,
+    "テンプレート": -40.0,
+    "飾り": -40.0,
+    "一筆箋": -40.0,
+    "伝言メモ": -40.0,
+    "メッセージカード": -40.0,
+    "POP": -35.0,
+}
+
+# Situational hazard noise categories (penalized unless query itself is a hazard/violation term)
+SITUATIONAL_HAZARD_CATEGORIES = {
+    "事故": -25.0,
+    "違反": -25.0,
+    "怪我": -25.0,
+    "災害": -25.0,
+    "トラブル": -25.0,
+}
+
+# Action / motion / pose archetype categories (boosted for verbs / actions)
+ACTION_ARCHETYPE_CATEGORIES = {
+    "ポーズ": 30.0,
+    "運動": 25.0,
+    "スポーツ": 20.0,
+    "表情": 20.0,
+    "感情": 20.0,
+    "食事": 20.0,
+    "掃除": 20.0,
+    "洗濯": 20.0,
+    "料理": 15.0,
+    "仕事": 15.0,
+    "職業": 15.0,
+    "ビジネス": 10.0,
+    "棒人間": 15.0,
+}
+
+# Concrete physical object / entity archetype categories (boosted for nouns)
+OBJECT_ARCHETYPE_CATEGORIES = {
+    "食べ物": 25.0,
+    "料理": 20.0,
+    "食材": 20.0,
+    "フルーツ": 20.0,
+    "野菜": 20.0,
+    "スイーツ": 20.0,
+    "パン": 20.0,
+    "動物": 25.0,
+    "鳥": 20.0,
+    "魚": 20.0,
+    "犬": 20.0,
+    "猫": 20.0,
+    "虫": 20.0,
+    "植物": 20.0,
+    "花": 20.0,
+    "乗り物": 20.0,
+    "車": 20.0,
+    "電車": 20.0,
+    "自転車": 20.0,
+    "道具": 20.0,
+    "文房具": 20.0,
+    "本": 20.0,
+    "家具": 15.0,
+    "家電": 15.0,
+    "おもちゃ": 15.0,
+    "楽器": 15.0,
+}
+
+# State / attribute / emotion archetype categories (boosted for adjectives)
+ADJECTIVE_ARCHETYPE_CATEGORIES = {
+    "感情": 30.0,
+    "表情": 30.0,
+    "ポーズ": 25.0,
+    "天気": 20.0,
+    "美容": 20.0,
+}
+
+
+def _is_canonical_mark_title(title: Optional[str], query: str) -> bool:
+    """Return True if title names the query's own mark illustration (e.g. 禁止マーク)."""
+    if not title or not query:
+        return False
+    t = title.strip()
+    q = query.strip()
+    # A mark illustration is only canonical for mark-specific queries, abstract concepts, or signage
+    if (
+        not q.endswith("マーク")
+        and q not in COMMON_ABSTRACT_NOUNS
+        and q not in ("初心者", "交通安全", "リサイクル", "エコ", "非常口", "優先席")
+    ):
+        return False
+    prefixes = (
+        f"{q}マーク",
+        f"{q}のマーク",
+        f"「{q}」マーク",
+        f"『{q}』マーク",
+        f"（{q}）マーク",
+        f"({q})マーク",
+        f"「{q}」のマーク",
+        f"『{q}』のマーク",
+        f"お{q}マーク",
+        f"ご{q}マーク",
+        f"お{q}のマーク",
+        f"ご{q}のマーク",
+    )
+    return any(
+        t == f"{prefix}{suffix}"
+        for prefix in prefixes
+        for suffix in ("", "のイラスト")
+    )
+
+
+def calculate_category_score(
+    categories: Sequence[str],
+    query: str,
+    pos_type: Optional[str] = None,
+    title: Optional[str] = None,
+    allow_boost: bool = True,
+) -> float:
+    """Calculate archetype score adjustment from image categories based on query and POS."""
+    if not categories:
+        return 0.0
+
+    score = 0.0
+    clean_q = query.strip()
+    cat_set = set(categories)
+    is_canonical_mark = _is_canonical_mark_title(title, clean_q)
+
+    # 1. Anti-archetype penalty (capped at -70.0)
+    anti_penalty = 0.0
+    for cat, penalty in UNIVERSAL_ANTI_ARCHETYPE_CATEGORIES.items():
+        if cat in cat_set and cat not in clean_q:
+            if cat == "マーク" and is_canonical_mark:
+                continue
+            # Avoid applying duplicate penalty if title keyword already applied it
+            if title and (
+                (cat in ("フレーム", "テンプレート") and cat in title)
+                or (cat == "ライン" and "ライン素材" in title)
+                or (cat == "マーク" and "マーク" in title)
+                or (cat == "文字" and ("イラスト文字" in title or title.endswith("文字")))
+            ):
+                continue
+            anti_penalty += penalty
+    score += max(anti_penalty, -70.0)
+
+    # 2. Situational hazard penalty (skip if query itself is a hazard term)
+    hazard_penalty = 0.0
+    has_unrelated_hazard = False
+    for cat, penalty in SITUATIONAL_HAZARD_CATEGORIES.items():
+        if cat in cat_set and cat not in clean_q:
+            has_unrelated_hazard = True
+            # Avoid applying duplicate penalty if title keyword already applied it
+            if title and cat in SITUATIONAL_NOISE_KEYWORDS and cat in title:
+                continue
+            hazard_penalty += penalty
+
+    # 3. Positive archetype boost (capped at +35.0, gated by allow_boost)
+    boost = 0.0
+    if allow_boost:
+        if clean_q in cat_set:
+            boost += 25.0
+
+        effective_pos = pos_type or infer_pos_type(clean_q)
+        if effective_pos == "verb":
+            for cat, b in ACTION_ARCHETYPE_CATEGORIES.items():
+                if cat in cat_set:
+                    boost += b
+        elif effective_pos == "adjective":
+            for cat, b in ADJECTIVE_ARCHETYPE_CATEGORIES.items():
+                if cat in cat_set:
+                    boost += b
+        elif effective_pos == "noun" and clean_q not in COMMON_ABSTRACT_NOUNS:
+            for cat, b in OBJECT_ARCHETYPE_CATEGORIES.items():
+                if cat in cat_set:
+                    boost += b
+
+    # When unrelated hazard categories are present, suppress positive boosts to ensure net penalty
+    if has_unrelated_hazard or hazard_penalty < 0.0:
+        boost = 0.0
+    else:
+        boost = min(boost, 35.0)
+
+    score += hazard_penalty + boost
+    return score
+
+
+def infer_note_pos_type(yomitan_meta: Optional[Any]) -> Optional[str]:
+    """Infer the part of speech profile ('verb', 'adjective', or 'noun') strictly from note metadata."""
+    if yomitan_meta is None:
+        return None
+    if getattr(yomitan_meta, "verb_class", None):
+        return "verb"
+    tags = getattr(yomitan_meta, "pos_tags", set())
+    if any(t == "v" or t.startswith(("v1", "v5", "vs", "vk", "vz", "vi", "vt")) for t in tags):
+        return "verb"
+    if any(t.startswith("adj") and t not in ("adj-no", "adj-f", "adj-pn") for t in tags):
+        return "adjective"
+    if any(t == "n" or t.startswith("n-") for t in tags):
+        return "noun"
+    return None
+
+
+def infer_pos_type(
+    query: str,
+    cand_reason: Optional[str] = None,
+    yomitan_meta: Optional[Any] = None,
+) -> Optional[str]:
+    """Infer the part of speech profile ('verb', 'adjective', 'noun', or None) for category scoring."""
+    note_pos = infer_note_pos_type(yomitan_meta)
+    if note_pos:
+        return note_pos
+
+    if cand_reason:
+        if cand_reason.startswith("verb_") or cand_reason in ("primary_verb", "yomitan_masu_stem"):
+            return "verb"
+
+    clean_q = query.strip()
+    if not clean_q:
+        return None
+
+    if is_adjective_ending(clean_q):
+        return "adjective"
+
+    # Require Kanji stem + Hiragana terminal okurigana to infer verb from morphology
+    if (
+        len(clean_q) > 1
+        and KANJI_CHAR_RE.search(clean_q)
+        and clean_q.endswith(VERB_TERMINAL_ENDINGS)
+        and clean_q not in COMMON_OKURIGANA_NOUNS
+        and clean_q not in NON_VERB_GODAN_LOOKALIKES
+    ):
+        return "verb"
+
+    # Recognize common kana-only verbs
+    if clean_q in COMMON_KANA_VERBS:
+        return "verb"
+
+    # Known nouns ending in okurigana/kana
+    if clean_q in COMMON_OKURIGANA_NOUNS:
+        return "noun"
+
+    # Words ending in Kanji (e.g. 本, 猫, お肉, 食べ物, 贈り物) are nouns
+    if KANJI_CHAR_RE.match(clean_q[-1]):
+        return "noun"
+
+    # Pure Katakana words are nouns (loanwords)
+    if all(KATAKANA_CHAR_RE.match(c) for c in clean_q):
+        return "noun"
+
+    # Pure Hiragana terms that do NOT end in verb terminal endings cannot be verbs
+    if all(HIRAGANA_CHAR_RE.match(c) for c in clean_q) and not clean_q.endswith(VERB_TERMINAL_ENDINGS):
+        return "noun"
+
+    # Kana terms ending in verb terminal endings without Kanji or explicit metadata are ambiguous;
+    # leave them neutral (None) to avoid assigning false noun or verb archetype boosts.
+    return None
 
 
 def _is_bare_verb_stem(text: str) -> bool:
@@ -38,6 +324,19 @@ def _is_bare_verb_stem(text: str) -> bool:
         and not text.endswith(VERB_TERMINAL_ENDINGS)
         and not is_adjective_ending(text)
     )
+
+
+def _is_non_particle_hiragana_prefix(text: str, idx: int) -> bool:
+    """Return True if character before text[idx] is Hiragana forming a non-particle compound prefix."""
+    prev_ch = text[idx - 1] if idx > 0 else ""
+    if not prev_ch or not HIRAGANA_CHAR_RE.match(prev_ch):
+        return False
+    if text[:idx].endswith(MULTI_CHAR_PARTICLES):
+        return False
+    # Verbal te-form clause connector (〜って, 〜いて, 〜して, etc.) is not a compound prefix
+    if prev_ch == "て" and idx >= 2 and HIRAGANA_CHAR_RE.match(text[idx - 2]):
+        return False
+    return prev_ch not in ("お", "ご") + SINGLE_CHAR_PARTICLES + ATTRIBUTIVE_ENDINGS
 
 
 def classify_match_boundary(text: str, query: str) -> str:
@@ -59,7 +358,12 @@ def classify_match_boundary(text: str, query: str) -> str:
         or f"『{query}』" in text
         or f"（{query}）" in text
         or f"({query})" in text
-        or text in (query, f"{query}のイラスト", f"かわいい{query}のイラスト")
+        or text in (
+            query,
+            f"{query}のイラスト",
+            f"かわいい{query}のイラスト",
+        )
+        or _is_canonical_mark_title(text, query)
     ):
         return "exact_quoted"
 
@@ -93,46 +397,43 @@ def classify_match_boundary(text: str, query: str) -> str:
                 # Grammar stop words and unlisted 2-mora words: only exact quoted matches allowed
                 if is_grammar_function_word(query) or (len(query) <= 2 and query not in SAFE_2MORA_LOANWORDS):
                     continue
-                particles = ("の", "が", "を", "に", "で", "と", "は", "も", "へ", "や", "な", "か")
-                attributive_endings = ("い", "る", "た", "だ")
-                # Reject if preceded by Hiragana other than polite お/ご, a particle, or an attributive ending
-                prev_is_hira = bool(
-                    prev_ch
-                    and HIRAGANA_CHAR_RE.match(prev_ch)
-                    and prev_ch not in ("お", "ご") + particles + attributive_endings
-                )
+                # Reject if preceded by Hiragana other than polite お/ご, verbal te-form, particle, or attributive ending
+                prev_is_hira = _is_non_particle_hiragana_prefix(text, idx)
                 # Reject if followed by Hiragana other than a particle
                 next_is_hira = bool(
                     next_ch
                     and HIRAGANA_CHAR_RE.match(next_ch)
-                    and next_ch not in particles
+                    and next_ch not in SINGLE_CHAR_PARTICLES
                 )
                 if prev_is_hira or next_is_hira:
                     continue
                 return "standalone"
 
-        # Case 2: Pure Kanji queries (e.g. 肉, 肌, 本, 二人)
+        # Case 2: Pure Kanji queries (e.g. 肉, 肌, 本, 二人, 禁止)
         if is_pure_kanji:
             prev_is_kanji = bool(prev_ch and KANJI_CHAR_RE.match(prev_ch))
             next_is_kanji = bool(next_ch and KANJI_CHAR_RE.match(next_ch))
-            if not prev_is_kanji and not next_is_kanji:
+            prev_is_kata = bool(prev_ch and KATAKANA_CHAR_RE.match(prev_ch))
+            prev_is_non_particle_hira = _is_non_particle_hiragana_prefix(text, idx)
+            if prev_is_kanji or next_is_kanji or prev_is_kata or prev_is_non_particle_hira:
+                if best_quality == "none":
+                    best_quality = "compound"
+            else:
                 if prev_ch in ("お", "ご"):
                     best_quality = "polite_prefix"
                 else:
                     return "standalone"
-            else:
-                if best_quality == "none":
-                    best_quality = "compound"
             continue
 
         # Case 3: Mixed Kanji + Kana (e.g. 食べる, 1杯, 時に, お金, お茶)
         prev_is_kanji = bool(prev_ch and KANJI_CHAR_RE.match(prev_ch))
         next_is_kanji = bool(next_ch and KANJI_CHAR_RE.match(next_ch))
+        prev_is_kata = bool(prev_ch and KATAKANA_CHAR_RE.match(prev_ch))
         # Bare stems (食べ, 売り, 勝ち, 買い) fused with a following Kanji form nouns (食べ物, 売り場, 勝ち組, 買い物)
         # Nouns ending in okurigana (e.g. 祭り) fused with a following Kanji form compound nouns (祭り会場)
         is_noun_compound = query in COMMON_OKURIGANA_NOUNS and next_is_kanji
         ends_in_stem_okurigana = _is_bare_verb_stem(query)
-        if (prev_is_kanji and KANJI_CHAR_RE.match(query[0])) or (
+        if prev_is_kata or (prev_is_kanji and KANJI_CHAR_RE.match(query[0])) or (
             next_is_kanji and (KANJI_CHAR_RE.match(query[-1]) or ends_in_stem_okurigana or is_noun_compound)
         ):
             if best_quality == "none":
@@ -200,7 +501,11 @@ def is_image_relevant(img: IrasutoyaImage, query: str) -> bool:
     return False
 
 
-def score_candidate_image(img: IrasutoyaImage, query: str) -> float:
+def score_candidate_image(
+    img: IrasutoyaImage,
+    query: str,
+    pos_type: Optional[str] = None,
+) -> float:
     """Evaluate image semantic match quality and archetypal fit for flashcard learning."""
     score = 0.0
     clean_q = query.strip()
@@ -213,6 +518,8 @@ def score_candidate_image(img: IrasutoyaImage, query: str) -> float:
     if is_image_relevant(img, clean_q):
         if title == f"{clean_q}のイラスト":
             score += 100.0
+        elif _is_canonical_mark_title(title, clean_q):
+            score += 95.0
         elif title in (f"お{clean_q}のイラスト", f"ご{clean_q}のイラスト"):
             score += 95.0
         elif title == f"かわいい{clean_q}のイラスト":
@@ -221,7 +528,7 @@ def score_candidate_image(img: IrasutoyaImage, query: str) -> float:
             score += 85.0
         elif title.startswith(f"{clean_q}の"):
             score += 60.0
-        elif post_title == f"{clean_q}のイラスト":
+        elif post_title == f"{clean_q}のイラスト" or _is_canonical_mark_title(post_title, clean_q):
             score += 50.0
         elif post_title.startswith(f"{clean_q}の"):
             score += 30.0
@@ -247,8 +554,11 @@ def score_candidate_image(img: IrasutoyaImage, query: str) -> float:
     score -= len(title) * 0.8
 
     # 4. Situational, hazard, and mark noise penalty
+    is_canonical_mark = _is_canonical_mark_title(title, clean_q)
     for noise in SITUATIONAL_NOISE_KEYWORDS:
         if noise in title and noise not in clean_q:
+            if noise == "マーク" and is_canonical_mark:
+                continue
             score -= 25.0
 
     # 5. Heavy penalty for text callouts (イラスト文字 / trailing 文字) so illustrations always win if available
@@ -260,6 +570,19 @@ def score_candidate_image(img: IrasutoyaImage, query: str) -> float:
     for noise in DECORATIVE_NOISE_KEYWORDS:
         if noise in title and noise not in clean_q:
             score -= 60.0
+
+    # 7. Category-aware archetype scoring (modulated by POS, gated by title presence)
+    cats = getattr(img, "categories", ())
+    if cats:
+        has_title_presence = bool(
+            qual_title == "inflected"
+            or clean_q in title
+            or clean_q in post_title
+            or (post_title and classify_match_boundary(post_title, clean_q) == "inflected")
+        )
+        score += calculate_category_score(
+            cats, clean_q, pos_type=pos_type, title=title, allow_boost=has_title_presence
+        )
 
     return score
 
@@ -280,15 +603,26 @@ def is_decorative_asset(img: IrasutoyaImage, query: str) -> bool:
     return any(noise in title and noise not in clean_q for noise in DECORATIVE_NOISE_KEYWORDS)
 
 
-def rank_relevant_images(candidates: Sequence[IrasutoyaImage], query: str) -> List[IrasutoyaImage]:
+def rank_relevant_images(
+    candidates: Sequence[IrasutoyaImage],
+    query: str,
+    pos_type: Optional[str] = None,
+) -> List[IrasutoyaImage]:
     """Rank relevant images by preference: non-callout illustrations first, then text callouts, ordered by score."""
-    scored = [(img, score_candidate_image(img, query), is_callout_asset(img, query)) for img in candidates]
+    scored = [
+        (img, score_candidate_image(img, query, pos_type=pos_type), is_callout_asset(img, query))
+        for img in candidates
+    ]
     non_callouts = sorted((s for s in scored if not s[2]), key=lambda s: s[1], reverse=True)
     callouts = sorted((s for s in scored if s[2]), key=lambda s: s[1], reverse=True)
     return [s[0] for s in non_callouts + callouts]
 
 
-def select_best_image(images: Sequence[IrasutoyaImage], query: str) -> Optional[IrasutoyaImage]:
+def select_best_image(
+    images: Sequence[IrasutoyaImage],
+    query: str,
+    pos_type: Optional[str] = None,
+) -> Optional[IrasutoyaImage]:
     """Select the highest-ranked archetypal image from candidate images, excluding decorative assets."""
     if not images:
         return None
@@ -297,6 +631,6 @@ def select_best_image(images: Sequence[IrasutoyaImage], query: str) -> Optional[
         if not is_decorative_asset(img, query) and is_image_relevant(img, query)
     ]
     if illustration_candidates:
-        return rank_relevant_images(illustration_candidates, query)[0]
+        return rank_relevant_images(illustration_candidates, query, pos_type=pos_type)[0]
     fallback_pool = [img for img in images if not is_decorative_asset(img, query)] or images
-    return max(fallback_pool, key=lambda img: score_candidate_image(img, query))
+    return max(fallback_pool, key=lambda img: score_candidate_image(img, query, pos_type=pos_type))

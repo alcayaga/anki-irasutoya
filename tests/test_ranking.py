@@ -4,7 +4,10 @@ from unittest.mock import patch
 
 from addon.feed import IrasutoyaImage
 from addon.ranking import (
+    calculate_category_score,
     classify_match_boundary,
+    infer_note_pos_type,
+    infer_pos_type,
     is_callout_asset,
     is_decorative_asset,
     is_image_relevant,
@@ -191,6 +194,32 @@ class TestRanking(unittest.TestCase):
         self.assertEqual(classify_match_boundary("祭り会場のイラスト", "祭り"), "compound")
         self.assertEqual(classify_match_boundary("夏祭りのイラスト", "祭り"), "compound")
 
+        # Adjectives with な particle preceding Kanji nouns
+        self.assertEqual(classify_match_boundary("大きな犬のイラスト", "犬"), "standalone")
+        self.assertEqual(classify_match_boundary("きれいな花のイラスト", "花"), "standalone")
+
+        # Attributive plain-form verbs preceding pure Kanji nouns
+        self.assertEqual(classify_match_boundary("歌う人のイラスト", "人"), "standalone")
+        self.assertEqual(classify_match_boundary("歩く犬のイラスト", "犬"), "standalone")
+        self.assertEqual(classify_match_boundary("飲む人のイラスト", "人"), "standalone")
+
+        # Hiragana て-form and multi-char particles/connectives preceding pure Kanji nouns
+        self.assertEqual(classify_match_boundary("座って本を読む人のイラスト", "本"), "standalone")
+        self.assertEqual(classify_match_boundary("ここから本を借りる人のイラスト", "本"), "standalone")
+        self.assertEqual(classify_match_boundary("笑いながら本を読む人のイラスト", "本"), "standalone")
+        self.assertEqual(classify_match_boundary("机の上など本を置く人のイラスト", "本"), "standalone")
+        self.assertEqual(classify_match_boundary("自分だけ本を読む人のイラスト", "本"), "standalone")
+        self.assertEqual(classify_match_boundary("山ほど本がある部屋のイラスト", "本"), "standalone")
+        self.assertEqual(classify_match_boundary("少しばかり本を読む人のイラスト", "本"), "standalone")
+        self.assertEqual(classify_match_boundary("夜遅くまで本を読む人のイラスト", "本"), "standalone")
+
+        # Compounds with preceding Katakana or non-particle Hiragana
+        self.assertEqual(classify_match_boundary("くるりポイ禁止のイラスト", "禁止"), "compound")
+        self.assertEqual(classify_match_boundary("ポイ捨て禁止のイラスト", "禁止"), "compound")
+        # Canonical mark titles matching query
+        self.assertEqual(classify_match_boundary("禁止マークのイラスト", "禁止"), "exact_quoted")
+        self.assertEqual(classify_match_boundary("初心者マークのイラスト", "初心者"), "exact_quoted")
+
     def test_score_callout_text_heavy_penalty(self):
         """Test that illustrated text callouts receive heavy penalty instead of hard rejection."""
         img_callout = IrasutoyaImage(
@@ -320,6 +349,397 @@ class TestRanking(unittest.TestCase):
             with self.subTest(negative_case=query):
                 quality = classify_match_boundary(title, query)
                 self.assertIn(quality, ("none", "compound"), f"Query '{query}' in '{title}' must not match as standalone/inflected")
+
+    def test_category_weights_boost_action_for_verbs(self):
+        """Verify action/pose categories boost human movement illustrations when query is a verb."""
+        img_human = IrasutoyaImage(
+            title="走る女の子のイラスト",
+            image_url="https://example.com/girl.png",
+            thumb_url="https://example.com/t.png",
+            post_title="走る女の子のイラスト",
+            categories=("こども", "ポーズ", "運動"),
+        )
+        img_animal = IrasutoyaImage(
+            title="走る犬のイラスト",
+            image_url="https://example.com/dog.png",
+            thumb_url="https://example.com/t.png",
+            post_title="走る犬のイラスト",
+            categories=("犬",),
+        )
+
+        score_human_verb = score_candidate_image(img_human, "走る", pos_type="verb")
+        score_animal_verb = score_candidate_image(img_animal, "走る", pos_type="verb")
+        self.assertGreater(score_human_verb, score_animal_verb)
+
+        best = select_best_image([img_animal, img_human], "走る", pos_type="verb")
+        self.assertEqual(best, img_human)
+
+    def test_category_weights_boost_objects_for_nouns(self):
+        """Verify physical object categories boost tangible entities when query is a noun."""
+        img_obj = IrasutoyaImage(
+            title="乗用車のイラスト",
+            image_url="https://example.com/car.png",
+            thumb_url="https://example.com/t.png",
+            post_title="車のイラスト",
+            categories=("車", "乗り物"),
+        )
+        img_action = IrasutoyaImage(
+            title="車を運転する人のイラスト",
+            image_url="https://example.com/driver.png",
+            thumb_url="https://example.com/t.png",
+            post_title="ドライブのイラスト",
+            categories=("ポーズ", "ドライブ"),
+        )
+
+        score_obj_noun = score_candidate_image(img_obj, "車", pos_type="noun")
+        score_action_noun = score_candidate_image(img_action, "車", pos_type="noun")
+        self.assertGreater(score_obj_noun, score_action_noun)
+
+        best = select_best_image([img_action, img_obj], "車", pos_type="noun")
+        self.assertEqual(best, img_obj)
+
+    def test_anti_archetype_category_penalties(self):
+        """Verify anti-archetype categories (文字, マーク, フレーム) receive negative adjustments."""
+        img_frame = IrasutoyaImage(
+            title="桜の枠",
+            image_url="https://example.com/frame.png",
+            thumb_url="https://example.com/t.png",
+            post_title="春の素材",
+            categories=("フレーム", "春"),
+        )
+        img_mark = IrasutoyaImage(
+            title="桜のマーク",
+            image_url="https://example.com/mark.png",
+            thumb_url="https://example.com/t.png",
+            post_title="春の素材",
+            categories=("マーク", "春"),
+        )
+        img_flower = IrasutoyaImage(
+            title="桜の花のイラスト",
+            image_url="https://example.com/flower.png",
+            thumb_url="https://example.com/t.png",
+            post_title="桜のイラスト",
+            categories=("花", "植物", "春"),
+        )
+
+        score_frame = score_candidate_image(img_frame, "桜", pos_type="noun")
+        score_mark = score_candidate_image(img_mark, "桜", pos_type="noun")
+        score_flower = score_candidate_image(img_flower, "桜", pos_type="noun")
+
+        # Directly assert that anti-archetype categories return negative adjustments
+        self.assertLess(calculate_category_score(("フレーム",), "桜", pos_type="noun"), 0.0)
+        self.assertLess(calculate_category_score(("マーク",), "桜", pos_type="noun"), 0.0)
+
+        self.assertGreater(score_flower, score_frame)
+        self.assertGreater(score_flower, score_mark)
+
+        best = select_best_image([img_frame, img_mark, img_flower], "桜", pos_type="noun")
+        self.assertEqual(best, img_flower)
+
+    def test_avoid_duplicate_title_and_category_penalties(self):
+        """Verify that when a title already receives a keyword noise penalty, category scoring skips duplicate penalty."""
+        img_title_accident = IrasutoyaImage(
+            title="車の事故のイラスト",
+            image_url="https://example.com/car.png",
+            thumb_url="https://example.com/t.png",
+            post_title="車の事故のイラスト",
+            categories=("事故",),
+        )
+        img_title_accident_no_cat = IrasutoyaImage(
+            title="車の事故のイラスト",
+            image_url="https://example.com/car.png",
+            thumb_url="https://example.com/t.png",
+            post_title="車の事故のイラスト",
+            categories=(),
+        )
+        # Score should not subtract 25 twice for 事故
+        score_with_cat = score_candidate_image(img_title_accident, "車")
+        score_without_cat = score_candidate_image(img_title_accident_no_cat, "車")
+        self.assertEqual(score_with_cat, score_without_cat)
+
+        # But when hazard keyword is NOT in title, category penalty applies
+        img_plain_with_hazard_cat = IrasutoyaImage(
+            title="車のイラスト",
+            image_url="https://example.com/car.png",
+            thumb_url="https://example.com/t.png",
+            post_title="車のイラスト",
+            categories=("事故",),
+        )
+        img_plain_clean = IrasutoyaImage(
+            title="車のイラスト",
+            image_url="https://example.com/car.png",
+            thumb_url="https://example.com/t.png",
+            post_title="車のイラスト",
+            categories=(),
+        )
+        score_hazard_cat = score_candidate_image(img_plain_with_hazard_cat, "車")
+        score_clean = score_candidate_image(img_plain_clean, "車")
+        self.assertEqual(score_hazard_cat - score_clean, -25.0)
+
+        # Hazard presence must suppress positive category boosts even when category penalty was deduplicated
+        img_accident_with_boost_cats = IrasutoyaImage(
+            title="車の事故のイラスト",
+            image_url="https://example.com/car.png",
+            thumb_url="https://example.com/t.png",
+            post_title="車の事故のイラスト",
+            categories=("事故", "車", "乗り物"),
+        )
+        score_accident_boosted = score_candidate_image(img_accident_with_boost_cats, "車", pos_type="noun")
+        self.assertEqual(score_accident_boosted, score_with_cat)
+
+        # Line dedup: title containing 'ライン' without 'ライン素材' still gets category penalty
+        img_line_no_sozai = IrasutoyaImage(
+            title="波線のラインのイラスト",
+            image_url="https://example.com/line.png",
+            thumb_url="https://example.com/t.png",
+            post_title="波線のラインのイラスト",
+            categories=("ライン",),
+        )
+        img_line_clean = IrasutoyaImage(
+            title="波線のラインのイラスト",
+            image_url="https://example.com/line.png",
+            thumb_url="https://example.com/t.png",
+            post_title="波線のラインのイラスト",
+            categories=(),
+        )
+        self.assertEqual(
+            score_candidate_image(img_line_no_sozai, "波線") - score_candidate_image(img_line_clean, "波線"),
+            -50.0,
+        )
+
+    def test_graceful_degradation_without_categories(self):
+        """Verify images with empty categories produce identical scores regardless of pos_type."""
+        img_empty = IrasutoyaImage(
+            title="猫のイラスト",
+            image_url="https://example.com/cat.png",
+            thumb_url="https://example.com/t.png",
+            post_title="猫のイラスト",
+            categories=(),
+        )
+
+        score_none = score_candidate_image(img_empty, "猫", pos_type=None)
+        score_noun = score_candidate_image(img_empty, "猫", pos_type="noun")
+        score_verb = score_candidate_image(img_empty, "猫", pos_type="verb")
+
+        self.assertEqual(score_none, score_noun)
+        self.assertEqual(score_none, score_verb)
+        self.assertEqual(calculate_category_score((), "猫"), 0.0)
+
+        # Hermetic regression fixture: candidates with empty categories retain identical Phase 1 ranking order
+        candidates = [
+            IrasutoyaImage("猫のイラスト", "https://example.com/1.png", "https://example.com/t1.png", "猫のイラスト", categories=()),
+            IrasutoyaImage("黒猫のイラスト", "https://example.com/2.png", "https://example.com/t2.png", "黒猫のイラスト", categories=()),
+            IrasutoyaImage("かわいい猫のイラスト", "https://example.com/3.png", "https://example.com/t3.png", "かわいい猫のイラスト", categories=()),
+            IrasutoyaImage("「猫」のイラスト文字", "https://example.com/4.png", "https://example.com/t4.png", "「猫」のイラスト文字", categories=()),
+        ]
+        best = select_best_image(candidates, "猫", pos_type="noun")
+        self.assertEqual(best.title, "猫のイラスト")
+
+        ranked = rank_relevant_images(candidates, "猫", pos_type="noun")
+        ranked_titles = [img.title for img in ranked]
+        self.assertEqual(
+            ranked_titles,
+            [
+                "猫のイラスト",
+                "かわいい猫のイラスト",
+                "黒猫のイラスト",
+                "「猫」のイラスト文字",
+            ],
+        )
+
+    def test_situational_hazard_penalties_and_exemption(self):
+        """Verify hazard categories are penalized for normal queries but exempted when query is hazard."""
+        img_accident = IrasutoyaImage(
+            title="交通事故のイラスト",
+            image_url="https://example.com/accident.png",
+            thumb_url="https://example.com/t.png",
+            post_title="事故のイラスト",
+            categories=("事故", "車", "乗り物"),
+        )
+
+        # Searching for normal word "車" applies penalty for "事故" and suppresses noun boosts
+        score_car = calculate_category_score(img_accident.categories, "車", pos_type="noun")
+        self.assertEqual(score_car, -25.0)
+
+        # Searching for "事故" directly exempts the "事故" penalty
+        score_accident = calculate_category_score(img_accident.categories, "事故", pos_type="noun")
+        self.assertGreaterEqual(score_accident, 0.0)
+
+    def test_infer_note_pos_type(self):
+        """Verify infer_note_pos_type extracts POS only when explicit Yomitan dictionary metadata exists."""
+        class MockMeta:
+            def __init__(self, verb_class=None, pos_tags=None):
+                self.verb_class = verb_class
+                self.pos_tags = pos_tags or set()
+
+        self.assertIsNone(infer_note_pos_type(None))
+        self.assertIsNone(infer_note_pos_type(MockMeta()))
+        self.assertIsNone(infer_note_pos_type(MockMeta(pos_tags={"exp"})))
+        self.assertEqual(infer_note_pos_type(MockMeta(verb_class="v1")), "verb")
+        self.assertEqual(infer_note_pos_type(MockMeta(pos_tags={"v5k"})), "verb")
+        self.assertEqual(infer_note_pos_type(MockMeta(pos_tags={"vs"})), "verb")
+        self.assertEqual(infer_note_pos_type(MockMeta(pos_tags={"vk"})), "verb")
+        self.assertEqual(infer_note_pos_type(MockMeta(pos_tags={"adj-i"})), "adjective")
+        self.assertEqual(infer_note_pos_type(MockMeta(pos_tags={"n"})), "noun")
+        self.assertEqual(infer_note_pos_type(MockMeta(pos_tags={"n-adv"})), "noun")
+        # Noun-like or pre-noun adj tags (adj-no, adj-f, adj-pn) must not override noun classification
+        self.assertEqual(infer_note_pos_type(MockMeta(pos_tags={"n", "adj-no"})), "noun")
+        self.assertEqual(infer_note_pos_type(MockMeta(pos_tags={"n", "adj-f"})), "noun")
+        self.assertEqual(infer_note_pos_type(MockMeta(pos_tags={"adj-na"})), "adjective")
+        self.assertIsNone(infer_note_pos_type(MockMeta(pos_tags={"adj-no"})))
+        self.assertIsNone(infer_note_pos_type(MockMeta(pos_tags={"adj-f"})))
+        self.assertIsNone(infer_note_pos_type(MockMeta(pos_tags={"adj-pn"})))
+        # Ensure unrelated tags starting with 'n' or 'v' (num, vulg) are excluded
+        self.assertIsNone(infer_note_pos_type(MockMeta(pos_tags={"num"})))
+        self.assertIsNone(infer_note_pos_type(MockMeta(pos_tags={"vulg"})))
+
+    def test_infer_pos_type(self):
+        """Verify infer_pos_type accurately detects verbs, nouns, and adjectives."""
+        # 1. Yomitan metadata detection
+        class MockMeta:
+            def __init__(self, verb_class=None, pos_tags=None):
+                self.verb_class = verb_class
+                self.pos_tags = pos_tags or set()
+
+        self.assertEqual(infer_pos_type("食べる", yomitan_meta=MockMeta(verb_class="v1")), "verb")
+        self.assertEqual(infer_pos_type("走る", yomitan_meta=MockMeta(pos_tags={"v5r"})), "verb")
+        self.assertEqual(infer_pos_type("勉強", yomitan_meta=MockMeta(pos_tags={"vs"})), "verb")
+        self.assertEqual(infer_pos_type("嬉しい", yomitan_meta=MockMeta(pos_tags={"adj-i"})), "adjective")
+        self.assertEqual(infer_pos_type("本", yomitan_meta=MockMeta(pos_tags={"n"})), "noun")
+
+        # 2. Candidate fallback reason detection
+        self.assertEqual(infer_pos_type("食べた", cand_reason="verb_past"), "verb")
+        self.assertEqual(infer_pos_type("食べ", cand_reason="yomitan_masu_stem"), "verb")
+
+        # 3. Surface heuristic detection
+        self.assertEqual(infer_pos_type("走る"), "verb")
+        self.assertEqual(infer_pos_type("泳ぐ"), "verb")
+        self.assertEqual(infer_pos_type("はしる"), "verb")
+        self.assertEqual(infer_pos_type("たべる"), "verb")
+        self.assertEqual(infer_pos_type("悲しい"), "adjective")
+        self.assertEqual(infer_pos_type("猫"), "noun")
+        self.assertEqual(infer_pos_type("車"), "noun")
+        self.assertEqual(infer_pos_type("パン"), "noun")
+        self.assertEqual(infer_pos_type("お肉"), "noun")
+        self.assertEqual(infer_pos_type("食べ物"), "noun")
+
+        # 4. Pure Hiragana noun regression cases (must not be classified as verbs from ending kana)
+        self.assertEqual(infer_pos_type("こたつ"), "noun")
+        self.assertEqual(infer_pos_type("くつ"), "noun")
+        self.assertEqual(infer_pos_type("ねずみ"), "noun")
+        self.assertEqual(infer_pos_type("さる"), "noun")
+        self.assertEqual(infer_pos_type("たまご"), "noun")
+
+        # Okurigana counters and adverbs (ending in okurigana つ/く)
+        self.assertEqual(infer_pos_type("一つ"), "noun")
+        self.assertEqual(infer_pos_type("二つ"), "noun")
+        self.assertEqual(infer_pos_type("近く"), "noun")
+        self.assertEqual(infer_pos_type("遠く"), "noun")
+        self.assertEqual(infer_pos_type("多く"), "noun")
+
+        # Non-verb godan lookalikes (adverbs/nouns ending in godan kana) must not be classified as verbs
+        self.assertNotEqual(infer_pos_type("全く"), "verb")
+        self.assertNotEqual(infer_pos_type("幾つ"), "verb")
+        self.assertNotEqual(infer_pos_type("滅多に"), "verb")
+
+        # 5. Unclassified ambiguous kana terms without metadata or verb reason remain neutral
+        self.assertIsNone(infer_pos_type("かけぬける"))
+
+    def test_canonical_mark_illustrations_and_abstract_nouns(self):
+        """Verify canonical mark illustrations (e.g. 禁止マーク) rank highest and abstract nouns do not get object boosts."""
+        from addon.ranking import _is_canonical_mark_title
+
+        self.assertTrue(_is_canonical_mark_title("禁止マークのイラスト", "禁止"))
+        self.assertTrue(_is_canonical_mark_title("初心者マーク", "初心者"))
+        self.assertTrue(_is_canonical_mark_title("交通安全のマーク", "交通安全"))
+        self.assertTrue(_is_canonical_mark_title("「禁止」マーク", "禁止"))
+        self.assertFalse(_is_canonical_mark_title("猫のイラスト", "猫"))
+        # Substring lookalike: 日本のマーク for 本 must not match as canonical mark of 本
+        self.assertFalse(_is_canonical_mark_title("日本のマーク", "本"))
+        # Scene depicting a mark attached to an object must not match as a canonical mark title
+        self.assertFalse(_is_canonical_mark_title("初心者マークをつけた車のイラスト", "初心者"))
+        self.assertFalse(_is_canonical_mark_title("禁止マークを持つ人のイラスト", "禁止"))
+
+        img_mark = IrasutoyaImage(
+            title="禁止マークのイラスト",
+            image_url="https://example.com/kinshi_mark.png",
+            thumb_url="https://example.com/t.png",
+            post_title="禁止マークのイラスト",
+            categories=("マーク", "禁止"),
+        )
+        img_kururi = IrasutoyaImage(
+            title="くるりポイ禁止のイラスト",
+            image_url="https://example.com/kururi.png",
+            thumb_url="https://example.com/t.png",
+            post_title="くるりポイ禁止のイラスト",
+            categories=("ショッピング", "マナー", "禁止", "食材"),
+        )
+        img_poisute = IrasutoyaImage(
+            title="ポイ捨て禁止のイラスト",
+            image_url="https://example.com/poisute.png",
+            thumb_url="https://example.com/t.png",
+            post_title="ポイ捨て禁止のイラスト",
+            categories=("マナー", "禁止", "ゴミ"),
+        )
+
+        score_mark = score_candidate_image(img_mark, "禁止")
+        score_kururi = score_candidate_image(img_kururi, "禁止")
+        score_poisute = score_candidate_image(img_poisute, "禁止")
+
+        # 禁止マーク must score far above compound situational prohibitions
+        self.assertGreater(score_mark, 100.0)
+        self.assertLess(score_kururi, 0.0)
+        self.assertLess(score_poisute, 0.0)
+        self.assertGreater(score_mark, score_kururi)
+        self.assertGreater(score_mark, score_poisute)
+
+        # Abstract nouns like 禁止 must not receive object archetype boosts (e.g. 食材)
+        cat_score_kururi = calculate_category_score(img_kururi.categories, "禁止", pos_type="noun")
+        self.assertEqual(cat_score_kururi, 25.0)  # Gets +25 for "禁止" in cat_set, but 0 for "食材"
+
+        # Gating allow_boost suppresses positive category boosts (e.g. description-only matches)
+        cat_score_desc = calculate_category_score(img_kururi.categories, "禁止", pos_type="noun", allow_boost=False)
+        self.assertEqual(cat_score_desc, 0.0)
+
+        # Marks in scenes (e.g. 初心者マークをつけた車) must not receive canonical mark scoring
+        img_scene = IrasutoyaImage(
+            title="初心者マークをつけた車のイラスト",
+            image_url="https://example.com/car.png",
+            thumb_url="https://example.com/t.png",
+            post_title="初心者マークをつけた車のイラスト",
+            categories=("マーク", "乗り物"),
+        )
+        img_mark_clean = IrasutoyaImage(
+            title="初心者マークのイラスト",
+            image_url="https://example.com/mark.png",
+            thumb_url="https://example.com/t.png",
+            post_title="初心者マークのイラスト",
+            categories=("マーク",),
+        )
+        score_scene = score_candidate_image(img_scene, "初心者")
+        score_mark_pure = score_candidate_image(img_mark_clean, "初心者")
+        self.assertGreater(score_mark_pure, score_scene + 50.0)
+
+    def test_inflected_title_preserves_action_category_boost(self):
+        """Verify that inflected title matches (e.g. 勝った人のイラスト for 勝つ) receive action category boost."""
+        img_inflected = IrasutoyaImage(
+            title="勝った人のイラスト",
+            image_url="https://example.com/katta.png",
+            thumb_url="https://example.com/t.png",
+            post_title="勝った人のイラスト",
+            categories=("ポーズ", "スポーツ"),
+        )
+        img_neutral = IrasutoyaImage(
+            title="勝った人のイラスト",
+            image_url="https://example.com/katta.png",
+            thumb_url="https://example.com/t.png",
+            post_title="勝った人のイラスト",
+            categories=(),
+        )
+        score_inflected = score_candidate_image(img_inflected, "勝つ", pos_type="verb")
+        score_neutral = score_candidate_image(img_neutral, "勝つ", pos_type="verb")
+        # Action category boost (+35.0) should be included because qual_title == "inflected" gates allow_boost=True
+        self.assertAlmostEqual(score_inflected - score_neutral, 35.0)
 
 
 if __name__ == "__main__":
