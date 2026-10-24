@@ -439,17 +439,17 @@ class TestRanking(unittest.TestCase):
     def test_avoid_duplicate_title_and_category_penalties(self):
         """Verify that when a title already receives a keyword noise penalty, category scoring skips duplicate penalty."""
         img_title_accident = IrasutoyaImage(
-            title="交通事故のイラスト",
+            title="車の事故のイラスト",
             image_url="https://example.com/car.png",
             thumb_url="https://example.com/t.png",
-            post_title="交通事故のイラスト",
+            post_title="車の事故のイラスト",
             categories=("事故",),
         )
         img_title_accident_no_cat = IrasutoyaImage(
-            title="交通事故のイラスト",
+            title="車の事故のイラスト",
             image_url="https://example.com/car.png",
             thumb_url="https://example.com/t.png",
-            post_title="交通事故のイラスト",
+            post_title="車の事故のイラスト",
             categories=(),
         )
         # Score should not subtract 25 twice for 事故
@@ -478,10 +478,10 @@ class TestRanking(unittest.TestCase):
 
         # Hazard presence must suppress positive category boosts even when category penalty was deduplicated
         img_accident_with_boost_cats = IrasutoyaImage(
-            title="交通事故のイラスト",
+            title="車の事故のイラスト",
             image_url="https://example.com/car.png",
             thumb_url="https://example.com/t.png",
-            post_title="交通事故のイラスト",
+            post_title="車の事故のイラスト",
             categories=("事故", "車", "乗り物"),
         )
         score_accident_boosted = score_candidate_image(img_accident_with_boost_cats, "車", pos_type="noun")
