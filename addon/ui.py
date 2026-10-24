@@ -424,6 +424,16 @@ class IrasutoyaDialog(QDialog):
         self._thumb_executor.shutdown(wait=False, cancel_futures=True)
         super().done(result)
 
+    def resizeEvent(self, event) -> None:
+        """Handle dialog resize and load more items if viewport expands without scrolling."""
+        super().resizeEvent(event)
+        self._check_viewport_pagination()
+
+    def showEvent(self, event) -> None:
+        """Handle dialog show event and ensure viewport is filled."""
+        super().showEvent(event)
+        self._check_viewport_pagination()
+
     def keyPressEvent(self, event) -> None:
         """Enable keyboard arrow navigation across the thumbnail gallery and Enter to apply."""
         if hasattr(self, "image_cards") and self.image_cards:
@@ -1001,6 +1011,22 @@ class IrasutoyaDialog(QDialog):
             if hasattr(self, "media_notice_label") and self.media_notice_label:
                 self.media_notice_label.setVisible(False)
 
+    def _check_viewport_pagination(self) -> None:
+        """Ensure gallery content overflows the scroll viewport when more results exist."""
+        if not hasattr(self, "scroll_area") or not hasattr(self, "gallery_layout") or not self.isVisible():
+            return
+        viewport_h = self.scroll_area.viewport().height()
+        if viewport_h <= 0:
+            return
+        while (
+            self.gallery_layout.sizeHint().height() <= viewport_h
+            and self._loaded_count < len(self._all_images)
+        ):
+            prev_count = self._loaded_count
+            self._load_next_page(self._search_generation)
+            if self._loaded_count == prev_count:
+                break
+
     def _on_scroll(self, value: int) -> None:
         """Dynamically load more results when user scrolls near the bottom."""
         if not hasattr(self, "scroll_area"):
@@ -1261,6 +1287,7 @@ class IrasutoyaDialog(QDialog):
         self._all_images = list(images)
         self._loaded_count = 0
         self._load_next_page(gen)
+        self._check_viewport_pagination()
         # Select first card by default
         if self.image_cards:
             self._on_card_selected(self.image_cards[0])

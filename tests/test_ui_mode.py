@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 try:
-    from aqt.qt import QApplication, QHeaderView, QKeyEvent, QPushButton, Qt
+    from aqt.qt import QApplication, QHeaderView, QKeyEvent, QPushButton, QResizeEvent, QSize, Qt
     app = QApplication.instance() or QApplication(["test", "-platform", "offscreen"])
     from addon.feed import IrasutoyaImage
     from addon.ui import (
@@ -565,6 +565,47 @@ class TestUIMode(unittest.TestCase):
             # Even though catalog returned 2 images for '猫', 1 was decorative frame, so count badge is 1
             self.assertIn("猫  1", chip_texts)
             self.assertIn("ねこ  1", chip_texts)
+
+    def test_resize_event_loads_more_when_no_scrollbar(self):
+        """When dialog is resized so all cards fit without scrolling, additional pages load automatically."""
+        mock_mw = MagicMock()
+        mock_note = {"Expression": "北", "Reading": "", "DefinitionPicture": ""}
+        mock_mw.col.get_note.return_value = mock_note
+
+        with patch("addon.ui.mw", mock_mw), patch("threading.Thread", _SyncThread):
+            dlg = IrasutoyaDialog(parent=None, browser=None, note_ids=[1001])
+            dlg._thumb_executor.submit = MagicMock()
+            dlg._run_on_main = lambda cb: cb()
+
+            mock_images = [
+                IrasutoyaImage(
+                    title=f"北 {i}",
+                    image_url=f"https://example.com/{i}.png",
+                    thumb_url=f"https://example.com/{i}_t.png",
+                    post_title=f"北 {i}",
+                )
+                for i in range(50)
+            ]
+            dlg._on_search_finished(
+                gen=dlg._search_generation,
+                query="北",
+                display_chips=[("北", "primary", 0)],
+                matched_cand=("北", "primary", 0),
+                images=mock_images,
+            )
+
+            self.assertEqual(len(dlg.image_cards), 24)
+
+            # Dialog is visible with an expanded viewport height
+            dlg.setVisible(True)
+            # Size hint starts smaller than viewport (400 <= 600), then after next page grows larger (800 > 600)
+            heights = [400, 800]
+            with patch.object(dlg.scroll_area.viewport(), "height", return_value=600), \
+                 patch.object(dlg.gallery_layout, "sizeHint", side_effect=lambda: QSize(800, heights.pop(0) if heights else 800)):
+                dlg.resizeEvent(QResizeEvent(QSize(1200, 1000), QSize(800, 600)))
+
+            # Next page should have been loaded (now 48 cards)
+            self.assertEqual(len(dlg.image_cards), 48)
 
 
 if __name__ == "__main__":
