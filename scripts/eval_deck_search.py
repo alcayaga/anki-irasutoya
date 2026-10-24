@@ -65,7 +65,7 @@ def anki_invoke(action: str, anki_url: str = "http://localhost:8765", **params: 
         headers={"Content-Type": "application/json"}
     )
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             if data.get("error"):
                 raise RuntimeError(f"AnkiConnect error: {data['error']}")

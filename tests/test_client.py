@@ -198,10 +198,10 @@ class TestIrasutoyaClient(unittest.TestCase):
             categories=("ポーズ", "スポーツ"),
         )
         img_object = IrasutoyaImage(
-            "かけぬける人の絵本のイラスト",
+            "かけぬける本",
             "https://example.com/2.png",
             "https://example.com/t2.png",
-            "かけぬける人の絵本のイラスト",
+            "かけぬける本",
             categories=("文房具", "本"),
         )
 
@@ -214,6 +214,12 @@ class TestIrasutoyaClient(unittest.TestCase):
 
         client.search = mock_search
         candidates = [("かけぬけた", "primary", 1), ("かけぬける", "verb_past", 1)]
+
+        # Control: with a non-verb reason and no pos_type, no boost applies and the shorter object title wins
+        _, _, best_neutral = client.search_with_fallbacks(
+            [("かけぬけた", "primary", 1), ("かけぬける", "primary", 1)], pos_type=None
+        )
+        self.assertEqual(best_neutral, img_object)
 
         # 1. When pos_type=None, "かけぬける" with reason "verb_past" infers "verb", boosting img_action
         images_verb, matched_verb, best_verb = client.search_with_fallbacks(candidates, pos_type=None)

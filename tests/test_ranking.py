@@ -194,6 +194,32 @@ class TestRanking(unittest.TestCase):
         self.assertEqual(classify_match_boundary("祭り会場のイラスト", "祭り"), "compound")
         self.assertEqual(classify_match_boundary("夏祭りのイラスト", "祭り"), "compound")
 
+        # Adjectives with な particle preceding Kanji nouns
+        self.assertEqual(classify_match_boundary("大きな犬のイラスト", "犬"), "standalone")
+        self.assertEqual(classify_match_boundary("きれいな花のイラスト", "花"), "standalone")
+
+        # Attributive plain-form verbs preceding pure Kanji nouns
+        self.assertEqual(classify_match_boundary("歌う人のイラスト", "人"), "standalone")
+        self.assertEqual(classify_match_boundary("歩く犬のイラスト", "犬"), "standalone")
+        self.assertEqual(classify_match_boundary("飲む人のイラスト", "人"), "standalone")
+
+        # Hiragana て-form and multi-char particles/connectives preceding pure Kanji nouns
+        self.assertEqual(classify_match_boundary("座って本を読む人のイラスト", "本"), "standalone")
+        self.assertEqual(classify_match_boundary("ここから本を借りる人のイラスト", "本"), "standalone")
+        self.assertEqual(classify_match_boundary("笑いながら本を読む人のイラスト", "本"), "standalone")
+        self.assertEqual(classify_match_boundary("机の上など本を置く人のイラスト", "本"), "standalone")
+        self.assertEqual(classify_match_boundary("自分だけ本を読む人のイラスト", "本"), "standalone")
+        self.assertEqual(classify_match_boundary("山ほど本がある部屋のイラスト", "本"), "standalone")
+        self.assertEqual(classify_match_boundary("少しばかり本を読む人のイラスト", "本"), "standalone")
+        self.assertEqual(classify_match_boundary("夜遅くまで本を読む人のイラスト", "本"), "standalone")
+
+        # Compounds with preceding Katakana or non-particle Hiragana
+        self.assertEqual(classify_match_boundary("くるりポイ禁止のイラスト", "禁止"), "compound")
+        self.assertEqual(classify_match_boundary("ポイ捨て禁止のイラスト", "禁止"), "compound")
+        # Canonical mark titles matching query
+        self.assertEqual(classify_match_boundary("禁止マークのイラスト", "禁止"), "exact_quoted")
+        self.assertEqual(classify_match_boundary("初心者マークのイラスト", "初心者"), "exact_quoted")
+
     def test_score_callout_text_heavy_penalty(self):
         """Test that illustrated text callouts receive heavy penalty instead of hard rejection."""
         img_callout = IrasutoyaImage(
@@ -462,6 +488,10 @@ class TestRanking(unittest.TestCase):
         self.assertEqual(infer_note_pos_type(MockMeta(pos_tags={"vk"})), "verb")
         self.assertEqual(infer_note_pos_type(MockMeta(pos_tags={"adj-i"})), "adjective")
         self.assertEqual(infer_note_pos_type(MockMeta(pos_tags={"n"})), "noun")
+        self.assertEqual(infer_note_pos_type(MockMeta(pos_tags={"n-adv"})), "noun")
+        # Ensure unrelated tags starting with 'n' or 'v' (num, vulg) are excluded
+        self.assertIsNone(infer_note_pos_type(MockMeta(pos_tags={"num"})))
+        self.assertIsNone(infer_note_pos_type(MockMeta(pos_tags={"vulg"})))
 
     def test_infer_pos_type(self):
         """Verify infer_pos_type accurately detects verbs, nouns, and adjectives."""
@@ -500,8 +530,86 @@ class TestRanking(unittest.TestCase):
         self.assertEqual(infer_pos_type("さる"), "noun")
         self.assertEqual(infer_pos_type("たまご"), "noun")
 
+        # Okurigana counters and adverbs (ending in okurigana つ/く)
+        self.assertEqual(infer_pos_type("一つ"), "noun")
+        self.assertEqual(infer_pos_type("二つ"), "noun")
+        self.assertEqual(infer_pos_type("近く"), "noun")
+        self.assertEqual(infer_pos_type("遠く"), "noun")
+        self.assertEqual(infer_pos_type("多く"), "noun")
+
         # 5. Unclassified ambiguous kana terms without metadata or verb reason remain neutral
         self.assertIsNone(infer_pos_type("かけぬける"))
+
+    def test_canonical_mark_illustrations_and_abstract_nouns(self):
+        """Verify canonical mark illustrations (e.g. 禁止マーク) rank highest and abstract nouns do not get object boosts."""
+        from addon.ranking import _is_canonical_mark_title
+
+        self.assertTrue(_is_canonical_mark_title("禁止マークのイラスト", "禁止"))
+        self.assertTrue(_is_canonical_mark_title("初心者マーク", "初心者"))
+        self.assertTrue(_is_canonical_mark_title("交通安全のマーク", "交通安全"))
+        self.assertFalse(_is_canonical_mark_title("猫のイラスト", "猫"))
+
+        img_mark = IrasutoyaImage(
+            title="禁止マークのイラスト",
+            image_url="https://example.com/kinshi_mark.png",
+            thumb_url="https://example.com/t.png",
+            post_title="禁止マークのイラスト",
+            categories=("マーク", "禁止"),
+        )
+        img_kururi = IrasutoyaImage(
+            title="くるりポイ禁止のイラスト",
+            image_url="https://example.com/kururi.png",
+            thumb_url="https://example.com/t.png",
+            post_title="くるりポイ禁止のイラスト",
+            categories=("ショッピング", "マナー", "禁止", "食材"),
+        )
+        img_poisute = IrasutoyaImage(
+            title="ポイ捨て禁止のイラスト",
+            image_url="https://example.com/poisute.png",
+            thumb_url="https://example.com/t.png",
+            post_title="ポイ捨て禁止のイラスト",
+            categories=("マナー", "禁止", "ゴミ"),
+        )
+
+        score_mark = score_candidate_image(img_mark, "禁止")
+        score_kururi = score_candidate_image(img_kururi, "禁止")
+        score_poisute = score_candidate_image(img_poisute, "禁止")
+
+        # 禁止マーク must score far above compound situational prohibitions
+        self.assertGreater(score_mark, 100.0)
+        self.assertLess(score_kururi, 0.0)
+        self.assertLess(score_poisute, 0.0)
+        self.assertGreater(score_mark, score_kururi)
+        self.assertGreater(score_mark, score_poisute)
+
+        # Abstract nouns like 禁止 must not receive object archetype boosts (e.g. 食材)
+        cat_score_kururi = calculate_category_score(img_kururi.categories, "禁止", pos_type="noun")
+        self.assertEqual(cat_score_kururi, 25.0)  # Gets +25 for "禁止" in cat_set, but 0 for "食材"
+
+        # Gating allow_boost suppresses positive category boosts (e.g. description-only matches)
+        cat_score_desc = calculate_category_score(img_kururi.categories, "禁止", pos_type="noun", allow_boost=False)
+        self.assertEqual(cat_score_desc, 0.0)
+
+    def test_inflected_title_preserves_action_category_boost(self):
+        """Verify that inflected title matches (e.g. 勝った人のイラスト for 勝つ) receive action category boost."""
+        img_inflected = IrasutoyaImage(
+            title="勝った人のイラスト",
+            image_url="https://example.com/katta.png",
+            thumb_url="https://example.com/t.png",
+            post_title="勝った人のイラスト",
+            categories=("ポーズ", "スポーツ"),
+        )
+        img_neutral = IrasutoyaImage(
+            title="勝った人のイラスト",
+            image_url="https://example.com/katta.png",
+            thumb_url="https://example.com/t.png",
+            post_title="勝った人のイラスト",
+            categories=(),
+        )
+        score_inflected = score_candidate_image(img_inflected, "勝つ", pos_type="verb")
+        score_neutral = score_candidate_image(img_neutral, "勝つ", pos_type="verb")
+        # Action category boost (+35.0) should be included because qual_title == "inflected" gates allow_boost=True
+        self.assertAlmostEqual(score_inflected - score_neutral, 35.0)
 
 
 if __name__ == "__main__":
