@@ -2,7 +2,7 @@
 import unittest
 import urllib.parse
 
-from addon.batch import BatchStats, make_safe_media_filename, process_note_record
+from addon.batch import BatchStats, make_safe_media_filename, process_note_record, safe_extract_note_pos_type
 from addon.feed import IrasutoyaImage
 
 
@@ -250,6 +250,24 @@ class TestBatchLogic(unittest.TestCase):
         )
         self.assertEqual(status, "not_found")
         self.assertLessEqual(len(queried), 4)
+
+
+    def test_safe_extract_note_pos_type(self):
+        """Verify safe_extract_note_pos_type safely handles malformed notes and extracts POS hints."""
+        # Malformed note object that raises on key access
+        class FaultyNote:
+            def __getitem__(self, item):
+                raise RuntimeError("Corrupted note data")
+
+        self.assertIsNone(safe_extract_note_pos_type(FaultyNote()))
+        self.assertIsNone(safe_extract_note_pos_type(None))
+        self.assertIsNone(safe_extract_note_pos_type({}))
+
+        # Note with valid Yomitan HTML definition
+        valid_verb_note = {
+            "MainDefinition": '<ol><li><i>(v1, JMdict)</i> to eat</li></ol>'
+        }
+        self.assertEqual(safe_extract_note_pos_type(valid_verb_note), "verb")
 
 
 if __name__ == "__main__":

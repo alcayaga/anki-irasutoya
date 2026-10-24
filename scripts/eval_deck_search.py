@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional
 # Ensure parent directory is on sys.path so we can import client and text_utils
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from addon.batch import safe_extract_note_pos_type
 from addon.catalog import default_store
 from addon.client import IrasutoyaClient
 from addon.feed import IrasutoyaImage
@@ -64,7 +65,7 @@ def anki_invoke(action: str, anki_url: str = "http://localhost:8765", **params: 
         headers={"Content-Type": "application/json"}
     )
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             if data.get("error"):
                 raise RuntimeError(f"AnkiConnect error: {data['error']}")
@@ -212,6 +213,7 @@ def run_evaluation(
             raw_source, note=fields, allow_tier2=allow_tier2, allow_deinflection=True
         )
         batch_candidates = candidates[:BATCH_MAX_CANDIDATES]
+        pos_type = safe_extract_note_pos_type(fields)
 
         live_res, live_cand, live_best = [], None, None
         cat_res, cat_cand, cat_best = [], None, None
@@ -224,6 +226,7 @@ def run_evaluation(
                     max_results=5,
                     orderby="relevance",
                     pace_callback=lambda: time.sleep(delay) if delay > 0 else None,
+                    pos_type=pos_type,
                 )
             except Exception as e:
                 print(f"      [WARNING] Live search request failed for '{raw_source}': {e}")
@@ -235,6 +238,7 @@ def run_evaluation(
                     batch_candidates,
                     max_results=5,
                     orderby="relevance",
+                    pos_type=pos_type,
                 )
             except Exception as e:
                 print(f"      [WARNING] Catalog search request failed for '{raw_source}': {e}")

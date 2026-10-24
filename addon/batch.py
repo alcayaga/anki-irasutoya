@@ -4,7 +4,7 @@ import re
 import time
 import urllib.parse
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, List, Optional, Sequence, Tuple
 
 from .catalog import default_store
 from .client import IrasutoyaClient
@@ -15,15 +15,28 @@ from .config import (
     get_config,
 )
 from .ranking import (
+    infer_note_pos_type,
+    infer_pos_type,
     is_decorative_asset,
     is_image_relevant,
     select_best_image,
 )
 from .text_utils import BATCH_MAX_CANDIDATES, generate_search_candidates
+from .yomitan_parser import extract_yomitan_metadata_from_note
 
 logger = logging.getLogger(__name__)
 
 FALLBACK_AUDIT_TAG = "irasutoya::fallback_reading"
+
+
+def safe_extract_note_pos_type(note: Any) -> Optional[str]:
+    """Safely extract Yomitan metadata and infer POS type, returning None on failure."""
+    try:
+        yomitan_meta = extract_yomitan_metadata_from_note(note)
+        return infer_note_pos_type(yomitan_meta)
+    except Exception as exc:
+        logger.debug("Failed to extract Yomitan metadata/POS from note: %s", exc)
+        return None
 
 
 @dataclass
@@ -104,9 +117,10 @@ def process_note_record(
     batch_candidates = candidates[:BATCH_MAX_CANDIDATES]
 
     try:
+        pos_type = safe_extract_note_pos_type(note)
         if hasattr(client, "search_with_fallbacks"):
             images, matched_cand, best_img = client.search_with_fallbacks(
-                batch_candidates, max_results=12, image_size=image_size
+                batch_candidates, max_results=12, image_size=image_size, pos_type=pos_type
             )
         else:
             matched_cand = None
@@ -119,7 +133,8 @@ def process_note_record(
                 ]
                 if valid_imgs:
                     matched_cand = cand
-                    best_img = select_best_image(valid_imgs, cand[0]) or valid_imgs[0]
+                    cand_pos = pos_type or infer_pos_type(cand[0], cand_reason=cand[1])
+                    best_img = select_best_image(valid_imgs, cand[0], pos_type=cand_pos) or valid_imgs[0]
                     break
 
         if not best_img or not matched_cand:
@@ -255,10 +270,15 @@ def run_batch_fill(
 
             batch_candidates = candidates[:BATCH_MAX_CANDIDATES]
             try:
+                pos_type = safe_extract_note_pos_type(note)
                 # pace_request applies before each candidate query to avoid rate limits,
                 # incurring polite pacing delays for up to BATCH_MAX_CANDIDATES queries per note.
                 images, matched_cand, best_img = client.search_with_fallbacks(
-                    batch_candidates, max_results=12, image_size=image_size, pace_callback=pace_request
+                    batch_candidates,
+                    max_results=12,
+                    image_size=image_size,
+                    pace_callback=pace_request,
+                    pos_type=pos_type,
                 )
                 if not best_img or not matched_cand:
                     stats.not_found += 1
