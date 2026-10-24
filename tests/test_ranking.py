@@ -489,6 +489,13 @@ class TestRanking(unittest.TestCase):
         self.assertEqual(infer_note_pos_type(MockMeta(pos_tags={"adj-i"})), "adjective")
         self.assertEqual(infer_note_pos_type(MockMeta(pos_tags={"n"})), "noun")
         self.assertEqual(infer_note_pos_type(MockMeta(pos_tags={"n-adv"})), "noun")
+        # Noun-like or pre-noun adj tags (adj-no, adj-f, adj-pn) must not override noun classification
+        self.assertEqual(infer_note_pos_type(MockMeta(pos_tags={"n", "adj-no"})), "noun")
+        self.assertEqual(infer_note_pos_type(MockMeta(pos_tags={"n", "adj-f"})), "noun")
+        self.assertEqual(infer_note_pos_type(MockMeta(pos_tags={"adj-na"})), "adjective")
+        self.assertIsNone(infer_note_pos_type(MockMeta(pos_tags={"adj-no"})))
+        self.assertIsNone(infer_note_pos_type(MockMeta(pos_tags={"adj-f"})))
+        self.assertIsNone(infer_note_pos_type(MockMeta(pos_tags={"adj-pn"})))
         # Ensure unrelated tags starting with 'n' or 'v' (num, vulg) are excluded
         self.assertIsNone(infer_note_pos_type(MockMeta(pos_tags={"num"})))
         self.assertIsNone(infer_note_pos_type(MockMeta(pos_tags={"vulg"})))
@@ -537,6 +544,11 @@ class TestRanking(unittest.TestCase):
         self.assertEqual(infer_pos_type("遠く"), "noun")
         self.assertEqual(infer_pos_type("多く"), "noun")
 
+        # Non-verb godan lookalikes (adverbs/nouns ending in godan kana) must not be classified as verbs
+        self.assertNotEqual(infer_pos_type("全く"), "verb")
+        self.assertNotEqual(infer_pos_type("幾つ"), "verb")
+        self.assertNotEqual(infer_pos_type("滅多に"), "verb")
+
         # 5. Unclassified ambiguous kana terms without metadata or verb reason remain neutral
         self.assertIsNone(infer_pos_type("かけぬける"))
 
@@ -547,7 +559,10 @@ class TestRanking(unittest.TestCase):
         self.assertTrue(_is_canonical_mark_title("禁止マークのイラスト", "禁止"))
         self.assertTrue(_is_canonical_mark_title("初心者マーク", "初心者"))
         self.assertTrue(_is_canonical_mark_title("交通安全のマーク", "交通安全"))
+        self.assertTrue(_is_canonical_mark_title("「禁止」マーク", "禁止"))
         self.assertFalse(_is_canonical_mark_title("猫のイラスト", "猫"))
+        # Substring lookalike: 日本のマーク for 本 must not match as canonical mark of 本
+        self.assertFalse(_is_canonical_mark_title("日本のマーク", "本"))
 
         img_mark = IrasutoyaImage(
             title="禁止マークのイラスト",

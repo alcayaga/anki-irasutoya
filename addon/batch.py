@@ -4,7 +4,7 @@ import re
 import time
 import urllib.parse
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, List, Optional, Sequence, Tuple
 
 from .catalog import default_store
 from .client import IrasutoyaClient
@@ -27,6 +27,16 @@ from .yomitan_parser import extract_yomitan_metadata_from_note
 logger = logging.getLogger(__name__)
 
 FALLBACK_AUDIT_TAG = "irasutoya::fallback_reading"
+
+
+def safe_extract_note_pos_type(note: Any) -> Optional[str]:
+    """Safely extract Yomitan metadata and infer POS type, returning None on failure."""
+    try:
+        yomitan_meta = extract_yomitan_metadata_from_note(note)
+        return infer_note_pos_type(yomitan_meta)
+    except Exception as exc:
+        logger.debug("Failed to extract Yomitan metadata/POS from note: %s", exc)
+        return None
 
 
 @dataclass
@@ -107,8 +117,7 @@ def process_note_record(
     batch_candidates = candidates[:BATCH_MAX_CANDIDATES]
 
     try:
-        yomitan_meta = extract_yomitan_metadata_from_note(note)
-        pos_type = infer_note_pos_type(yomitan_meta)
+        pos_type = safe_extract_note_pos_type(note)
         if hasattr(client, "search_with_fallbacks"):
             images, matched_cand, best_img = client.search_with_fallbacks(
                 batch_candidates, max_results=12, image_size=image_size, pos_type=pos_type
@@ -261,8 +270,7 @@ def run_batch_fill(
 
             batch_candidates = candidates[:BATCH_MAX_CANDIDATES]
             try:
-                yomitan_meta = extract_yomitan_metadata_from_note(note)
-                pos_type = infer_note_pos_type(yomitan_meta)
+                pos_type = safe_extract_note_pos_type(note)
                 # pace_request applies before each candidate query to avoid rate limits,
                 # incurring polite pacing delays for up to BATCH_MAX_CANDIDATES queries per note.
                 images, matched_cand, best_img = client.search_with_fallbacks(

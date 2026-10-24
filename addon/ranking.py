@@ -5,6 +5,7 @@ from typing import Any, List, Optional, Sequence
 
 from .feed import IrasutoyaImage
 from .text_utils import (
+    NON_VERB_GODAN_LOOKALIKES,
     SAFE_2MORA_LOANWORDS,
     conjugate_japanese_verb,
     is_adjective_ending,
@@ -136,7 +137,25 @@ ADJECTIVE_ARCHETYPE_CATEGORIES = {
 
 def _is_canonical_mark_title(title: Optional[str], query: str) -> bool:
     """Return True if title names the query's own mark illustration (e.g. 禁止マーク)."""
-    return bool(title and query and (f"{query}マーク" in title or f"{query}のマーク" in title))
+    if not title or not query:
+        return False
+    t = title.strip()
+    q = query.strip()
+    prefixes = (
+        f"{q}マーク",
+        f"{q}のマーク",
+        f"「{q}」マーク",
+        f"『{q}』マーク",
+        f"（{q}）マーク",
+        f"({q})マーク",
+        f"「{q}」のマーク",
+        f"『{q}』のマーク",
+        f"お{q}マーク",
+        f"ご{q}マーク",
+        f"お{q}のマーク",
+        f"ご{q}のマーク",
+    )
+    return t.startswith(prefixes)
 
 
 def calculate_category_score(
@@ -209,7 +228,7 @@ def infer_note_pos_type(yomitan_meta: Optional[Any]) -> Optional[str]:
     tags = getattr(yomitan_meta, "pos_tags", set())
     if any(t == "v" or t.startswith(("v1", "v5", "vs", "vk", "vz", "vi", "vt")) for t in tags):
         return "verb"
-    if any(t.startswith("adj") for t in tags):
+    if any(t.startswith("adj") and t not in ("adj-no", "adj-f", "adj-pn") for t in tags):
         return "adjective"
     if any(t == "n" or t.startswith("n-") for t in tags):
         return "noun"
@@ -243,6 +262,7 @@ def infer_pos_type(
         and KANJI_CHAR_RE.search(clean_q)
         and clean_q.endswith(VERB_TERMINAL_ENDINGS)
         and clean_q not in COMMON_OKURIGANA_NOUNS
+        and clean_q not in NON_VERB_GODAN_LOOKALIKES
     ):
         return "verb"
 
