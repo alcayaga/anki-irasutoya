@@ -27,11 +27,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from addon.catalog import default_store
 from addon.client import IrasutoyaClient
 from addon.feed import IrasutoyaImage
-from addon.ranking import is_decorative_asset, is_image_relevant
+from addon.ranking import infer_note_pos_type, is_decorative_asset, is_image_relevant
 from addon.text_utils import (
     BATCH_MAX_CANDIDATES,
     generate_search_candidates,
 )
+from addon.yomitan_parser import extract_yomitan_metadata_from_note
 
 
 def legacy_clean_query(raw_text: Optional[str]) -> str:
@@ -212,6 +213,8 @@ def run_evaluation(
             raw_source, note=fields, allow_tier2=allow_tier2, allow_deinflection=True
         )
         batch_candidates = candidates[:BATCH_MAX_CANDIDATES]
+        yomitan_meta = extract_yomitan_metadata_from_note(fields)
+        pos_type = infer_note_pos_type(yomitan_meta)
 
         live_res, live_cand, live_best = [], None, None
         cat_res, cat_cand, cat_best = [], None, None
@@ -224,6 +227,7 @@ def run_evaluation(
                     max_results=5,
                     orderby="relevance",
                     pace_callback=lambda: time.sleep(delay) if delay > 0 else None,
+                    pos_type=pos_type,
                 )
             except Exception as e:
                 print(f"      [WARNING] Live search request failed for '{raw_source}': {e}")
@@ -235,6 +239,7 @@ def run_evaluation(
                     batch_candidates,
                     max_results=5,
                     orderby="relevance",
+                    pos_type=pos_type,
                 )
             except Exception as e:
                 print(f"      [WARNING] Catalog search request failed for '{raw_source}': {e}")

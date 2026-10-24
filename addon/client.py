@@ -12,7 +12,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from .catalog import CatalogStore
 from .feed import IrasutoyaImage, ParsedPost, is_allowed_image_host, parse_entries, parse_entry, upgrade_image_url
-from .ranking import is_decorative_asset, is_image_relevant, rank_relevant_images
+from .ranking import infer_pos_type, is_decorative_asset, is_image_relevant, rank_relevant_images
 
 logger = logging.getLogger(__name__)
 
@@ -158,6 +158,7 @@ class IrasutoyaClient:
         image_size: str = "s800",
         orderby: Optional[str] = "relevance",
         pace_callback: Optional[Callable[[], None]] = None,
+        pos_type: Optional[str] = None,
     ) -> Tuple[List[IrasutoyaImage], Optional[Tuple[str, str, int]], Optional[IrasutoyaImage]]:
         """Query candidate terms in sequence until images are found.
 
@@ -167,12 +168,14 @@ class IrasutoyaClient:
             image_size: Target image resolution code.
             orderby: Blogger ordering parameter.
             pace_callback: Optional callback invoked before each network query to pace requests.
+            pos_type: Optional Part-of-Speech profile ('verb', 'noun', 'adjective') for category ranking.
 
         Returns:
             (ranked_images, matched_candidate, best_image)
         """
         for cand in candidates:
             term = cand[0]
+            reason = cand[1]
             if pace_callback is not None and not self.uses_catalog():
                 pace_callback()
             images = self.search(term, max_results=max_results, image_size=image_size, orderby=orderby)
@@ -183,7 +186,8 @@ class IrasutoyaClient:
                 if not is_decorative_asset(img, term) and is_image_relevant(img, term)
             ]
             if illustration_candidates:
-                ranked = rank_relevant_images(illustration_candidates, term)
+                cand_pos = pos_type or infer_pos_type(term, cand_reason=reason)
+                ranked = rank_relevant_images(illustration_candidates, term, pos_type=cand_pos)
                 if max_results:
                     ranked = ranked[:max_results]
                 best = ranked[0]

@@ -1,7 +1,7 @@
 """Boundary classification, relevance scoring, and archetype ranking for Irasutoya illustrations."""
 import logging
 import re
-from typing import List, Optional, Sequence
+from typing import Any, List, Optional, Sequence
 
 from .feed import IrasutoyaImage
 from .text_utils import (
@@ -26,7 +26,224 @@ VERB_TERMINAL_ENDINGS = ("う", "く", "ぐ", "す", "つ", "ぬ", "ぶ", "む",
 COMMON_OKURIGANA_NOUNS = frozenset({
     "祭り", "祭", "周り", "香り", "祈り", "便り", "望み", "恵み", "答え", "知らせ",
     "怒り", "踊り", "誓い", "願い", "想い", "思い", "集まり", "始まり", "終わり",
+    "こたつ", "くつ", "ねずみ", "さる",
 })
+
+COMMON_KANA_VERBS = frozenset({
+    "はしる", "たべる", "あるく", "およぐ", "のむ", "あそぶ",
+    "みる", "きく", "ねる", "おきる", "たつ", "すわる",
+    "いう", "いく", "くる", "かう", "うる", "かく", "よむ",
+    "わらう", "なく", "おこる", "おどる", "うたう", "とぶ",
+    "はなす", "まつ", "もつ", "しぬ", "よぶ", "あらう",
+})
+
+# Anti-archetype categories (callout typography, symbols, frames, decorative lines, templates)
+UNIVERSAL_ANTI_ARCHETYPE_CATEGORIES = {
+    "文字": -50.0,
+    "書体": -50.0,
+    "ペンキ書体": -50.0,
+    "白抜き書体": -50.0,
+    "マーク": -40.0,
+    "旗": -35.0,
+    "フレーム": -50.0,
+    "ライン": -50.0,
+    "パターン": -45.0,
+    "テンプレート": -40.0,
+    "飾り": -40.0,
+    "一筆箋": -40.0,
+    "伝言メモ": -40.0,
+    "メッセージカード": -40.0,
+    "POP": -35.0,
+}
+
+# Situational hazard noise categories (penalized unless query itself is a hazard/violation term)
+SITUATIONAL_HAZARD_CATEGORIES = {
+    "事故": -25.0,
+    "違反": -25.0,
+    "怪我": -25.0,
+    "災害": -25.0,
+    "トラブル": -25.0,
+}
+
+# Action / motion / pose archetype categories (boosted for verbs / actions)
+ACTION_ARCHETYPE_CATEGORIES = {
+    "ポーズ": 30.0,
+    "運動": 25.0,
+    "スポーツ": 20.0,
+    "表情": 20.0,
+    "感情": 20.0,
+    "食事": 20.0,
+    "掃除": 20.0,
+    "洗濯": 20.0,
+    "料理": 15.0,
+    "仕事": 15.0,
+    "職業": 15.0,
+    "ビジネス": 10.0,
+    "棒人間": 15.0,
+}
+
+# Concrete physical object / entity archetype categories (boosted for nouns)
+OBJECT_ARCHETYPE_CATEGORIES = {
+    "食べ物": 25.0,
+    "料理": 20.0,
+    "食材": 20.0,
+    "フルーツ": 20.0,
+    "野菜": 20.0,
+    "スイーツ": 20.0,
+    "パン": 20.0,
+    "動物": 25.0,
+    "鳥": 20.0,
+    "魚": 20.0,
+    "犬": 20.0,
+    "猫": 20.0,
+    "虫": 20.0,
+    "植物": 20.0,
+    "花": 20.0,
+    "乗り物": 20.0,
+    "車": 20.0,
+    "電車": 20.0,
+    "自転車": 20.0,
+    "道具": 20.0,
+    "文房具": 20.0,
+    "本": 20.0,
+    "家具": 15.0,
+    "家電": 15.0,
+    "おもちゃ": 15.0,
+    "楽器": 15.0,
+}
+
+# State / attribute / emotion archetype categories (boosted for adjectives)
+ADJECTIVE_ARCHETYPE_CATEGORIES = {
+    "感情": 30.0,
+    "表情": 30.0,
+    "ポーズ": 25.0,
+    "天気": 20.0,
+    "美容": 20.0,
+}
+
+
+def calculate_category_score(
+    categories: Sequence[str],
+    query: str,
+    pos_type: Optional[str] = None,
+) -> float:
+    """Calculate archetype score adjustment from image categories based on query and POS."""
+    if not categories:
+        return 0.0
+
+    score = 0.0
+    clean_q = query.strip()
+    cat_set = set(categories)
+
+    # 1. Anti-archetype penalty (capped at -70.0)
+    anti_penalty = 0.0
+    for cat, penalty in UNIVERSAL_ANTI_ARCHETYPE_CATEGORIES.items():
+        if cat in cat_set and cat not in clean_q:
+            anti_penalty += penalty
+    score += max(anti_penalty, -70.0)
+
+    # 2. Situational hazard penalty (skip if query itself is a hazard term)
+    hazard_penalty = 0.0
+    for cat, penalty in SITUATIONAL_HAZARD_CATEGORIES.items():
+        if cat in cat_set and cat not in clean_q:
+            hazard_penalty += penalty
+
+    # 3. Positive archetype boost (capped at +35.0)
+    boost = 0.0
+    effective_pos = pos_type or infer_pos_type(clean_q)
+    if effective_pos == "verb":
+        for cat, b in ACTION_ARCHETYPE_CATEGORIES.items():
+            if cat in cat_set:
+                boost += b
+    elif effective_pos == "adjective":
+        for cat, b in ADJECTIVE_ARCHETYPE_CATEGORIES.items():
+            if cat in cat_set:
+                boost += b
+    elif effective_pos == "noun":
+        for cat, b in OBJECT_ARCHETYPE_CATEGORIES.items():
+            if cat in cat_set:
+                boost += b
+
+    # When unrelated hazard categories are present, suppress positive boosts to ensure net penalty
+    if hazard_penalty < 0.0:
+        boost = 0.0
+    else:
+        boost = min(boost, 35.0)
+
+    score += hazard_penalty + boost
+    return score
+
+
+def infer_note_pos_type(yomitan_meta: Optional[Any]) -> Optional[str]:
+    """Infer the part of speech profile ('verb', 'adjective', or 'noun') strictly from note metadata."""
+    if yomitan_meta is None:
+        return None
+    if getattr(yomitan_meta, "verb_class", None):
+        return "verb"
+    tags = getattr(yomitan_meta, "pos_tags", set())
+    if any(t.startswith("v") or t in ("vs", "vk") for t in tags):
+        return "verb"
+    if any(t.startswith("adj") for t in tags):
+        return "adjective"
+    if any(t.startswith("n") for t in tags):
+        return "noun"
+    return None
+
+
+def infer_pos_type(
+    query: str,
+    cand_reason: Optional[str] = None,
+    yomitan_meta: Optional[Any] = None,
+) -> Optional[str]:
+    """Infer the part of speech profile ('verb', 'adjective', 'noun', or None) for category scoring."""
+    note_pos = infer_note_pos_type(yomitan_meta)
+    if note_pos:
+        return note_pos
+
+    if cand_reason:
+        if cand_reason.startswith("verb_") or cand_reason in ("primary_verb", "yomitan_masu_stem"):
+            return "verb"
+
+    clean_q = query.strip()
+    if not clean_q:
+        return None
+
+    if is_adjective_ending(clean_q):
+        return "adjective"
+
+    # Require Kanji stem + Hiragana terminal okurigana to infer verb from morphology
+    if (
+        len(clean_q) > 1
+        and KANJI_CHAR_RE.search(clean_q)
+        and clean_q.endswith(VERB_TERMINAL_ENDINGS)
+        and clean_q not in COMMON_OKURIGANA_NOUNS
+        and HIRAGANA_CHAR_RE.match(clean_q[-1])
+    ):
+        return "verb"
+
+    # Recognize common kana-only verbs
+    if clean_q in COMMON_KANA_VERBS:
+        return "verb"
+
+    # Known nouns ending in okurigana/kana
+    if clean_q in COMMON_OKURIGANA_NOUNS:
+        return "noun"
+
+    # Words ending in Kanji (e.g. 本, 猫, お肉, 食べ物, 贈り物) are nouns
+    if KANJI_CHAR_RE.match(clean_q[-1]):
+        return "noun"
+
+    # Pure Katakana words are nouns (loanwords)
+    if all(KATAKANA_CHAR_RE.match(c) for c in clean_q):
+        return "noun"
+
+    # Pure Hiragana terms that do NOT end in verb terminal endings cannot be verbs
+    if all(HIRAGANA_CHAR_RE.match(c) for c in clean_q) and not clean_q.endswith(VERB_TERMINAL_ENDINGS):
+        return "noun"
+
+    # Kana terms ending in verb terminal endings without Kanji or explicit metadata are ambiguous;
+    # leave them neutral (None) to avoid assigning false noun or verb archetype boosts.
+    return None
 
 
 def _is_bare_verb_stem(text: str) -> bool:
@@ -200,7 +417,11 @@ def is_image_relevant(img: IrasutoyaImage, query: str) -> bool:
     return False
 
 
-def score_candidate_image(img: IrasutoyaImage, query: str) -> float:
+def score_candidate_image(
+    img: IrasutoyaImage,
+    query: str,
+    pos_type: Optional[str] = None,
+) -> float:
     """Evaluate image semantic match quality and archetypal fit for flashcard learning."""
     score = 0.0
     clean_q = query.strip()
@@ -261,6 +482,11 @@ def score_candidate_image(img: IrasutoyaImage, query: str) -> float:
         if noise in title and noise not in clean_q:
             score -= 60.0
 
+    # 7. Category-aware archetype scoring (modulated by POS)
+    cats = getattr(img, "categories", ())
+    if cats:
+        score += calculate_category_score(cats, clean_q, pos_type=pos_type)
+
     return score
 
 
@@ -280,15 +506,26 @@ def is_decorative_asset(img: IrasutoyaImage, query: str) -> bool:
     return any(noise in title and noise not in clean_q for noise in DECORATIVE_NOISE_KEYWORDS)
 
 
-def rank_relevant_images(candidates: Sequence[IrasutoyaImage], query: str) -> List[IrasutoyaImage]:
+def rank_relevant_images(
+    candidates: Sequence[IrasutoyaImage],
+    query: str,
+    pos_type: Optional[str] = None,
+) -> List[IrasutoyaImage]:
     """Rank relevant images by preference: non-callout illustrations first, then text callouts, ordered by score."""
-    scored = [(img, score_candidate_image(img, query), is_callout_asset(img, query)) for img in candidates]
+    scored = [
+        (img, score_candidate_image(img, query, pos_type=pos_type), is_callout_asset(img, query))
+        for img in candidates
+    ]
     non_callouts = sorted((s for s in scored if not s[2]), key=lambda s: s[1], reverse=True)
     callouts = sorted((s for s in scored if s[2]), key=lambda s: s[1], reverse=True)
     return [s[0] for s in non_callouts + callouts]
 
 
-def select_best_image(images: Sequence[IrasutoyaImage], query: str) -> Optional[IrasutoyaImage]:
+def select_best_image(
+    images: Sequence[IrasutoyaImage],
+    query: str,
+    pos_type: Optional[str] = None,
+) -> Optional[IrasutoyaImage]:
     """Select the highest-ranked archetypal image from candidate images, excluding decorative assets."""
     if not images:
         return None
@@ -297,6 +534,6 @@ def select_best_image(images: Sequence[IrasutoyaImage], query: str) -> Optional[
         if not is_decorative_asset(img, query) and is_image_relevant(img, query)
     ]
     if illustration_candidates:
-        return rank_relevant_images(illustration_candidates, query)[0]
+        return rank_relevant_images(illustration_candidates, query, pos_type=pos_type)[0]
     fallback_pool = [img for img in images if not is_decorative_asset(img, query)] or images
-    return max(fallback_pool, key=lambda img: score_candidate_image(img, query))
+    return max(fallback_pool, key=lambda img: score_candidate_image(img, query, pos_type=pos_type))
