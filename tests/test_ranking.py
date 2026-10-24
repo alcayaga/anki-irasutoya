@@ -563,6 +563,9 @@ class TestRanking(unittest.TestCase):
         self.assertFalse(_is_canonical_mark_title("猫のイラスト", "猫"))
         # Substring lookalike: 日本のマーク for 本 must not match as canonical mark of 本
         self.assertFalse(_is_canonical_mark_title("日本のマーク", "本"))
+        # Scene depicting a mark attached to an object must not match as a canonical mark title
+        self.assertFalse(_is_canonical_mark_title("初心者マークをつけた車のイラスト", "初心者"))
+        self.assertFalse(_is_canonical_mark_title("禁止マークを持つ人のイラスト", "禁止"))
 
         img_mark = IrasutoyaImage(
             title="禁止マークのイラスト",
@@ -604,6 +607,25 @@ class TestRanking(unittest.TestCase):
         # Gating allow_boost suppresses positive category boosts (e.g. description-only matches)
         cat_score_desc = calculate_category_score(img_kururi.categories, "禁止", pos_type="noun", allow_boost=False)
         self.assertEqual(cat_score_desc, 0.0)
+
+        # Marks in scenes (e.g. 初心者マークをつけた車) must not receive canonical mark scoring
+        img_scene = IrasutoyaImage(
+            title="初心者マークをつけた車のイラスト",
+            image_url="https://example.com/car.png",
+            thumb_url="https://example.com/t.png",
+            post_title="初心者マークをつけた車のイラスト",
+            categories=("マーク", "乗り物"),
+        )
+        img_mark_clean = IrasutoyaImage(
+            title="初心者マークのイラスト",
+            image_url="https://example.com/mark.png",
+            thumb_url="https://example.com/t.png",
+            post_title="初心者マークのイラスト",
+            categories=("マーク",),
+        )
+        score_scene = score_candidate_image(img_scene, "初心者")
+        score_mark_pure = score_candidate_image(img_mark_clean, "初心者")
+        self.assertGreater(score_mark_pure, score_scene + 50.0)
 
     def test_inflected_title_preserves_action_category_boost(self):
         """Verify that inflected title matches (e.g. 勝った人のイラスト for 勝つ) receive action category boost."""

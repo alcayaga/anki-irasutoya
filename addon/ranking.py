@@ -141,6 +141,13 @@ def _is_canonical_mark_title(title: Optional[str], query: str) -> bool:
         return False
     t = title.strip()
     q = query.strip()
+    # A mark illustration is only canonical for mark-specific queries, abstract concepts, or signage
+    if (
+        not q.endswith("マーク")
+        and q not in COMMON_ABSTRACT_NOUNS
+        and q not in ("初心者", "交通安全", "リサイクル", "エコ", "非常口", "優先席")
+    ):
+        return False
     prefixes = (
         f"{q}マーク",
         f"{q}のマーク",
@@ -155,7 +162,11 @@ def _is_canonical_mark_title(title: Optional[str], query: str) -> bool:
         f"お{q}のマーク",
         f"ご{q}のマーク",
     )
-    return t.startswith(prefixes)
+    return any(
+        t == f"{prefix}{suffix}"
+        for prefix in prefixes
+        for suffix in ("", "のイラスト")
+    )
 
 
 def calculate_category_score(
@@ -337,10 +348,9 @@ def classify_match_boundary(text: str, query: str) -> str:
         or text in (
             query,
             f"{query}のイラスト",
-            f"{query}マークのイラスト",
-            f"{query}マーク",
             f"かわいい{query}のイラスト",
         )
+        or _is_canonical_mark_title(text, query)
     ):
         return "exact_quoted"
 
@@ -495,7 +505,7 @@ def score_candidate_image(
     if is_image_relevant(img, clean_q):
         if title == f"{clean_q}のイラスト":
             score += 100.0
-        elif title in (f"{clean_q}マークのイラスト", f"{clean_q}マーク"):
+        elif _is_canonical_mark_title(title, clean_q):
             score += 95.0
         elif title in (f"お{clean_q}のイラスト", f"ご{clean_q}のイラスト"):
             score += 95.0
@@ -503,11 +513,11 @@ def score_candidate_image(
             score += 90.0
         elif title == clean_q:
             score += 85.0
-        elif title.startswith(f"{clean_q}の") or title.startswith(f"{clean_q}マーク"):
+        elif title.startswith(f"{clean_q}の"):
             score += 60.0
-        elif post_title == f"{clean_q}のイラスト" or post_title in (f"{clean_q}マークのイラスト", f"{clean_q}マーク"):
+        elif post_title == f"{clean_q}のイラスト" or _is_canonical_mark_title(post_title, clean_q):
             score += 50.0
-        elif post_title.startswith(f"{clean_q}の") or post_title.startswith(f"{clean_q}マーク"):
+        elif post_title.startswith(f"{clean_q}の"):
             score += 30.0
 
     # 2. Boundary, politeness, and focus bonuses
