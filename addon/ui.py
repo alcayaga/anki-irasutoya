@@ -1,6 +1,8 @@
 """User interface for the Anki Irasutoya add-on."""
+import html
 import logging
 import os
+import re
 import threading
 import time
 import urllib.parse
@@ -48,6 +50,7 @@ from .config import (
     update_user_preferences,
 )
 from .feed import IrasutoyaImage
+from .ranking import is_decorative_asset, is_image_relevant
 from .text_utils import clean_search_query, generate_search_candidates
 
 logger = logging.getLogger(__name__)
@@ -144,15 +147,49 @@ QRadioButton {{
 """
 
 
+PAGE_SIZE = 24
+
+
+def make_description_snippet(description: str, query: str, max_chars: int = 70) -> str:
+    """Generate an excerpt around the query term with bold highlight for tooltips."""
+    if not description or not query:
+        return ""
+    clean_desc = re.sub(r"\s+", " ", description).strip()
+    idx = clean_desc.casefold().find(query.casefold())
+    if idx == -1:
+        return html.escape(clean_desc[:max_chars])
+    start = max(0, idx - 18)
+    end = min(len(clean_desc), idx + len(query) + 38)
+    snippet = clean_desc[start:end]
+    if start > 0:
+        snippet = "…" + snippet
+    if end < len(clean_desc):
+        snippet = snippet + "…"
+    escaped_snippet = html.escape(snippet)
+    escaped_query = html.escape(query)
+    pattern = re.compile(re.escape(escaped_query), re.IGNORECASE)
+    return pattern.sub(lambda m: f"<b>{m.group(0)}</b>", escaped_snippet)
+
+
 class ImageCardWidget(QFrame):
     """Clickable thumbnail card displaying an Irasutoya illustration."""
 
-    def __init__(self, image: IrasutoyaImage, on_select, on_double_click, parent=None):
+    def __init__(
+        self,
+        image: IrasutoyaImage,
+        on_select,
+        on_double_click,
+        parent=None,
+        is_description_match: bool = False,
+        match_snippet: Optional[str] = None,
+    ):
         """Initialize the illustration thumbnail card widget."""
         super().__init__(parent)
         self.image = image
         self.on_select = on_select
         self.on_double_click = on_double_click
+        self.is_description_match = is_description_match
+        self.match_snippet = match_snippet
         self.is_selected = False
 
         self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
@@ -196,6 +233,29 @@ class ImageCardWidget(QFrame):
         )
         self.badge_label.move(self.width() - 24, 6)
         self.badge_label.setVisible(False)
+
+        # Incidental description match badge overlay in top-left corner
+        self.desc_match_badge = QLabel("📝 本文一致", self)
+        self.desc_match_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.desc_match_badge.setStyleSheet(
+            "background-color: rgba(0, 0, 0, 0.68); "
+            "color: #FFD60A; "
+            "border-radius: 4px; "
+            "font-size: 10px; "
+            "font-weight: 600; "
+            "padding: 1px 4px;"
+        )
+        self.desc_match_badge.adjustSize()
+        self.desc_match_badge.move(12, 12)
+        if self.is_description_match:
+            self.desc_match_badge.setVisible(True)
+            if self.match_snippet:
+                escaped_title = html.escape(image.title)
+                tip = f"<b>{escaped_title}</b><br>本文一致: {self.match_snippet}"
+                self.desc_match_badge.setToolTip(tip)
+                self.setToolTip(tip)
+        else:
+            self.desc_match_badge.setVisible(False)
 
         self.update_style()
 
@@ -292,6 +352,13 @@ class IrasutoyaDialog(QDialog):
         self._last_thumb_request_time = 0.0
         self.backend_lbl: Optional[QLabel] = None
 
+        self._all_images: List[IrasutoyaImage] = []
+        self._loaded_count: int = 0
+        self._current_query: str = ""
+        self.pagination_label: Optional[QLabel] = None
+        self.media_notice_label: Optional[QLabel] = None
+        self.btn_cancel: Optional[QPushButton] = None
+
         self._init_ui()
 
     def _get_backend_status_text(self) -> str:
@@ -371,6 +438,8 @@ class IrasutoyaDialog(QDialog):
             elif key == Qt.Key.Key_Left:
                 new_idx = max(current_idx - 1, 0)
             elif key == Qt.Key.Key_Down:
+                if (current_idx + 3 >= len(self.image_cards)) and (self._loaded_count < len(self._all_images)):
+                    self._load_next_page(self._search_generation)
                 new_idx = min(current_idx + 3, len(self.image_cards) - 1)
             elif key == Qt.Key.Key_Up:
                 new_idx = max(current_idx - 3, 0)
@@ -516,6 +585,7 @@ class IrasutoyaDialog(QDialog):
         if len(self.note_ids) == 1:
             self._init_single_note_picker(main_layout)
             self.combo_source.currentTextChanged.connect(self._on_source_field_changed)
+            self.combo_target.currentTextChanged.connect(self._check_target_media_status)
         else:
             self._init_batch_view(main_layout)
 
@@ -859,8 +929,21 @@ class IrasutoyaDialog(QDialog):
         self.gallery_layout.setContentsMargins(10, 10, 16, 10)
         self.gallery_layout.setSpacing(10)
         self.scroll_area.setWidget(self.gallery_widget)
+        self.scroll_area.verticalScrollBar().valueChanged.connect(self._on_scroll)
 
         main_layout.addWidget(self.scroll_area)
+
+        # Pagination Progress Counter
+        self.pagination_label = QLabel(self)
+        self.pagination_label.setStyleSheet("color: #8E8E93; font-size: 11px;")
+        self.pagination_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        main_layout.addWidget(self.pagination_label)
+
+        # Media status notice if card already contains an image
+        self.media_notice_label = QLabel(self)
+        self.media_notice_label.setStyleSheet("color: #8E8E93; font-size: 11px;")
+        self.media_notice_label.setVisible(False)
+        main_layout.addWidget(self.media_notice_label)
 
         # Single Note Action Buttons
         button_layout = QHBoxLayout()
@@ -870,10 +953,10 @@ class IrasutoyaDialog(QDialog):
         self._schedule_backend_status_refresh()
         button_layout.addStretch()
 
-        btn_cancel = QPushButton("Cancel", self)
-        btn_cancel.setObjectName("secondaryBtn")
-        btn_cancel.clicked.connect(self.reject)
-        button_layout.addWidget(btn_cancel)
+        self.btn_cancel = QPushButton("Cancel", self)
+        self.btn_cancel.setObjectName("secondaryBtn")
+        self.btn_cancel.clicked.connect(self.reject)
+        button_layout.addWidget(self.btn_cancel)
 
         self.btn_apply = QPushButton("Apply Selected Image", self)
         self.btn_apply.setObjectName("primaryBtn")
@@ -884,9 +967,48 @@ class IrasutoyaDialog(QDialog):
 
         main_layout.addLayout(button_layout)
 
+        self._check_target_media_status()
+
         # Auto-trigger search asynchronously after dialog displays
         if initial_query:
             QTimer.singleShot(50, self._do_search)
+
+    def _check_target_media_status(self, *args) -> None:
+        """Inspect note's target field for existing media and adapt cancel button label."""
+        if not hasattr(self, "btn_cancel") or not self.btn_cancel:
+            return
+        target_field = self.combo_target.currentText() if hasattr(self, "combo_target") else ""
+        has_media = False
+        if self.first_note and target_field and target_field in self.first_note:
+            content = self.first_note[target_field].strip()
+            content_lower = content.lower()
+            if "<img" in content_lower or any(
+                content_lower.endswith(ext) for ext in (".jpg", ".png", ".webp", ".jpeg", ".gif")
+            ):
+                has_media = True
+
+        if has_media:
+            self.btn_cancel.setText("Keep Current Image (Esc)")
+            self.btn_cancel.setToolTip("Close dialog without changing the existing image on this card")
+            if hasattr(self, "media_notice_label") and self.media_notice_label:
+                self.media_notice_label.setText(
+                    "ℹ️ Card already has an image. It will remain unchanged unless you apply a new one."
+                )
+                self.media_notice_label.setVisible(True)
+        else:
+            self.btn_cancel.setText("Cancel")
+            self.btn_cancel.setToolTip("")
+            if hasattr(self, "media_notice_label") and self.media_notice_label:
+                self.media_notice_label.setVisible(False)
+
+    def _on_scroll(self, value: int) -> None:
+        """Dynamically load more results when user scrolls near the bottom."""
+        if not hasattr(self, "scroll_area"):
+            return
+        bar = self.scroll_area.verticalScrollBar()
+        if bar.maximum() > 0 and value >= bar.maximum() - 250:
+            if self._loaded_count < len(self._all_images):
+                self._load_next_page(self._search_generation)
 
     def _on_source_field_changed(self, new_field: str) -> None:
         """Update query input when source field selection changes in single note mode."""
@@ -944,15 +1066,39 @@ class IrasutoyaDialog(QDialog):
 
         def background_search() -> None:
             """Fetch search results on a background thread using fallback queries."""
+            probed_counts: Optional[Dict[str, int]] = None
             try:
                 images, matched_cand, _best_img = self.client.search_with_fallbacks(
-                    search_candidates, max_results=12, image_size=image_size
+                    search_candidates, max_results=None, image_size=image_size
                 )
             except Exception as e:
                 logger.exception("Search failed: %s", e)
                 images, matched_cand, _best_img = [], None, None
+
+            if self.client.uses_catalog():
+                try:
+                    catalog = self.store.get_index()
+                    if catalog is not None:
+                        count_cache: Dict[str, int] = {}
+
+                        def _count(term: str) -> int:
+                            if term not in count_cache:
+                                raw_imgs = catalog.search(term, image_size=image_size)
+                                count_cache[term] = sum(
+                                    1 for img in raw_imgs
+                                    if not is_decorative_asset(img, term) and is_image_relevant(img, term)
+                                )
+                            return count_cache[term]
+
+                        counts: Dict[str, int] = {c[0]: _count(c[0]) for c in display_chips}
+                        if restore_term:
+                            counts[restore_term] = _count(restore_term)
+                        probed_counts = counts
+                except Exception:
+                    logger.exception("Catalog count probe failed")
+
             self._run_on_main(lambda: self._on_search_finished(
-                current_gen, query, display_chips, matched_cand, images, restore_term
+                current_gen, query, display_chips, matched_cand, images, restore_term, probed_counts
             ))
 
         threading.Thread(target=background_search, daemon=True).start()
@@ -964,7 +1110,8 @@ class IrasutoyaDialog(QDialog):
         display_chips: List[Tuple[str, str, int]],
         matched_cand: Optional[Tuple[str, str, int]],
         images: List[IrasutoyaImage],
-        restore_term: Optional[str] = None
+        restore_term: Optional[str] = None,
+        probed_counts: Optional[Dict[str, int]] = None,
     ) -> None:
         """Process completed search results on the main thread, display fallbacks, and populate gallery."""
         if gen != self._search_generation:
@@ -972,11 +1119,16 @@ class IrasutoyaDialog(QDialog):
 
         self.btn_search.setEnabled(True)
         active_term = matched_cand[0] if (matched_cand and images) else query
+        self._current_query = active_term
 
         if not images:
             self.status_label.setStyleSheet("color: #FF453A; font-size: 12px;")
             self.status_label.setText(f"No illustrations found for '{query}'.")
-            self._update_suggestion_chips(display_chips, active_term=active_term, restore_term=restore_term)
+            self._update_suggestion_chips(
+                display_chips, active_term=active_term, restore_term=restore_term, probed_counts=probed_counts
+            )
+            if hasattr(self, "pagination_label") and self.pagination_label:
+                self.pagination_label.setText("")
             return
 
         if matched_cand and matched_cand[1] != "primary":
@@ -988,16 +1140,19 @@ class IrasutoyaDialog(QDialog):
             self.status_label.setStyleSheet("color: #98989D; font-size: 12px;")
             self.status_label.setText(f"Found {len(images)} illustrations. Click one to select.")
 
-        self._update_suggestion_chips(display_chips, active_term=active_term, restore_term=restore_term)
+        self._update_suggestion_chips(
+            display_chips, active_term=active_term, restore_term=restore_term, probed_counts=probed_counts
+        )
         self._populate_gallery(images, gen)
 
     def _update_suggestion_chips(
         self,
         candidates: List[Tuple[str, str, int]],
         active_term: Optional[str] = None,
-        restore_term: Optional[str] = None
+        restore_term: Optional[str] = None,
+        probed_counts: Optional[Dict[str, int]] = None,
     ) -> None:
-        """Render one-click suggestion chips for query variations."""
+        """Render one-click suggestion chips for query variations with instant count badges."""
         if not hasattr(self, "chips_layout"):
             return
 
@@ -1006,8 +1161,23 @@ class IrasutoyaDialog(QDialog):
             if item.widget():
                 item.widget().deleteLater()
 
+        probed_candidates: List[Tuple[str, str, int, Optional[int]]] = []
+        for cand in candidates:
+            cand_term, reason, tier = cand[0], cand[1], cand[2]
+            if probed_counts is not None:
+                cnt = probed_counts.get(cand_term, 0)
+                if cnt == 0:
+                    continue  # Zero-result suppression
+                probed_candidates.append((cand_term, reason, tier, cnt))
+            else:
+                probed_candidates.append((cand_term, reason, tier, None))
+
+        restore_count = probed_counts.get(restore_term) if (probed_counts and restore_term) else None
+
         # Only display chips if there are alternative candidates or a restore button
-        has_alternatives = len(candidates) > 1
+        has_alternatives = len(probed_candidates) > 1 or (
+            len(probed_candidates) == 1 and probed_candidates[0][0] != active_term
+        )
         if not has_alternatives and not restore_term:
             self.chips_widget.setVisible(False)
             return
@@ -1018,7 +1188,12 @@ class IrasutoyaDialog(QDialog):
 
         # Prepend restore chip if searching an external custom query
         if restore_term:
-            btn_restore = QPushButton(f"↩ {restore_term}", self)
+            res_text = (
+                f"↩ {restore_term}  {restore_count}"
+                if (restore_count is not None and restore_count > 0)
+                else f"↩ {restore_term}"
+            )
+            btn_restore = QPushButton(res_text, self)
             btn_restore.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
             btn_restore.setToolTip(f"Reset search to card term '{restore_term}'")
             btn_restore.setStyleSheet(
@@ -1030,16 +1205,17 @@ class IrasutoyaDialog(QDialog):
             self.chips_layout.addWidget(btn_restore)
 
         # Show up to 5 top candidate chips, ensuring active_term is visible if outside top 5
-        displayed_candidates: List[Tuple[str, str, int]] = []
-        active_cand = next((c for c in candidates if c[0] == active_term), None)
-        if active_cand and active_cand not in candidates[:5]:
-            displayed_candidates = candidates[:4] + [active_cand]
+        displayed_candidates: List[Tuple[str, str, int, Optional[int]]] = []
+        active_cand = next((c for c in probed_candidates if c[0] == active_term), None)
+        if active_cand and active_cand not in probed_candidates[:5]:
+            displayed_candidates = probed_candidates[:4] + [active_cand]
         else:
-            displayed_candidates = candidates[:5]
+            displayed_candidates = probed_candidates[:5]
 
-        for cand_term, _reason, _tier in displayed_candidates:
+        for cand_term, _reason, _tier, count in displayed_candidates:
             is_active = (cand_term == active_term)
-            btn = QPushButton(f"{cand_term}", self)
+            btn_text = f"{cand_term}  {count}" if (count is not None and count > 0) else cand_term
+            btn = QPushButton(btn_text, self)
             btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
             if is_active:
                 btn.setStyleSheet(
@@ -1065,32 +1241,70 @@ class IrasutoyaDialog(QDialog):
             self.query_input.setText(term)
             self._do_search()
 
-
     def _clear_gallery(self) -> None:
         """Remove all cards from the gallery."""
         self.selected_card_widget = None
         self.image_cards.clear()
+        self._all_images = []
+        self._loaded_count = 0
         while self.gallery_layout.count():
             item = self.gallery_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
         if hasattr(self, "btn_apply"):
             self.btn_apply.setEnabled(False)
+        if hasattr(self, "pagination_label") and self.pagination_label:
+            self.pagination_label.setText("")
 
     def _populate_gallery(self, images: List[IrasutoyaImage], gen: int) -> None:
-        """Render image cards into the gallery grid and stream thumbnails in parallel."""
+        """Initialize gallery with search results and render the first page."""
+        self._all_images = list(images)
+        self._loaded_count = 0
+        self._load_next_page(gen)
+        # Select first card by default
+        if self.image_cards:
+            self._on_card_selected(self.image_cards[0])
+
+    def _load_next_page(self, gen: int) -> None:
+        """Render next chunk of image cards into the gallery grid."""
+        if gen != self._search_generation or not self._all_images:
+            return
+        if self._loaded_count >= len(self._all_images):
+            return
+
+        batch_size = PAGE_SIZE
+        start_idx = self._loaded_count
+        end_idx = min(start_idx + batch_size, len(self._all_images))
+        batch = self._all_images[start_idx:end_idx]
+        if not batch:
+            return
+
         cols = 3
         try:
             thumb_delay_ms = int(self.config.get(CONFIG_KEY_THUMB_DELAY, 50))
         except (TypeError, ValueError):
             thumb_delay_ms = 50
 
-        for idx, img in enumerate(images):
+        query = getattr(self, "_current_query", "").strip()
+
+        for offset, img in enumerate(batch):
+            idx = start_idx + offset
+            # Classify description-only match
+            is_desc_match = False
+            snippet = None
+            if query:
+                in_title = (query.casefold() in img.title.casefold()) or (query.casefold() in img.post_title.casefold())
+                if not in_title and (query.casefold() in img.description.casefold()):
+                    is_desc_match = True
+                    snippet = make_description_snippet(img.description, query)
+
             card = ImageCardWidget(
                 image=img,
                 on_select=self._on_card_selected,
                 on_double_click=self._on_card_double_clicked,
-                parent=self.gallery_widget
+                parent=self.gallery_widget,
+                is_description_match=is_desc_match,
+                match_snippet=snippet,
             )
             row = idx // cols
             col = idx % cols
@@ -1100,9 +1314,24 @@ class IrasutoyaDialog(QDialog):
             # Submit thumbnail download to thread pool with fast thumb delay
             self._thumb_executor.submit(self._fetch_thumbnail_task, card, gen, thumb_delay_ms)
 
-        # Select first card by default
-        if self.image_cards:
-            self._on_card_selected(self.image_cards[0])
+        self._loaded_count = end_idx
+        self.gallery_layout.activate()
+        self._update_pagination_status()
+
+    def _update_pagination_status(self) -> None:
+        """Update footer counter showing pagination progress."""
+        if not hasattr(self, "pagination_label") or not self.pagination_label:
+            return
+        total = len(self._all_images)
+        if total == 0:
+            self.pagination_label.setText("")
+            return
+        if self._loaded_count < total:
+            self.pagination_label.setText(
+                f"Showing {self._loaded_count} of {total} illustrations · Scroll for more"
+            )
+        else:
+            self.pagination_label.setText(f"Showing all {total} illustrations")
 
     def _fetch_thumbnail_task(self, card: ImageCardWidget, gen: int, delay_ms: int = 50) -> None:
         """Background thread worker to download a thumbnail with fast pacing."""
