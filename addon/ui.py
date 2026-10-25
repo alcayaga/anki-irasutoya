@@ -155,20 +155,16 @@ def make_description_snippet(description: str, query: str, max_chars: int = 70) 
     if not description or not query:
         return ""
     clean_desc = re.sub(r"\s+", " ", description).strip()
-    idx = clean_desc.casefold().find(query.casefold())
-    if idx == -1:
+    match = re.search(re.escape(query), clean_desc, re.IGNORECASE)
+    if match is None:
         return html.escape(clean_desc[:max_chars])
-    start = max(0, idx - 18)
-    end = min(len(clean_desc), idx + len(query) + 38)
-    snippet = clean_desc[start:end]
-    if start > 0:
-        snippet = "…" + snippet
-    if end < len(clean_desc):
-        snippet = snippet + "…"
-    escaped_snippet = html.escape(snippet)
-    escaped_query = html.escape(query)
-    pattern = re.compile(re.escape(escaped_query), re.IGNORECASE)
-    return pattern.sub(lambda m: f"<b>{m.group(0)}</b>", escaped_snippet)
+    m_start, m_end = match.span()
+    start = max(0, m_start - 18)
+    end = min(len(clean_desc), m_end + 38)
+    prefix = ("…" if start > 0 else "") + html.escape(clean_desc[start:m_start])
+    body = "<b>" + html.escape(clean_desc[m_start:m_end]) + "</b>"
+    suffix = html.escape(clean_desc[m_end:end]) + ("…" if end < len(clean_desc) else "")
+    return prefix + body + suffix
 
 
 class ImageCardWidget(QFrame):
@@ -358,6 +354,7 @@ class IrasutoyaDialog(QDialog):
         self.pagination_label: Optional[QLabel] = None
         self.media_notice_label: Optional[QLabel] = None
         self.btn_cancel: Optional[QPushButton] = None
+        self._catalog_count_cache: Dict[str, Dict[str, int]] = {}
 
         self._init_ui()
 
@@ -444,6 +441,8 @@ class IrasutoyaDialog(QDialog):
 
             new_idx = None
             if key == Qt.Key.Key_Right:
+                if (current_idx + 1 >= len(self.image_cards)) and (self._loaded_count < len(self._all_images)):
+                    self._load_next_page(self._search_generation)
                 new_idx = min(current_idx + 1, len(self.image_cards) - 1)
             elif key == Qt.Key.Key_Left:
                 new_idx = max(current_idx - 1, 0)
@@ -1093,19 +1092,30 @@ class IrasutoyaDialog(QDialog):
         def background_search() -> None:
             """Fetch search results on a background thread using fallback queries."""
             probed_counts: Optional[Dict[str, int]] = None
+            max_results = None if self.client.uses_catalog() else 12
             try:
                 images, matched_cand, _best_img = self.client.search_with_fallbacks(
-                    search_candidates, max_results=None, image_size=image_size
+                    search_candidates,
+                    max_results=max_results,
+                    image_size=image_size,
+                    is_cancelled=lambda: current_gen != self._search_generation,
                 )
             except Exception as e:
                 logger.exception("Search failed: %s", e)
                 images, matched_cand, _best_img = [], None, None
 
+            if current_gen != self._search_generation:
+                return
+
             if self.client.uses_catalog():
                 try:
                     catalog = self.store.get_index()
                     if catalog is not None:
-                        count_cache: Dict[str, int] = {}
+                        count_cache = self._catalog_count_cache.setdefault(image_size, {})
+
+                        # Reuse already retrieved and filtered results for the matched candidate
+                        if matched_cand and images:
+                            count_cache[matched_cand[0]] = len(images)
 
                         def _count(term: str) -> int:
                             if term not in count_cache:
@@ -1116,7 +1126,10 @@ class IrasutoyaDialog(QDialog):
                                 )
                             return count_cache[term]
 
-                        counts: Dict[str, int] = {c[0]: _count(c[0]) for c in display_chips}
+                        probe_terms = [c[0] for c in display_chips]
+                        if matched_cand and matched_cand[0] not in probe_terms:
+                            probe_terms.append(matched_cand[0])
+                        counts: Dict[str, int] = {t: _count(t) for t in probe_terms}
                         if restore_term:
                             counts[restore_term] = _count(restore_term)
                         probed_counts = counts
@@ -1191,9 +1204,9 @@ class IrasutoyaDialog(QDialog):
         for cand in candidates:
             cand_term, reason, tier = cand[0], cand[1], cand[2]
             if probed_counts is not None:
-                cnt = probed_counts.get(cand_term, 0)
-                if cnt == 0:
-                    continue  # Zero-result suppression
+                cnt = probed_counts.get(cand_term)
+                if not cnt:
+                    continue  # Zero-result or unprobed suppression
                 probed_candidates.append((cand_term, reason, tier, cnt))
             else:
                 probed_candidates.append((cand_term, reason, tier, None))

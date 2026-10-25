@@ -108,6 +108,7 @@ class IrasutoyaClient:
         max_results: Optional[int] = 12,
         image_size: str = "s800",
         orderby: Optional[str] = "relevance",
+        is_cancelled: Optional[Callable[[], bool]] = None,
     ) -> List[IrasutoyaImage]:
         """Search Irasutoya for a given query keyword.
 
@@ -116,6 +117,7 @@ class IrasutoyaClient:
             max_results: Maximum posts to fetch from Blogger feed (None for uncapped up to 250 posts).
             image_size: Resolution replacement, e.g. 's800' or 's0' (original size).
             orderby: Sort order for Blogger feed ('relevance', 'updated', etc.).
+            is_cancelled: Optional callback returning True if search should abort early.
 
         Returns:
             A list of IrasutoyaImage objects.
@@ -159,6 +161,8 @@ class IrasutoyaClient:
         start_index = 1
 
         while start_index <= max_feed_limit:
+            if is_cancelled and is_cancelled():
+                break
             page_params: dict = {
                 "alt": "json",
                 "q": clean_q,
@@ -171,6 +175,13 @@ class IrasutoyaClient:
             try:
                 raw_data = self._make_request(url)
                 data = json.loads(raw_data.decode("utf-8"))
+                page_entries = []
+                if isinstance(data, dict):
+                    feed = data.get("feed")
+                    if isinstance(feed, dict):
+                        entries = feed.get("entry")
+                        if isinstance(entries, list):
+                            page_entries = entries
             except InsecureRedirectError:
                 raise
             except Exception as e:
@@ -179,14 +190,14 @@ class IrasutoyaClient:
                 logger.warning("Error fetching live feed page at start-index %d: %s", start_index, e)
                 break
 
-            page_entries = data.get("feed", {}).get("entry", [])
             if not page_entries:
                 break
             all_entries.extend(page_entries)
             if len(page_entries) < page_size:
                 break
             start_index += len(page_entries)
-            time.sleep(0.3)
+            if start_index <= max_feed_limit:
+                time.sleep(0.3)
 
         return parse_entries(all_entries, image_size=image_size)
 
@@ -198,6 +209,7 @@ class IrasutoyaClient:
         orderby: Optional[str] = "relevance",
         pace_callback: Optional[Callable[[], None]] = None,
         pos_type: Optional[str] = None,
+        is_cancelled: Optional[Callable[[], bool]] = None,
     ) -> Tuple[List[IrasutoyaImage], Optional[Tuple[str, str, int]], Optional[IrasutoyaImage]]:
         """Query candidate terms in sequence until images are found.
 
@@ -208,16 +220,26 @@ class IrasutoyaClient:
             orderby: Blogger ordering parameter.
             pace_callback: Optional callback invoked before each network query to pace requests.
             pos_type: Optional Part-of-Speech profile ('verb', 'noun', 'adjective') for category ranking.
+            is_cancelled: Optional callback returning True if search should abort early.
 
         Returns:
             (ranked_images, matched_candidate, best_image)
         """
         for cand in candidates:
+            if is_cancelled and is_cancelled():
+                break
             term = cand[0]
             reason = cand[1]
             if pace_callback is not None and not self.uses_catalog():
                 pace_callback()
-            images = self.search(term, max_results=max_results, image_size=image_size, orderby=orderby)
+            search_kwargs = {
+                "max_results": max_results,
+                "image_size": image_size,
+                "orderby": orderby,
+            }
+            if is_cancelled is not None:
+                search_kwargs["is_cancelled"] = is_cancelled
+            images = self.search(term, **search_kwargs)
 
             # Filter out non-illustration/decorative assets and images not relevant to the query term
             illustration_candidates = [

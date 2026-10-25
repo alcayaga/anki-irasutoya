@@ -31,6 +31,26 @@ class _SyncThread:
             self.target(*self.args)
 
 
+def _install_catalog_counts(dlg, counts_map):
+    """Fixture helper to install mocked CatalogIndex counts on a dialog."""
+    mock_index = MagicMock()
+    mock_index.search.side_effect = lambda q, **kw: [
+        MagicMock(title=f"{q}のイラスト", is_single_image_post=True, description="")
+    ] * counts_map.get(q, 0)
+    dlg.store.get_index = MagicMock(return_value=mock_index)
+    dlg.client.uses_catalog = MagicMock(return_value=True)
+    return mock_index
+
+
+def _chip_texts(dlg):
+    """Helper to collect rendered suggestion chip button texts."""
+    return [
+        dlg.chips_layout.itemAt(i).widget().text()
+        for i in range(dlg.chips_layout.count())
+        if isinstance(dlg.chips_layout.itemAt(i).widget(), QPushButton)
+    ]
+
+
 @unittest.skipUnless(HAS_QT, "Qt/aqt environment not available in default python runner")
 class TestUIMode(unittest.TestCase):
     def test_single_mode_omits_overwrite_policy(self):
@@ -100,48 +120,41 @@ class TestUIMode(unittest.TestCase):
 
         with patch("addon.ui.mw", mock_mw), patch("threading.Thread", _SyncThread):
             dlg = IrasutoyaDialog(parent=None, browser=None, note_ids=[1001])
+            self.addCleanup(dlg.close)
             dlg._thumb_executor.submit = MagicMock()
             dlg._run_on_main = lambda cb: cb()
 
-            mock_index = MagicMock()
             counts_map = {"本": 1693, "ほん": 3, "ホン": 111, "ねこ": 6, "ネコ": 38}
-            mock_index.search.side_effect = lambda q, **kw: [
-                MagicMock(title=f"{q}のイラスト", is_single_image_post=True, description="")
-            ] * counts_map.get(q, 0)
-            dlg.store.get_index = MagicMock(return_value=mock_index)
-            dlg.client.uses_catalog = MagicMock(return_value=True)
+            _install_catalog_counts(dlg, counts_map)
 
             mock_img = IrasutoyaImage("本", "https://example.com/hon.png", "https://example.com/hon_t.png", "本")
-            dlg.client.search_with_fallbacks = lambda cands, **kw: ([mock_img], cands[0] if cands else None, None)
+            dlg.client.search_with_fallbacks = lambda cands, **kw: (
+                [mock_img] * counts_map.get(cands[0][0], 1) if cands else [],
+                cands[0] if cands else None,
+                None,
+            )
 
             # Initial search for "本"
             dlg._do_search()
-            chip_buttons = [
-                dlg.chips_layout.itemAt(i).widget()
-                for i in range(dlg.chips_layout.count())
-                if isinstance(dlg.chips_layout.itemAt(i).widget(), QPushButton)
-            ]
-            chip_texts = [b.text() for b in chip_buttons]
-            self.assertEqual(chip_texts, ["本  1693", "ほん  3", "ホン  111"])
+            self.assertEqual(_chip_texts(dlg), ["本  1693", "ほん  3", "ホン  111"])
             self.assertFalse(dlg.chips_widget.isHidden())
 
             # Simulate clicking "ほん" chip
             dlg.query_input.setText("ほん")
             dlg._do_search()
 
-            chip_buttons_after = [
-                dlg.chips_layout.itemAt(i).widget()
-                for i in range(dlg.chips_layout.count())
-                if isinstance(dlg.chips_layout.itemAt(i).widget(), QPushButton)
-            ]
-            chip_texts_after = [b.text() for b in chip_buttons_after]
-
+            chip_texts_after = _chip_texts(dlg)
             # Original word "本" must NOT disappear
             self.assertIn("本  1693", chip_texts_after)
             self.assertEqual(chip_texts_after, ["本  1693", "ほん  3", "ホン  111"])
             self.assertFalse(dlg.chips_widget.isHidden())
 
             # Active chip for "ほん" should have active accent styling
+            chip_buttons_after = [
+                dlg.chips_layout.itemAt(i).widget()
+                for i in range(dlg.chips_layout.count())
+                if isinstance(dlg.chips_layout.itemAt(i).widget(), QPushButton)
+            ]
             active_btn = next(b for b in chip_buttons_after if "ほん" in b.text())
             self.assertIn("font-weight: 600", active_btn.styleSheet())
             inactive_btn = next(b for b in chip_buttons_after if "本" in b.text() and "ほん" not in b.text())
@@ -155,46 +168,34 @@ class TestUIMode(unittest.TestCase):
 
         with patch("addon.ui.mw", mock_mw), patch("threading.Thread", _SyncThread):
             dlg = IrasutoyaDialog(parent=None, browser=None, note_ids=[1001])
+            self.addCleanup(dlg.close)
             dlg._thumb_executor.submit = MagicMock()
             dlg._run_on_main = lambda cb: cb()
 
-            mock_index = MagicMock()
             counts_map = {"本": 1693, "ほん": 3, "ホン": 111, "ねこ": 6, "ネコ": 38}
-            mock_index.search.side_effect = lambda q, **kw: [
-                MagicMock(title=f"{q}のイラスト", is_single_image_post=True, description="")
-            ] * counts_map.get(q, 0)
-            dlg.store.get_index = MagicMock(return_value=mock_index)
-            dlg.client.uses_catalog = MagicMock(return_value=True)
-
+            _install_catalog_counts(dlg, counts_map)
             dlg.client.search_with_fallbacks = MagicMock(return_value=([], None, None))
 
             # Search custom query "ねこ"
             dlg.query_input.setText("ねこ")
             dlg._do_search()
 
+            self.assertEqual(_chip_texts(dlg), ["↩ 本  1693", "ねこ  6", "ネコ  38"])
+            self.assertFalse(dlg.chips_widget.isHidden())
+
+            # Click restore chip
             chip_buttons = [
                 dlg.chips_layout.itemAt(i).widget()
                 for i in range(dlg.chips_layout.count())
                 if isinstance(dlg.chips_layout.itemAt(i).widget(), QPushButton)
             ]
-            chip_texts = [b.text() for b in chip_buttons]
-            self.assertEqual(chip_texts, ["↩ 本  1693", "ねこ  6", "ネコ  38"])
-            self.assertFalse(dlg.chips_widget.isHidden())
-
-            # Click restore chip
             restore_btn = chip_buttons[0]
             self.assertEqual(restore_btn.text(), "↩ 本  1693")
             restore_btn.click()
 
             # Dialog should restore search for "本" with original candidates
             self.assertEqual(dlg.query_input.text(), "本")
-            chip_buttons_restored = [
-                dlg.chips_layout.itemAt(i).widget()
-                for i in range(dlg.chips_layout.count())
-                if isinstance(dlg.chips_layout.itemAt(i).widget(), QPushButton)
-            ]
-            chip_texts_restored = [b.text() for b in chip_buttons_restored]
-            self.assertEqual(chip_texts_restored, ["本  1693", "ほん  3", "ホン  111"])
+            self.assertEqual(_chip_texts(dlg), ["本  1693", "ほん  3", "ホン  111"])
 
     def test_suggestion_chips_stay_visible_on_zero_results(self):
         """Verify suggestion chips remain visible when a search returns zero results."""
@@ -204,16 +205,12 @@ class TestUIMode(unittest.TestCase):
 
         with patch("addon.ui.mw", mock_mw), patch("threading.Thread", _SyncThread):
             dlg = IrasutoyaDialog(parent=None, browser=None, note_ids=[1001])
+            self.addCleanup(dlg.close)
             dlg._thumb_executor.submit = MagicMock()
             dlg._run_on_main = lambda cb: cb()
 
-            mock_index = MagicMock()
             counts_map = {"本": 1693, "ほん": 3, "ホン": 111}
-            mock_index.search.side_effect = lambda q, **kw: [
-                MagicMock(title=f"{q}のイラスト", is_single_image_post=True, description="")
-            ] * counts_map.get(q, 0)
-            dlg.store.get_index = MagicMock(return_value=mock_index)
-            dlg.client.uses_catalog = MagicMock(return_value=True)
+            _install_catalog_counts(dlg, counts_map)
 
             # Search returns 0 results
             dlg.client.search_with_fallbacks = MagicMock(return_value=([], None, None))
@@ -224,12 +221,7 @@ class TestUIMode(unittest.TestCase):
             # Chips widget must not be hidden
             self.assertFalse(dlg.chips_widget.isHidden())
             self.assertIn("No illustrations found for 'ほん'", dlg.status_label.text())
-            chip_buttons = [
-                dlg.chips_layout.itemAt(i).widget()
-                for i in range(dlg.chips_layout.count())
-                if isinstance(dlg.chips_layout.itemAt(i).widget(), QPushButton)
-            ]
-            self.assertEqual([b.text() for b in chip_buttons], ["本  1693", "ほん  3", "ホン  111"])
+            self.assertEqual(_chip_texts(dlg), ["本  1693", "ほん  3", "ホン  111"])
 
     def test_live_backend_does_not_suppress_chips_with_catalog(self):
         """When client uses live backend, candidates are not probed or discarded by catalog."""
@@ -239,6 +231,7 @@ class TestUIMode(unittest.TestCase):
 
         with patch("addon.ui.mw", mock_mw), patch("threading.Thread", _SyncThread):
             dlg = IrasutoyaDialog(parent=None, browser=None, note_ids=[1001])
+            self.addCleanup(dlg.close)
             dlg._thumb_executor.submit = MagicMock()
             dlg._run_on_main = lambda cb: cb()
 
@@ -262,14 +255,8 @@ class TestUIMode(unittest.TestCase):
             # Verify catalog index search was never called because uses_catalog is False
             mock_index.search.assert_not_called()
 
-            chip_buttons = [
-                dlg.chips_layout.itemAt(i).widget()
-                for i in range(dlg.chips_layout.count())
-                if isinstance(dlg.chips_layout.itemAt(i).widget(), QPushButton)
-            ]
-            chip_texts = [b.text() for b in chip_buttons]
             # Neither candidate was suppressed; neither has catalog count appended
-            self.assertEqual(chip_texts, ["本", "ほん", "ホン"])
+            self.assertEqual(_chip_texts(dlg), ["本", "ほん", "ホン"])
             self.assertFalse(dlg.chips_widget.isHidden())
 
     def test_source_field_change_updates_card_candidates(self):
@@ -280,6 +267,7 @@ class TestUIMode(unittest.TestCase):
 
         with patch("addon.ui.mw", mock_mw), patch("threading.Thread", _SyncThread):
             dlg = IrasutoyaDialog(parent=None, browser=None, note_ids=[1001])
+            self.addCleanup(dlg.close)
             dlg._thumb_executor.submit = MagicMock()
             dlg._run_on_main = lambda cb: cb()
             dlg.client.search_with_fallbacks = MagicMock(return_value=([], None, None))
@@ -308,6 +296,13 @@ class TestUIMode(unittest.TestCase):
         snippet = make_description_snippet(desc, "以下")
         self.assertIn("<b>以下</b>", snippet)
         self.assertIn("147cm", snippet)
+
+        # Test that queries matching HTML entity names do not corrupt markup
+        html_desc = "Adult < 100 & quality is high."
+        html_snippet = make_description_snippet(html_desc, "lt")
+        self.assertIn("Adu<b>lt</b>", html_snippet)
+        self.assertIn("&lt;", html_snippet)
+        self.assertNotIn("&<b>lt</b>;", html_snippet)
 
         empty = make_description_snippet("", "猫")
         self.assertEqual(empty, "")
@@ -357,6 +352,7 @@ class TestUIMode(unittest.TestCase):
 
         with patch("addon.ui.mw", mock_mw), patch("threading.Thread", _SyncThread):
             dlg = IrasutoyaDialog(parent=None, browser=None, note_ids=[1001])
+            self.addCleanup(dlg.close)
             dlg._thumb_executor.submit = MagicMock()
             dlg._run_on_main = lambda cb: cb()
 
@@ -381,6 +377,7 @@ class TestUIMode(unittest.TestCase):
 
         with patch("addon.ui.mw", mock_mw), patch("threading.Thread", _SyncThread):
             dlg = IrasutoyaDialog(parent=None, browser=None, note_ids=[1001])
+            self.addCleanup(dlg.close)
             dlg._thumb_executor.submit = MagicMock()
             dlg._run_on_main = lambda cb: cb()
 
@@ -398,6 +395,7 @@ class TestUIMode(unittest.TestCase):
 
         with patch("addon.ui.mw", mock_mw), patch("threading.Thread", _SyncThread):
             dlg = IrasutoyaDialog(parent=None, browser=None, note_ids=[1001])
+            self.addCleanup(dlg.close)
             dlg._thumb_executor.submit = MagicMock()
             dlg._run_on_main = lambda cb: cb()
 
@@ -447,6 +445,7 @@ class TestUIMode(unittest.TestCase):
 
         with patch("addon.ui.mw", mock_mw), patch("threading.Thread", _SyncThread):
             dlg = IrasutoyaDialog(parent=None, browser=None, note_ids=[1001])
+            self.addCleanup(dlg.close)
             dlg._thumb_executor.submit = MagicMock()
             dlg._run_on_main = lambda cb: cb()
 
@@ -483,6 +482,51 @@ class TestUIMode(unittest.TestCase):
             self.assertEqual(len(dlg.image_cards), 48)
             self.assertEqual(dlg.image_cards.index(dlg.selected_card_widget), 25)
 
+    def test_dynamic_pagination_keyboard_arrow_right_at_boundary(self):
+        """Right-arrow keyboard navigation on the last card should trigger next page loading."""
+        mock_mw = MagicMock()
+        mock_note = {"Expression": "北", "Reading": "", "DefinitionPicture": ""}
+        mock_mw.col.get_note.return_value = mock_note
+
+        with patch("addon.ui.mw", mock_mw), patch("threading.Thread", _SyncThread):
+            dlg = IrasutoyaDialog(parent=None, browser=None, note_ids=[1001])
+            self.addCleanup(dlg.close)
+            dlg._thumb_executor.submit = MagicMock()
+            dlg._run_on_main = lambda cb: cb()
+
+            mock_images = [
+                IrasutoyaImage(
+                    title=f"北 {i}",
+                    image_url=f"https://example.com/{i}.png",
+                    thumb_url=f"https://example.com/{i}_t.png",
+                    post_title=f"北 {i}",
+                )
+                for i in range(50)
+            ]
+            dlg._on_search_finished(
+                gen=dlg._search_generation,
+                query="北",
+                display_chips=[("北", "primary", 0)],
+                matched_cand=("北", "primary", 0),
+                images=mock_images,
+            )
+
+            # Initially 24 cards
+            self.assertEqual(len(dlg.image_cards), 24)
+
+            # Select last card (index 23)
+            dlg._on_card_selected(dlg.image_cards[23])
+
+            # Simulate Right Arrow event
+            with patch.object(dlg.scroll_area, "ensureWidgetVisible") as mock_ensure:
+                event = QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Right, Qt.KeyboardModifier.NoModifier)
+                dlg.keyPressEvent(event)
+                mock_ensure.assert_called_once_with(dlg.image_cards[24])
+
+            # Pagination should have triggered, loading next batch and advancing to card 24
+            self.assertEqual(len(dlg.image_cards), 48)
+            self.assertEqual(dlg.image_cards.index(dlg.selected_card_widget), 24)
+
     def test_keep_current_image_button_and_media_notice(self):
         """When target field contains existing media, cancel button becomes 'Keep Current Image (Esc)'."""
         mock_mw = MagicMock()
@@ -496,6 +540,7 @@ class TestUIMode(unittest.TestCase):
 
         with patch("addon.ui.mw", mock_mw), patch("threading.Thread", _SyncThread):
             dlg = IrasutoyaDialog(parent=None, browser=None, note_ids=[1001])
+            self.addCleanup(dlg.close)
             dlg._thumb_executor.submit = MagicMock()
             dlg._run_on_main = lambda cb: cb()
 
@@ -522,6 +567,7 @@ class TestUIMode(unittest.TestCase):
 
         with patch("addon.ui.mw", mock_mw), patch("threading.Thread", _SyncThread):
             dlg = IrasutoyaDialog(parent=None, browser=None, note_ids=[1001])
+            self.addCleanup(dlg.close)
             dlg._thumb_executor.submit = MagicMock()
             dlg._run_on_main = lambda cb: cb()
 
@@ -574,6 +620,7 @@ class TestUIMode(unittest.TestCase):
 
         with patch("addon.ui.mw", mock_mw), patch("threading.Thread", _SyncThread):
             dlg = IrasutoyaDialog(parent=None, browser=None, note_ids=[1001])
+            self.addCleanup(dlg.close)
             dlg._thumb_executor.submit = MagicMock()
             dlg._run_on_main = lambda cb: cb()
 
