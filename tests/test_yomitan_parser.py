@@ -99,6 +99,27 @@ class TestYomitanParser(unittest.TestCase):
         self.assertNotIn("田圃", meta.forms_star)
         self.assertEqual(meta.forms_all, ["交代", "交替"])
 
+    def test_forms_table_column_status_filtering(self):
+        """Test that formsTable columns with all-rare cells or marked headers are excluded from forms_all."""
+        html_table = (
+            '<div class="yomitan-glossary">'
+            '<table data-sc-content="formsTable">'
+            '<tbody>'
+            '<tr><th></th><th>標準</th><th>並記</th><th>〈田圃〉</th></tr>'
+            '<tr><th>ひょうじゅん</th><td>★</td><td>⛬</td><td>★</td></tr>'
+            '<tr><th>ならび</th><td></td><td>🅁</td><td>🅁</td></tr>'
+            '</tbody></table>'
+            '</div>'
+        )
+        meta = parse_yomitan_html(html_table)
+        self.assertIsNotNone(meta)
+        self.assertIn("標準", meta.forms_star)
+        self.assertIn("標準", meta.forms_all)
+        self.assertNotIn("並記", meta.forms_all)
+        self.assertNotIn("並記", meta.forms_star)
+        self.assertNotIn("田圃", meta.forms_star)
+        self.assertNotIn("田圃", meta.forms_all)
+
     def test_forms_list(self):
         """Test extracting ★ forms from unordered list under (forms...) tag."""
         html_list = (

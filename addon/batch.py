@@ -61,6 +61,9 @@ class BatchStats:
 
         if self.errors > 0:
             msg += f", Errors: {self.errors}"
+        if self.details:
+            details_str = "; ".join(self.details)
+            msg += f" ({details_str})"
         if self.canceled:
             if self.added > 0:
                 return f"Canceled. Partial results committed: {msg}"
@@ -228,7 +231,19 @@ def run_batch_fill(
         items, load_errors, missing_field_skips = data
         if store.get_index() is None:
             logger.error("Offline catalog unavailable; aborting batch fill.")
-            return BatchStats(total=total, errors=len(items) + load_errors, skipped=missing_field_skips), []
+            catalog_errors = 0
+            catalog_skips = missing_field_skips
+            for _, candidates, has_target in items:
+                if (has_target and overwrite_mode == "skip") or not candidates:
+                    catalog_skips += 1
+                else:
+                    catalog_errors += 1
+            return BatchStats(
+                total=total,
+                errors=catalog_errors + load_errors,
+                skipped=catalog_skips,
+                details=["Offline catalog unavailable or failed to load"],
+            ), []
 
         stats = BatchStats(total=total, errors=load_errors, skipped=missing_field_skips)
         pending_writes: List[Tuple[any, str, bytes, bool]] = []

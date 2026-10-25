@@ -134,6 +134,9 @@ class TestBatchLogic(unittest.TestCase):
         self.assertIn("Canceled.", stats_with_err.summary_message)
         self.assertIn("Errors: 2", stats_with_err.summary_message)
 
+        stats_with_details = BatchStats(total=3, errors=1, details=["Offline catalog unavailable"])
+        self.assertIn("(Offline catalog unavailable)", stats_with_details.summary_message)
+
     def test_batch_stats_fallback_summary(self):
         """Verify BatchStats summary formatting when fallback matches occur."""
         stats = BatchStats(total=5, added=3, direct_matches=2, fallback_matches=1, skipped=1, not_found=1)
@@ -292,13 +295,16 @@ class TestBatchLogic(unittest.TestCase):
 
     @unittest.skipUnless(HAS_AQT, "aqt not available in headless test environment")
     def test_run_batch_fill_aborts_when_catalog_missing(self):
-        """Verify run_batch_fill reports all notes as errors when catalog index is unavailable."""
+        """Verify run_batch_fill aborts cleanly, excluding skipped notes from error count."""
         mock_store = MagicMock()
         mock_store.get_index.return_value = None
 
         mock_col = MagicMock()
-        mock_note = {"Expression": "猫", "DefinitionPicture": ""}
-        mock_col.get_note.return_value = mock_note
+        notes = {
+            101: {"Expression": "猫", "DefinitionPicture": ""},  # would process -> error
+            102: {"Expression": "犬", "DefinitionPicture": "dog.png"},  # target exists in skip mode -> skipped
+        }
+        mock_col.get_note.side_effect = lambda nid: notes[nid]
 
         mock_mw = MagicMock()
         mock_mw.col = mock_col
@@ -339,7 +345,7 @@ class TestBatchLogic(unittest.TestCase):
              patch("aqt.utils.tooltip"):
             run_batch_fill(
                 parent_window=None,
-                note_ids=[101],
+                note_ids=[101, 102],
                 source_field="Expression",
                 target_field="DefinitionPicture",
                 overwrite_mode="skip",
@@ -347,8 +353,11 @@ class TestBatchLogic(unittest.TestCase):
             )
 
         self.assertEqual(len(finished_stats), 1)
+        self.assertEqual(finished_stats[0].total, 2)
         self.assertEqual(finished_stats[0].errors, 1)
+        self.assertEqual(finished_stats[0].skipped, 1)
         self.assertEqual(finished_stats[0].added, 0)
+        self.assertIn("Offline catalog unavailable", finished_stats[0].summary_message)
 
 
 if __name__ == "__main__":

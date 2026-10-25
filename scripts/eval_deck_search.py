@@ -30,10 +30,10 @@ from addon.catalog import default_store
 from addon.client import IrasutoyaClient
 from addon.feed import IrasutoyaImage, parse_entries
 from addon.ranking import (
+    infer_pos_type,
     is_decorative_asset,
     is_image_relevant,
     rank_relevant_images,
-    select_best_image,
 )
 from addon.text_utils import generate_search_candidates
 
@@ -81,9 +81,25 @@ class _LiveBloggerSearchClient:
         url = f"{self.BASE_FEED_URL}?alt=json&q={encoded_q}&max-results={fetch_count}"
         if orderby:
             url += f"&orderby={urllib.parse.quote(orderby)}"
-        req = urllib.request.Request(url, headers={"User-Agent": self.USER_AGENT})
-        with urllib.request.urlopen(req, timeout=self.DEFAULT_TIMEOUT) as resp:
-            raw_json = json.loads(resp.read().decode("utf-8"))
+        max_retries = 3
+        raw_json = None
+        for attempt in range(max_retries):
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": self.USER_AGENT})
+                with urllib.request.urlopen(req, timeout=self.DEFAULT_TIMEOUT) as resp:
+                    raw_json = json.loads(resp.read().decode("utf-8"))
+                break
+            except urllib.error.HTTPError as exc:
+                if exc.code in (429, 500, 502, 503, 504) and attempt < max_retries - 1:
+                    time.sleep(1.0 * (2 ** attempt))
+                    continue
+                raise
+            except urllib.error.URLError:
+                if attempt < max_retries - 1:
+                    time.sleep(1.0 * (2 ** attempt))
+                    continue
+                raise
+
         entries = raw_json.get("feed", {}).get("entry", []) if isinstance(raw_json, dict) else []
         images = parse_entries(entries, image_size=image_size)
         return images[:max_results] if max_results is not None else images
@@ -105,10 +121,17 @@ class _LiveBloggerSearchClient:
             images = self.search(term, max_results=None, image_size=image_size, orderby=orderby)
             if not images:
                 continue
-            ranked = rank_relevant_images(images, term, pos_type=pos_type)
+            valid_imgs = [
+                img for img in images
+                if not is_decorative_asset(img, term) and is_image_relevant(img, term)
+            ]
+            if not valid_imgs:
+                continue
+            cand_pos = pos_type or infer_pos_type(term, cand_reason=_reason)
+            ranked = rank_relevant_images(valid_imgs, term, pos_type=cand_pos)
             if ranked:
-                best = select_best_image(ranked, term, pos_type=pos_type) or ranked[0]
-                return ranked[:max_results] if max_results else ranked, cand, best
+                best = ranked[0]
+                return (ranked[:max_results] if max_results else ranked), cand, best
         return [], None, None
 
 

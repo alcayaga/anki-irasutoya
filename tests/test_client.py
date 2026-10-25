@@ -518,6 +518,59 @@ class TestIrasutoyaClient(unittest.TestCase):
             self.assertIsNotNone(cand)
             self.assertIsNotNone(best)
 
+    def test_live_blogger_search_client_retry_and_filter(self):
+        """Verify _LiveBloggerSearchClient retries transient 429s and filters decorative assets."""
+        from scripts.eval_deck_search import _LiveBloggerSearchClient
+
+        client = _LiveBloggerSearchClient()
+        attempts = 0
+
+        class MockResponse:
+            """Mock HTTP response."""
+
+            def __enter__(self) -> "MockResponse":
+                """Enter runtime context."""
+                return self
+
+            def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+                """Exit runtime context."""
+                return None
+
+            def read(self) -> bytes:
+                """Return mock binary response bytes."""
+                feed = {
+                    "feed": {
+                        "entry": [
+                            {
+                                "title": {"$t": "フレームのイラスト"},
+                                "content": {"$t": '<img alt="フレーム" src="https://1.bp.blogspot.com/frame.png" />'},
+                            }
+                        ]
+                    }
+                }
+                return json.dumps(feed).encode("utf-8")
+
+        def flaky_urlopen(req: Any, timeout: int = 10) -> MockResponse:
+            """Simulate transient 429 error followed by success."""
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise urllib.error.HTTPError(req.full_url, 429, "Too Many Requests", {}, None)
+            return MockResponse()
+
+        with patch("urllib.request.urlopen", side_effect=flaky_urlopen), \
+             patch("time.sleep", return_value=None):
+            # Test retry
+            results = client.search("フレーム")
+            self.assertEqual(len(results), 1)
+            self.assertEqual(attempts, 2)
+
+            # Test decorative asset filtering in search_with_fallbacks
+            images, cand, best = client.search_with_fallbacks([("走る", "primary", 1)])
+            # "フレーム" is decorative and irrelevant to "走る", so it should be skipped
+            self.assertEqual(images, [])
+            self.assertIsNone(best)
+
 
 if __name__ == "__main__":
     unittest.main()

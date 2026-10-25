@@ -626,8 +626,8 @@ class TestTextUtils(unittest.TestCase):
         self.assertIn("わし", cand_terms_washi)
         self.assertNotIn("ワシ", cand_terms_washi)
 
-        # 2. Demonstratives これ, あれ must not emit コレ, アレ
-        for dem in ("これ", "あれ", "それ", "ここ", "どこ"):
+        # 2. Blocklisted pronouns/demonstratives not covered by grammar gating must not emit Katakana
+        for dem in ("こっち", "あっち", "わたし", "かのじょ"):
             cands_dem = generate_search_candidates(dem, allow_tier2=True)
             cand_terms_dem = {term for term, _, _ in cands_dem}
             self.assertIn(dem, cand_terms_dem)
@@ -643,6 +643,33 @@ class TestTextUtils(unittest.TestCase):
         cand_terms_custom = {term for term, _, _ in cands_custom}
         self.assertIn("わちき", cand_terms_custom)
         self.assertNotIn("ワチキ", cand_terms_custom)
+
+    def test_uk_reading_precedes_forms_all_kanji(self):
+        """Test that for 'uk' words, canonical kana reading precedes alternative Kanji variants from forms_all."""
+        from addon.text_utils import generate_search_candidates
+        note_sonomama = {
+            "Expression": "其の儘",
+            "Reading": "そのまま",
+            "MainDefinition": (
+                '<div class="yomitan-glossary">'
+                '<ol>'
+                '<li data-dictionary="JMdict [2025-11-01]">'
+                '<i>(1, adj-no, adv, n, uk, JMdict [2025-11-01])</i> '
+                '<span>as is</span>'
+                '</li>'
+                '<li data-dictionary="JMdict [2025-11-01]">'
+                '<i>(forms, JMdict [2025-11-01])</i> '
+                '<ul><li>其の侭</li><li>その侭</li></ul>'
+                '</li>'
+                '</ol></div>'
+            ),
+        }
+        cands = generate_search_candidates(note_sonomama["Expression"], note=note_sonomama, allow_tier2=True)
+        cand_terms = [t for t, _, _ in cands]
+        self.assertIn("そのまま", cand_terms)
+        self.assertIn("其の侭", cand_terms)
+        # Canonical kana reading must precede alternative Kanji form
+        self.assertLess(cand_terms.index("そのまま"), cand_terms.index("其の侭"))
 
 
 if __name__ == "__main__":

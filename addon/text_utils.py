@@ -552,12 +552,6 @@ def generate_search_candidates(
         for star_form in yomitan_meta.forms_star[:3]:
             add(star_form, "yomitan_star_form", 1)
 
-    # Yomitan orthographic forms containing at least one Kanji (e.g. 缶けり -> 缶蹴り)
-    if yomitan_meta and yomitan_meta.forms_all:
-        for form in yomitan_meta.forms_all:
-            if KANJI_RE.search(form):
-                add(form, "yomitan_form", 1)
-
     # Yomitan 'uk' (usually written using kana alone) orthography promotion
     # Headwords like 其の儘, 懸かる, ご免なさい are canonical in Kana in modern Japanese and on Irasutoya
     if yomitan_meta and yomitan_meta.is_uk:
@@ -572,6 +566,12 @@ def generate_search_candidates(
                 add(cleaned_uk, "yomitan_uk_reading", 1)
                 if not _should_suppress_katakana_conversion(cleaned_uk, yomitan_meta):
                     add(to_katakana(cleaned_uk), "yomitan_uk_katakana", 1)
+
+    # Yomitan orthographic forms containing at least one Kanji (e.g. 缶けり -> 缶蹴り)
+    if yomitan_meta and yomitan_meta.forms_all:
+        for form in yomitan_meta.forms_all:
+            if KANJI_RE.search(form):
+                add(form, "yomitan_form", 1)
 
     # Bikago polite prefix (e.g. 肉 -> お肉, 肌 -> お肌, 茶 -> お茶, 風呂 -> お風呂)
     bikago = expand_bikago_prefix(surface)
