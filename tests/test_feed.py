@@ -1,5 +1,6 @@
 """Unit tests for Irasutoya Blogger feed parsing, HTML extraction, and URL helpers."""
 import unittest
+from unittest.mock import patch
 
 from addon.feed import (
     is_allowed_image_host,
@@ -408,6 +409,41 @@ class TestFeedParser(unittest.TestCase):
         images = parse_entries(entries, "s800")
         self.assertEqual(len(images), 1)
         self.assertEqual(images[0].title, "Valid Image")
+
+    def test_parse_entries_does_not_commit_seen_urls_on_failed_entry(self):
+        """Verify that seen URLs from a failed entry are discarded and not blocked in later entries."""
+        # Entry 1 adds its image URL to entry_seen, then fails while building the thumbnail
+        failing_entry = {
+            "title": {"$t": "失敗ポスト"},
+            "content": {
+                "$t": '<img src="https://1.bp.blogspot.com/shared.png" alt="Shared Image">'
+            },
+            "summary": {"$t": ""},
+        }
+        # Entry 2 is valid and reuses the same image URL
+        valid_entry = {
+            "title": {"$t": "成功ポスト"},
+            "content": {
+                "$t": '<img src="https://1.bp.blogspot.com/shared.png" alt="Shared Image">'
+            },
+            "summary": {"$t": ""},
+        }
+
+        real_thumb = to_thumbnail_url
+        calls = {"n": 0}
+
+        def flaky_thumb(url, size="s120-c"):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("Temporary thumbnail error")
+            return real_thumb(url, size)
+
+        with patch("addon.feed.to_thumbnail_url", side_effect=flaky_thumb):
+            images = parse_entries([failing_entry, valid_entry], "s800")
+
+        self.assertEqual(len(images), 1)
+        self.assertEqual(images[0].image_url, "https://1.bp.blogspot.com/shared.png")
+        self.assertEqual(images[0].post_title, "成功ポスト")
 
 
 if __name__ == "__main__":

@@ -27,7 +27,10 @@ def is_image_url(url: str) -> bool:
     """Return True if URL points to an allowlisted HTTPS image endpoint."""
     if not url:
         return False
-    parsed = urllib.parse.urlparse(url)
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except ValueError:
+        return False
     return (
         parsed.scheme == "https"
         and is_allowed_image_host(parsed.hostname or "")
@@ -200,8 +203,11 @@ def parse_entry(
         thumb_raw = entry.get("media$thumbnail", {}).get("url", "")
         if thumb_raw:
             thumb = html.unescape(thumb_raw).strip()
-            parsed_thumb = urllib.parse.urlparse(thumb)
-            if parsed_thumb.scheme == "https" and is_allowed_image_host(parsed_thumb.hostname or ""):
+            try:
+                parsed_thumb = urllib.parse.urlparse(thumb)
+            except ValueError:
+                parsed_thumb = None
+            if parsed_thumb and parsed_thumb.scheme == "https" and is_allowed_image_host(parsed_thumb.hostname or ""):
                 high_res = upgrade_image_url(thumb, image_size)
                 post_urls.add(high_res)
                 if high_res not in seen_urls:
@@ -238,10 +244,12 @@ def parse_entries(entries: list, image_size: str = "s800") -> List[IrasutoyaImag
     images: List[IrasutoyaImage] = []
     seen_urls: Set[str] = set()
     for entry in entries:
+        entry_seen = set(seen_urls)
         try:
-            post = parse_entry(entry, image_size=image_size, seen_urls=seen_urls)
+            post = parse_entry(entry, image_size=image_size, seen_urls=entry_seen)
         except Exception as e:
             logger.warning("Failed to parse feed entry: %s", e)
             continue
+        seen_urls.update(entry_seen)
         images.extend(post.images)
     return images

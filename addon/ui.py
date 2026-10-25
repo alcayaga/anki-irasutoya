@@ -1096,7 +1096,8 @@ class IrasutoyaDialog(QDialog):
         def background_search() -> None:
             """Fetch search results on a background thread using fallback queries."""
             probed_counts: Optional[Dict[str, int]] = None
-            max_results = None if self.client.uses_catalog() else 12
+            use_catalog = self.client.uses_catalog()
+            max_results = None if use_catalog else 12
             try:
                 images, matched_cand, _best_img = self.client.search_with_fallbacks(
                     search_candidates,
@@ -1111,7 +1112,7 @@ class IrasutoyaDialog(QDialog):
             if current_gen != self._search_generation:
                 return
 
-            if self.client.uses_catalog():
+            if use_catalog:
                 try:
                     catalog = self.store.get_index()
                     if catalog is not None:
