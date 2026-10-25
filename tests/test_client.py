@@ -2,6 +2,7 @@
 import json
 import unittest
 import urllib.error
+from unittest.mock import patch
 
 from addon.client import InsecureRedirectError, IrasutoyaClient, _HttpsOnlyRedirectHandler
 from addon.feed import IrasutoyaImage
@@ -477,6 +478,227 @@ class TestIrasutoyaClient(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as cm:
             client.download_image(img_no_id.image_url, image=img_no_id)
         self.assertEqual(cm.exception.code, 404)
+
+    def test_uncapped_search_returns_partial_entries_if_later_page_malformed(self):
+        """Uncapped search should return accumulated entries when a later page has malformed JSON or errors."""
+        client = IrasutoyaClient(backend="live")
+
+        def make_entry(idx):
+            return {
+                "title": {"$t": f"猫 {idx}"},
+                "content": {"$t": f'<img src="https://1.bp.blogspot.com/{idx}.png">'},
+            }
+
+        page1_data = json.dumps({"feed": {"entry": [make_entry(i) for i in range(50)]}}).encode("utf-8")
+        # Page 2 returns malformed feed structure (e.g. feed is None)
+        page2_data = json.dumps({"feed": None}).encode("utf-8")
+
+        responses = [page1_data, page2_data]
+
+        with patch.object(client, "_make_request", side_effect=lambda url: responses.pop(0)), \
+             patch("time.sleep", return_value=None):
+            images = client.search("猫", max_results=None)
+
+        self.assertEqual(len(images), 50)
+
+    def test_uncapped_search_returns_partial_entries_if_later_page_raises(self):
+        """Uncapped search should log and stop when a later page raises or returns invalid JSON."""
+        client = IrasutoyaClient(backend="live")
+
+        def make_entry(idx):
+            return {
+                "title": {"$t": f"猫 {idx}"},
+                "content": {"$t": f'<img src="https://1.bp.blogspot.com/{idx}.png">'},
+            }
+
+        page1_data = json.dumps({"feed": {"entry": [make_entry(i) for i in range(50)]}}).encode("utf-8")
+        for second_response in (urllib.error.URLError("Network glitch"), b"not-json"):
+            responses = [page1_data, second_response]
+
+            def mock_fetch(url, responses=responses):
+                res = responses.pop(0)
+                if isinstance(res, Exception):
+                    raise res
+                return res
+
+            with patch.object(client, "_make_request", side_effect=mock_fetch), \
+                 patch("time.sleep", return_value=None):
+                images = client.search("猫", max_results=None)
+                self.assertEqual(len(images), 50)
+
+    def test_uncapped_search_reraises_insecure_redirect_on_later_page(self):
+        """Uncapped search should preserve InsecureRedirectError propagation even on later pages."""
+        client = IrasutoyaClient(backend="live")
+
+        def make_entry(idx):
+            return {
+                "title": {"$t": f"猫 {idx}"},
+                "content": {"$t": f'<img src="https://1.bp.blogspot.com/{idx}.png">'},
+            }
+
+        page1_data = json.dumps({"feed": {"entry": [make_entry(i) for i in range(50)]}}).encode("utf-8")
+        responses = [page1_data, InsecureRedirectError("Insecure redirect")]
+
+        def mock_fetch(url):
+            res = responses.pop(0)
+            if isinstance(res, Exception):
+                raise res
+            return res
+
+        with patch.object(client, "_make_request", side_effect=mock_fetch), \
+             patch("time.sleep", return_value=None):
+            with self.assertRaises(InsecureRedirectError):
+                client.search("猫", max_results=None)
+
+    def test_uncapped_search_reraises_on_first_page_failure(self):
+        """Uncapped search should re-raise exceptions encountered on the first page."""
+        client = IrasutoyaClient(backend="live")
+
+        with patch.object(client, "_make_request", side_effect=urllib.error.URLError("Network down")):
+            with self.assertRaises(urllib.error.URLError):
+                client.search("猫", max_results=None)
+
+    def test_uncapped_search_first_page_without_feed_raises_value_error(self):
+        """Uncapped search should raise ValueError when page 1 has no feed object."""
+        client = IrasutoyaClient(backend="live")
+        bad_page = json.dumps({"feed": None}).encode("utf-8")
+
+        with patch.object(client, "_make_request", return_value=bad_page):
+            with self.assertRaises(ValueError):
+                client.search("猫", max_results=None)
+
+    def test_uncapped_search_stops_at_250_cap_with_advancing_start_index(self):
+        """Uncapped search should paginate up to the 250 safety cap and advance start-index."""
+        client = IrasutoyaClient(backend="live")
+        requested_urls = []
+        total_created = 0
+
+        def mock_fetch(url):
+            nonlocal total_created
+            requested_urls.append(url)
+            entries = [
+                {
+                    "title": {"$t": f"猫 {total_created + i}"},
+                    "content": {"$t": f'<img src="https://1.bp.blogspot.com/{total_created + i}.png">'},
+                }
+                for i in range(50)
+            ]
+            total_created += 50
+            return json.dumps({"feed": {"entry": entries}}).encode("utf-8")
+
+        with patch.object(client, "_make_request", side_effect=mock_fetch), \
+             patch("time.sleep", return_value=None):
+            images = client.search("猫", max_results=None)
+
+        self.assertEqual(len(images), 250)
+        self.assertEqual(len(requested_urls), 5)
+        self.assertIn("start-index=1", requested_urls[0])
+        self.assertIn("start-index=51", requested_urls[1])
+        self.assertIn("start-index=101", requested_urls[2])
+        self.assertIn("start-index=151", requested_urls[3])
+        self.assertIn("start-index=201", requested_urls[4])
+
+    def test_uncapped_search_stops_on_short_or_empty_page(self):
+        """Uncapped search should stop pagination when a page has fewer entries than page size or is empty."""
+        client = IrasutoyaClient(backend="live")
+
+        def make_page(n, start_offset=0):
+            entries = [
+                {
+                    "title": {"$t": f"猫 {start_offset + i}"},
+                    "content": {"$t": f'<img src="https://1.bp.blogspot.com/{start_offset + i}.png">'},
+                }
+                for i in range(n)
+            ]
+            return json.dumps({"feed": {"entry": entries}}).encode("utf-8")
+
+        # Case 1: Page 1 has 50, Page 2 has 20 (short page)
+        responses_short = [make_page(50, 0), make_page(20, 50)]
+        with patch.object(client, "_make_request", side_effect=lambda url: responses_short.pop(0)), \
+             patch("time.sleep", return_value=None):
+            images_short = client.search("猫", max_results=None)
+        self.assertEqual(len(images_short), 70)
+
+        # Case 2: Page 1 has 50, Page 2 has 0 (empty page)
+        responses_empty = [make_page(50, 0), make_page(0, 50)]
+        with patch.object(client, "_make_request", side_effect=lambda url: responses_empty.pop(0)), \
+             patch("time.sleep", return_value=None):
+            images_empty = client.search("猫", max_results=None)
+        self.assertEqual(len(images_empty), 50)
+
+    def test_search_max_results_zero_uses_uncapped_and_positive_uses_single_request(self):
+        """Positive max_results issues a single request; max_results=0 uses uncapped path."""
+        client = IrasutoyaClient(backend="live")
+        requested_urls = []
+
+        def mock_fetch(url):
+            requested_urls.append(url)
+            entry = {
+                "title": {"$t": "猫"},
+                "content": {"$t": '<img src="https://1.bp.blogspot.com/cat.png">'},
+            }
+            return json.dumps({"feed": {"entry": [entry]}}).encode("utf-8")
+
+        # Positive max_results issues single request with max-results=5 and no start-index
+        with patch.object(client, "_make_request", side_effect=mock_fetch):
+            res_single = client.search("猫", max_results=5)
+        self.assertEqual(len(res_single), 1)
+        self.assertEqual(len(requested_urls), 1)
+        self.assertIn("max-results=5", requested_urls[0])
+        self.assertNotIn("start-index", requested_urls[0])
+
+        requested_urls.clear()
+
+        # max_results=0 uses uncapped path with start-index
+        with patch.object(client, "_make_request", side_effect=mock_fetch), \
+             patch("time.sleep", return_value=None):
+            res_uncapped = client.search("猫", max_results=0)
+        self.assertEqual(len(res_uncapped), 1)
+        self.assertEqual(len(requested_urls), 1)
+        self.assertIn("start-index=1", requested_urls[0])
+
+    def test_search_aborts_pagination_when_cancelled(self):
+        """Uncapped search should abort pagination immediately when is_cancelled returns True."""
+        client = IrasutoyaClient(backend="live")
+        call_count = 0
+
+        def mock_fetch(url):
+            nonlocal call_count
+            call_count += 1
+            entries = [
+                {
+                    "title": {"$t": f"猫 {i}"},
+                    "content": {"$t": f'<img src="https://1.bp.blogspot.com/{i}.png">'},
+                }
+                for i in range(50)
+            ]
+            return json.dumps({"feed": {"entry": entries}}).encode("utf-8")
+
+        # Cancel after the first page
+        with patch.object(client, "_make_request", side_effect=mock_fetch), \
+             patch("time.sleep", return_value=None):
+            images = client.search("猫", max_results=None, is_cancelled=lambda: call_count >= 1)
+
+        self.assertEqual(len(images), 50)
+        self.assertEqual(call_count, 1)
+
+    def test_search_with_fallbacks_stops_when_cancelled(self):
+        """search_with_fallbacks should stop trying candidates when is_cancelled returns True."""
+        client = IrasutoyaClient()
+        searched_terms = []
+
+        def mock_search(term, **kwargs):
+            searched_terms.append(term)
+            return []
+
+        client.search = mock_search
+        candidates = [("猫", "primary", 1), ("犬", "secondary", 2)]
+        images, matched_cand, best_img = client.search_with_fallbacks(
+            candidates, is_cancelled=lambda: len(searched_terms) >= 1
+        )
+        self.assertEqual(images, [])
+        self.assertIsNone(matched_cand)
+        self.assertEqual(searched_terms, ["猫"])
 
 
 if __name__ == "__main__":

@@ -105,17 +105,19 @@ class IrasutoyaClient:
     def search(
         self,
         query: str,
-        max_results: int = 12,
+        max_results: Optional[int] = 12,
         image_size: str = "s800",
         orderby: Optional[str] = "relevance",
+        is_cancelled: Optional[Callable[[], bool]] = None,
     ) -> List[IrasutoyaImage]:
         """Search Irasutoya for a given query keyword.
 
         Args:
             query: The keyword to search for (e.g. '猫' or '走る').
-            max_results: Maximum posts to fetch from Blogger feed.
+            max_results: Maximum posts to fetch from Blogger feed (None for uncapped up to 250 posts).
             image_size: Resolution replacement, e.g. 's800' or 's0' (original size).
             orderby: Sort order for Blogger feed ('relevance', 'updated', etc.).
+            is_cancelled: Optional callback returning True if search should abort early.
 
         Returns:
             A list of IrasutoyaImage objects.
@@ -136,49 +138,108 @@ class IrasutoyaClient:
             if index is not None:
                 return index.search(clean_q, image_size=image_size)
 
-        params: dict = {
-            "alt": "json",
-            "q": clean_q,
-            "max-results": max_results,
-        }
-        if orderby:
-            params["orderby"] = orderby
-        url = f"{self.BASE_URL}/feeds/posts/default?{urllib.parse.urlencode(params)}"
+        if max_results and max_results > 0:
+            params: dict = {
+                "alt": "json",
+                "q": clean_q,
+                "max-results": max_results,
+            }
+            if orderby:
+                params["orderby"] = orderby
+            url = f"{self.BASE_URL}/feeds/posts/default?{urllib.parse.urlencode(params)}"
 
-        raw_data = self._make_request(url)
-        data = json.loads(raw_data.decode("utf-8"))
+            raw_data = self._make_request(url)
+            data = json.loads(raw_data.decode("utf-8"))
 
-        entries = data.get("feed", {}).get("entry", [])
-        return parse_entries(entries, image_size=image_size)
+            entries = data.get("feed", {}).get("entry", [])
+            return parse_entries(entries, image_size=image_size)
+
+        # Uncapped search: paginate Blogger feed until exhausted (up to 250 posts safety limit)
+        all_entries: list = []
+        page_size = 50
+        max_feed_limit = 250
+        start_index = 1
+
+        while start_index <= max_feed_limit:
+            if is_cancelled and is_cancelled():
+                break
+            page_params: dict = {
+                "alt": "json",
+                "q": clean_q,
+                "max-results": page_size,
+                "start-index": start_index,
+            }
+            if orderby:
+                page_params["orderby"] = orderby
+            url = f"{self.BASE_URL}/feeds/posts/default?{urllib.parse.urlencode(page_params)}"
+            try:
+                raw_data = self._make_request(url)
+                data = json.loads(raw_data.decode("utf-8"))
+                page_entries = []
+                feed = data.get("feed") if isinstance(data, dict) else None
+                if not isinstance(feed, dict):
+                    raise ValueError("Blogger feed response has no feed object.")
+                entries = feed.get("entry")
+                if isinstance(entries, list):
+                    page_entries = entries
+            except InsecureRedirectError:
+                raise
+            except Exception as e:
+                if start_index == 1:
+                    raise
+                logger.warning("Error fetching live feed page at start-index %d: %s", start_index, e)
+                break
+
+            if not page_entries:
+                break
+            all_entries.extend(page_entries)
+            if len(page_entries) < page_size:
+                break
+            start_index += len(page_entries)
+            if start_index <= max_feed_limit:
+                time.sleep(0.3)
+
+        return parse_entries(all_entries, image_size=image_size)
 
     def search_with_fallbacks(
         self,
         candidates: Sequence[Tuple[str, str, int]],
-        max_results: int = 12,
+        max_results: Optional[int] = 12,
         image_size: str = "s800",
         orderby: Optional[str] = "relevance",
         pace_callback: Optional[Callable[[], None]] = None,
         pos_type: Optional[str] = None,
+        is_cancelled: Optional[Callable[[], bool]] = None,
     ) -> Tuple[List[IrasutoyaImage], Optional[Tuple[str, str, int]], Optional[IrasutoyaImage]]:
         """Query candidate terms in sequence until images are found.
 
         Args:
             candidates: Sequence of (term, reason_label, tier).
-            max_results: Maximum posts to fetch per query.
+            max_results: Maximum posts to fetch per query (None or 0 for uncapped).
             image_size: Target image resolution code.
             orderby: Blogger ordering parameter.
             pace_callback: Optional callback invoked before each network query to pace requests.
             pos_type: Optional Part-of-Speech profile ('verb', 'noun', 'adjective') for category ranking.
+            is_cancelled: Optional callback returning True if search should abort early.
 
         Returns:
             (ranked_images, matched_candidate, best_image)
         """
         for cand in candidates:
+            if is_cancelled and is_cancelled():
+                break
             term = cand[0]
             reason = cand[1]
             if pace_callback is not None and not self.uses_catalog():
                 pace_callback()
-            images = self.search(term, max_results=max_results, image_size=image_size, orderby=orderby)
+            search_kwargs = {
+                "max_results": max_results,
+                "image_size": image_size,
+                "orderby": orderby,
+            }
+            if is_cancelled is not None:
+                search_kwargs["is_cancelled"] = is_cancelled
+            images = self.search(term, **search_kwargs)
 
             # Filter out non-illustration/decorative assets and images not relevant to the query term
             illustration_candidates = [
@@ -188,7 +249,7 @@ class IrasutoyaClient:
             if illustration_candidates:
                 cand_pos = pos_type or infer_pos_type(term, cand_reason=reason)
                 ranked = rank_relevant_images(illustration_candidates, term, pos_type=cand_pos)
-                if max_results:
+                if max_results and max_results > 0:
                     ranked = ranked[:max_results]
                 best = ranked[0]
                 return ranked, cand, best
