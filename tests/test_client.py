@@ -558,6 +558,15 @@ class TestIrasutoyaClient(unittest.TestCase):
             with self.assertRaises(urllib.error.URLError):
                 client.search("猫", max_results=None)
 
+    def test_uncapped_search_first_page_without_feed_raises_value_error(self):
+        """Uncapped search should raise ValueError when page 1 has no feed object."""
+        client = IrasutoyaClient(backend="live")
+        bad_page = json.dumps({"feed": None}).encode("utf-8")
+
+        with patch.object(client, "_make_request", return_value=bad_page):
+            with self.assertRaises(ValueError):
+                client.search("猫", max_results=None)
+
     def test_uncapped_search_stops_at_250_cap_with_advancing_start_index(self):
         """Uncapped search should paginate up to the 250 safety cap and advance start-index."""
         client = IrasutoyaClient(backend="live")

@@ -176,12 +176,12 @@ class IrasutoyaClient:
                 raw_data = self._make_request(url)
                 data = json.loads(raw_data.decode("utf-8"))
                 page_entries = []
-                if isinstance(data, dict):
-                    feed = data.get("feed")
-                    if isinstance(feed, dict):
-                        entries = feed.get("entry")
-                        if isinstance(entries, list):
-                            page_entries = entries
+                feed = data.get("feed") if isinstance(data, dict) else None
+                if not isinstance(feed, dict):
+                    raise ValueError("Blogger feed response has no feed object.")
+                entries = feed.get("entry")
+                if isinstance(entries, list):
+                    page_entries = entries
             except InsecureRedirectError:
                 raise
             except Exception as e:

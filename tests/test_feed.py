@@ -394,6 +394,21 @@ class TestFeedParser(unittest.TestCase):
         self.assertEqual(len(images), 1)
         self.assertEqual(images[0].description, "猫 犬の説明")
 
+    def test_parse_entries_skips_malformed_entries_and_retains_valid(self):
+        """Verify parse_entries catches exceptions on malformed entries and continues processing valid entries."""
+        valid_entry = {
+            "title": {"$t": "有効なポスト"},
+            "content": {"$t": '<img src="https://1.bp.blogspot.com/valid.png" alt="Valid Image">'},
+            "summary": {"$t": "説明"},
+        }
+        malformed_entry_1 = {"content": None}  # Missing title and non-dict content
+        malformed_entry_2 = "not a dict"
+
+        entries = [malformed_entry_1, valid_entry, malformed_entry_2]
+        images = parse_entries(entries, "s800")
+        self.assertEqual(len(images), 1)
+        self.assertEqual(images[0].title, "Valid Image")
+
 
 if __name__ == "__main__":
     unittest.main()

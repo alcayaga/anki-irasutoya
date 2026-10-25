@@ -56,6 +56,10 @@ from .text_utils import clean_search_query, generate_search_candidates
 logger = logging.getLogger(__name__)
 
 
+class _StaleSearch(Exception):
+    """Internal signal that the current search generation was superseded."""
+
+
 ICONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons")
 CHEVRON_ICON_PATH = os.path.join(ICONS_DIR, "chevron_down.svg").replace("\\", "/")
 
@@ -1118,6 +1122,8 @@ class IrasutoyaDialog(QDialog):
                             count_cache[matched_cand[0]] = len(images)
 
                         def _count(term: str) -> int:
+                            if current_gen != self._search_generation:
+                                raise _StaleSearch()
                             if term not in count_cache:
                                 raw_imgs = catalog.search(term, image_size=image_size)
                                 count_cache[term] = sum(
@@ -1133,8 +1139,13 @@ class IrasutoyaDialog(QDialog):
                         if restore_term:
                             counts[restore_term] = _count(restore_term)
                         probed_counts = counts
+                except _StaleSearch:
+                    return
                 except Exception:
                     logger.exception("Catalog count probe failed")
+
+            if current_gen != self._search_generation:
+                return
 
             self._run_on_main(lambda: self._on_search_finished(
                 current_gen, query, display_chips, matched_cand, images, restore_term, probed_counts

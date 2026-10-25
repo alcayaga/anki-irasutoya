@@ -238,6 +238,10 @@ def parse_entries(entries: list, image_size: str = "s800") -> List[IrasutoyaImag
     images: List[IrasutoyaImage] = []
     seen_urls: Set[str] = set()
     for entry in entries:
-        post = parse_entry(entry, image_size=image_size, seen_urls=seen_urls)
+        try:
+            post = parse_entry(entry, image_size=image_size, seen_urls=seen_urls)
+        except Exception as e:
+            logger.warning("Failed to parse feed entry: %s", e)
+            continue
         images.extend(post.images)
     return images
