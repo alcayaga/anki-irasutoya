@@ -100,14 +100,14 @@ class TestYomitanParser(unittest.TestCase):
         self.assertEqual(meta.forms_all, ["交代", "交替"])
 
     def test_forms_table_column_status_filtering(self):
-        """Test that formsTable columns with all-rare cells or marked headers are excluded from forms_all."""
+        """Test that formsTable columns with all-rare cells, rare-starred cells, or marked headers are excluded."""
         html_table = (
             '<div class="yomitan-glossary">'
             '<table data-sc-content="formsTable">'
             '<tbody>'
-            '<tr><th></th><th>標準</th><th>並記</th><th>〈田圃〉</th></tr>'
-            '<tr><th>ひょうじゅん</th><td>★</td><td>⛬</td><td>★</td></tr>'
-            '<tr><th>ならび</th><td></td><td>🅁</td><td>🅁</td></tr>'
+            '<tr><th></th><th>標準</th><th>並記</th><th>〈田圃〉</th><th>古語</th><th>旧記</th></tr>'
+            '<tr><th>ひょうじゅん</th><td>★</td><td>⛬</td><td>★</td><td>★⛬</td><td class="rare">★</td></tr>'
+            '<tr><th>ならび</th><td></td><td>🅁</td><td>🅁</td><td>🅁</td><td>×</td></tr>'
             '</tbody></table>'
             '</div>'
         )
@@ -119,6 +119,10 @@ class TestYomitanParser(unittest.TestCase):
         self.assertNotIn("並記", meta.forms_star)
         self.assertNotIn("田圃", meta.forms_star)
         self.assertNotIn("田圃", meta.forms_all)
+        self.assertNotIn("古語", meta.forms_star)
+        self.assertNotIn("古語", meta.forms_all)
+        self.assertNotIn("旧記", meta.forms_star)
+        self.assertNotIn("旧記", meta.forms_all)
 
     def test_forms_list(self):
         """Test extracting ★ forms from unordered list under (forms...) tag."""
@@ -154,17 +158,20 @@ class TestYomitanParser(unittest.TestCase):
             '<ul>'
             '<li>標準形</li>'
             '<li>注意形（⚠️）</li>'
+            '<li>素警告形（⚠）</li>'
             '<li>廃用形（rK）</li>'
             '<li>稀少形（rare）</li>'
             '<li>〈旧字〉</li>'
             '<li>棄却形（×）</li>'
             '<li>記号形（🅁）</li>'
+            '<li>星付稀少（★⛬）</li>'
             '</ul></li>'
             '</ol>'
         )
         meta = parse_yomitan_html(html_rare)
         self.assertIsNotNone(meta)
         self.assertEqual(meta.forms_all, ["標準形"])
+        self.assertNotIn("星付稀少", meta.forms_star)
 
     def test_see_references(self):
         """Test extracting 'see:' references while ignoring antonyms."""

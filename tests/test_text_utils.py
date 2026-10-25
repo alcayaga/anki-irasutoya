@@ -671,6 +671,56 @@ class TestTextUtils(unittest.TestCase):
         # Canonical kana reading must precede alternative Kanji form
         self.assertLess(cand_terms.index("そのまま"), cand_terms.index("其の侭"))
 
+    def test_rare_starred_forms_table_cells_excluded_from_candidates(self):
+        """Test that formsTable headers with rare-marked starred cells are not emitted as candidates."""
+        from addon.text_utils import generate_search_candidates
+        note = {
+            "Expression": "手袋",
+            "Reading": "てぶくろ",
+            "MainDefinition": (
+                '<div class="yomitan-glossary">'
+                '<table data-sc-content="formsTable">'
+                '<tbody>'
+                '<tr><th></th><th>手袋</th><th>〈手裹〉</th><th>腕袋</th><th>籠手</th></tr>'
+                '<tr><th>てぶくろ</th><td>★</td><td>★</td><td>★⛬</td><td class="rare">★</td></tr>'
+                '</tbody></table>'
+                '</div>'
+            ),
+        }
+        cands = generate_search_candidates(note["Expression"], note=note, allow_tier2=True)
+        cand_map = {term: (reason, tier) for term, reason, tier in cands}
+        # Standard form 手袋 is primary / star form
+        self.assertIn("手袋", cand_map)
+        # Marked header 〈手裹〉, rare-starred cell ★⛬ (腕袋), and rare-class cell (籠手) must not be generated
+        self.assertNotIn("手裹", cand_map)
+        self.assertNotIn("腕袋", cand_map)
+        self.assertNotIn("籠手", cand_map)
+
+    def test_yomitan_forms_all_capped_at_three(self):
+        """Test that Tier 1 candidates from forms_all are capped at 3 Kanji forms."""
+        from addon.text_utils import generate_search_candidates
+        note = {
+            "Expression": "見本",
+            "Reading": "みほん",
+            "MainDefinition": (
+                '<div class="yomitan-glossary">'
+                '<ol><li data-dictionary="JMdict [2025-11-01]">'
+                '<i>(forms, JMdict [2025-11-01])</i> '
+                '<ul>'
+                '<li>見本一</li>'
+                '<li>見本二</li>'
+                '<li>見本三</li>'
+                '<li>見本四</li>'
+                '<li>見本五</li>'
+                '</ul></li></ol>'
+                '</div>'
+            ),
+        }
+        cands = generate_search_candidates(note["Expression"], note=note, allow_tier2=True)
+        form_cands = [term for term, reason, _ in cands if reason == "yomitan_form"]
+        self.assertEqual(len(form_cands), 3)
+        self.assertEqual(form_cands, ["見本一", "見本二", "見本三"])
+
 
 if __name__ == "__main__":
     unittest.main()

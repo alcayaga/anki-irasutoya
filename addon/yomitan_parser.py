@@ -38,7 +38,7 @@ class YomitanMetadata:
     sense_kanji: List[str] = field(default_factory=list)
 
 
-OUTDATED_FORM_MARKERS = frozenset({"⚠️", "×", "🅁", "⛬", "㊒"})
+OUTDATED_FORM_MARKERS = frozenset({"⚠", "×", "🅁", "⛬", "㊒"})
 OUTDATED_TAG_PATTERN = re.compile(
     r"\b(rk|sk|ok|ik|rare|outdated|irregular|search-only)\b", re.IGNORECASE
 )
@@ -181,15 +181,15 @@ class YomitanHTMLParser(HTMLParser):
                 else:
                     col_offset = self._current_col_idx - 1
                     if 0 <= col_offset < len(self._table_headers):
-                        is_star = ("★" in cell_text)
-                        if is_star:
-                            self._forms_cols_has_star[col_offset] = True
                         is_rare_cell = (
                             any(m in cell_text for m in OUTDATED_FORM_MARKERS)
                             or bool(OUTDATED_TAG_PATTERN.search(cell_text))
                             or bool(OUTDATED_TAG_PATTERN.search(self._current_cell_class))
                             or cell_text == "×"
                         )
+                        is_star = ("★" in cell_text) and not is_rare_cell
+                        if is_star:
+                            self._forms_cols_has_star[col_offset] = True
                         if not is_rare_cell and (cell_text != "" or is_star):
                             self._forms_cols_valid[col_offset] = True
                 self._current_col_idx += 1
@@ -230,19 +230,19 @@ class YomitanHTMLParser(HTMLParser):
             if tag == "li" and self._in_forms_li:
                 self._in_forms_li = False
                 li_text = "".join(self._current_forms_li_text).strip()
-                if "★" in li_text:
-                    clean_term = re.sub(r"[（(]★[)）]|\s*★\s*", "", li_text).strip()
-                    clean_term = re.sub(r"^[〈（(\[]|[\s〉）)\]]+$", "", clean_term).strip()
-                    clean_term = html.unescape(clean_term).strip()
-                    if clean_term and clean_term not in self.metadata.forms_star:
-                        self.metadata.forms_star.append(clean_term)
-
                 is_rare_or_outdated = (
                     li_text.startswith("〈")
                     or any(m in li_text for m in OUTDATED_FORM_MARKERS)
                     or bool(OUTDATED_TAG_PATTERN.search(li_text))
                 )
                 if not is_rare_or_outdated:
+                    if "★" in li_text:
+                        clean_term = re.sub(r"[（(]★[)）]|\s*★\s*", "", li_text).strip()
+                        clean_term = re.sub(r"^[〈（(\[]|[\s〉）)\]]+$", "", clean_term).strip()
+                        clean_term = html.unescape(clean_term).strip()
+                        if clean_term and clean_term not in self.metadata.forms_star:
+                            self.metadata.forms_star.append(clean_term)
+
                     clean_form = re.sub(r"[（(\[][^）)\]]*[）)\]]", "", li_text).strip()
                     clean_form = re.sub(r"^[〈（(\[]|[\s〉）)\]]+$", "", clean_form).strip()
                     clean_form = html.unescape(clean_form).strip()

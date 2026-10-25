@@ -569,9 +569,13 @@ def generate_search_candidates(
 
     # Yomitan orthographic forms containing at least one Kanji (e.g. 缶けり -> 缶蹴り)
     if yomitan_meta and yomitan_meta.forms_all:
+        added_forms = 0
         for form in yomitan_meta.forms_all:
             if KANJI_RE.search(form):
                 add(form, "yomitan_form", 1)
+                added_forms += 1
+                if added_forms >= 3:
+                    break
 
     # Bikago polite prefix (e.g. 肉 -> お肉, 肌 -> お肌, 茶 -> お茶, 風呂 -> お風呂)
     bikago = expand_bikago_prefix(surface)
