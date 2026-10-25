@@ -319,10 +319,9 @@ class IrasutoyaDialog(QDialog):
         self.browser = browser
         self.note_ids = list(dict.fromkeys(note_ids))
         self.config = get_config()
-        search_backend = self.config.get("search_backend", "auto")
         self.store = default_store()
         self.store.warm_async()
-        self.client = IrasutoyaClient(catalog=self.store, backend=search_backend)
+        self.client = IrasutoyaClient(catalog=self.store)
 
         self.selected_card_widget: Optional[ImageCardWidget] = None
         self.image_cards: List[ImageCardWidget] = []
@@ -364,15 +363,9 @@ class IrasutoyaDialog(QDialog):
 
     def _get_backend_status_text(self) -> str:
         """Format human-readable backend indicator without blocking on background catalog load."""
-        if self.client.backend == "live":
-            return "Live search"
         if not os.path.isfile(self.store.path):
-            if self.client.backend == "auto":
-                return "Live search"
             return "Offline catalog (missing)"
         if self.store.is_load_failed():
-            if self.client.backend == "auto":
-                return "Live search (catalog failed)"
             return "Offline catalog (failed)"
         if not self.store.is_loaded():
             return "Offline catalog (loading...)"
@@ -1096,12 +1089,10 @@ class IrasutoyaDialog(QDialog):
         def background_search() -> None:
             """Fetch search results on a background thread using fallback queries."""
             probed_counts: Optional[Dict[str, int]] = None
-            use_catalog = self.client.uses_catalog()
-            max_results = None if use_catalog else 12
             try:
                 images, matched_cand, _best_img = self.client.search_with_fallbacks(
                     search_candidates,
-                    max_results=max_results,
+                    max_results=None,
                     image_size=image_size,
                     is_cancelled=lambda: current_gen != self._search_generation,
                 )
@@ -1112,38 +1103,37 @@ class IrasutoyaDialog(QDialog):
             if current_gen != self._search_generation:
                 return
 
-            if use_catalog:
-                try:
-                    catalog = self.store.get_index()
-                    if catalog is not None:
-                        count_cache = self._catalog_count_cache.setdefault(image_size, {})
+            try:
+                catalog = self.store.get_index()
+                if catalog is not None:
+                    count_cache = self._catalog_count_cache.setdefault(image_size, {})
 
-                        # Reuse already retrieved and filtered results for the matched candidate
-                        if matched_cand and images:
-                            count_cache[matched_cand[0]] = len(images)
+                    # Reuse already retrieved and filtered results for the matched candidate
+                    if matched_cand and images:
+                        count_cache[matched_cand[0]] = len(images)
 
-                        def _count(term: str) -> int:
-                            if current_gen != self._search_generation:
-                                raise _StaleSearch()
-                            if term not in count_cache:
-                                raw_imgs = catalog.search(term, image_size=image_size)
-                                count_cache[term] = sum(
-                                    1 for img in raw_imgs
-                                    if not is_decorative_asset(img, term) and is_image_relevant(img, term)
-                                )
-                            return count_cache[term]
+                    def _count(term: str) -> int:
+                        if current_gen != self._search_generation:
+                            raise _StaleSearch()
+                        if term not in count_cache:
+                            raw_imgs = catalog.search(term, image_size=image_size)
+                            count_cache[term] = sum(
+                                1 for img in raw_imgs
+                                if not is_decorative_asset(img, term) and is_image_relevant(img, term)
+                            )
+                        return count_cache[term]
 
-                        probe_terms = [c[0] for c in display_chips]
-                        if matched_cand and matched_cand[0] not in probe_terms:
-                            probe_terms.append(matched_cand[0])
-                        counts: Dict[str, int] = {t: _count(t) for t in probe_terms}
-                        if restore_term:
-                            counts[restore_term] = _count(restore_term)
-                        probed_counts = counts
-                except _StaleSearch:
-                    return
-                except Exception:
-                    logger.exception("Catalog count probe failed")
+                    probe_terms = [c[0] for c in display_chips]
+                    if matched_cand and matched_cand[0] not in probe_terms:
+                        probe_terms.append(matched_cand[0])
+                    counts: Dict[str, int] = {t: _count(t) for t in probe_terms}
+                    if restore_term:
+                        counts[restore_term] = _count(restore_term)
+                    probed_counts = counts
+            except _StaleSearch:
+                return
+            except Exception:
+                logger.exception("Catalog count probe failed")
 
             if current_gen != self._search_generation:
                 return

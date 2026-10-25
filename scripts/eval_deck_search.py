@@ -18,8 +18,9 @@ import sys
 import time
 import unicodedata
 import urllib.error
+import urllib.parse
 import urllib.request
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 # Ensure parent directory is on sys.path so we can import client and text_utils
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -27,12 +28,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from addon.batch import safe_extract_note_pos_type
 from addon.catalog import default_store
 from addon.client import IrasutoyaClient
-from addon.feed import IrasutoyaImage
-from addon.ranking import is_decorative_asset, is_image_relevant
-from addon.text_utils import (
-    BATCH_MAX_CANDIDATES,
-    generate_search_candidates,
+from addon.feed import IrasutoyaImage, parse_entries
+from addon.ranking import (
+    is_decorative_asset,
+    is_image_relevant,
+    rank_relevant_images,
+    select_best_image,
 )
+from addon.text_utils import generate_search_candidates
 
 
 def legacy_clean_query(raw_text: Optional[str]) -> str:
@@ -54,6 +57,59 @@ def legacy_clean_query(raw_text: Optional[str]) -> str:
                 break
     text = text.strip(" ~〜-ー:：!！?？. 。")
     return text
+
+
+class _LiveBloggerSearchClient:
+    """Standalone live Blogger feed scraper for developer CLI benchmarking."""
+
+    BASE_FEED_URL = "https://www.irasutoya.com/feeds/posts/default"
+    DEFAULT_TIMEOUT = 10
+    USER_AGENT = "Mozilla/5.0 (compatible; AnkiIrasutoyaBenchmark/1.0)"
+
+    def search(
+        self,
+        query: str,
+        max_results: Optional[int] = None,
+        image_size: str = "s800",
+        orderby: Optional[str] = "relevance"
+    ) -> List[IrasutoyaImage]:
+        """Search Irasutoya directly via live Blogger JSON feed."""
+        if not query or not query.strip():
+            return []
+        fetch_count = min(max_results or 25, 50)
+        encoded_q = urllib.parse.quote(query.strip())
+        url = f"{self.BASE_FEED_URL}?alt=json&q={encoded_q}&max-results={fetch_count}"
+        if orderby:
+            url += f"&orderby={urllib.parse.quote(orderby)}"
+        req = urllib.request.Request(url, headers={"User-Agent": self.USER_AGENT})
+        with urllib.request.urlopen(req, timeout=self.DEFAULT_TIMEOUT) as resp:
+            raw_json = json.loads(resp.read().decode("utf-8"))
+        entries = raw_json.get("feed", {}).get("entry", []) if isinstance(raw_json, dict) else []
+        images = parse_entries(entries, image_size=image_size)
+        return images[:max_results] if max_results is not None else images
+
+    def search_with_fallbacks(
+        self,
+        candidates: Sequence[Tuple[str, str, int]],
+        max_results: Optional[int] = 5,
+        image_size: str = "s800",
+        pace_callback: Optional[Callable[[], None]] = None,
+        pos_type: Optional[str] = None,
+        orderby: Optional[str] = "relevance"
+    ) -> Tuple[List[IrasutoyaImage], Optional[Tuple[str, str, int]], Optional[IrasutoyaImage]]:
+        """Perform sequential fallback candidate search against live Blogger feed."""
+        for cand in candidates:
+            term, _reason, _tier = cand
+            if pace_callback:
+                pace_callback()
+            images = self.search(term, max_results=None, image_size=image_size, orderby=orderby)
+            if not images:
+                continue
+            ranked = rank_relevant_images(images, term, pos_type=pos_type)
+            if ranked:
+                best = select_best_image(ranked, term, pos_type=pos_type) or ranked[0]
+                return ranked[:max_results] if max_results else ranked, cand, best
+        return [], None, None
 
 
 def anki_invoke(action: str, anki_url: str = "http://localhost:8765", **params: Any) -> Any:
@@ -173,8 +229,8 @@ def run_evaluation(
             sys.exit(1)
     else:
         cat_store.warm_async()
-    cat_client = IrasutoyaClient(catalog=cat_store, backend="catalog")
-    live_client = IrasutoyaClient(backend="live")
+    cat_client = IrasutoyaClient(catalog=cat_store)
+    live_client = _LiveBloggerSearchClient()
 
     legacy_hits = 0
     live_hits = 0
@@ -212,7 +268,6 @@ def run_evaluation(
         candidates = generate_search_candidates(
             raw_source, note=fields, allow_tier2=allow_tier2, allow_deinflection=True
         )
-        batch_candidates = candidates[:BATCH_MAX_CANDIDATES]
         pos_type = safe_extract_note_pos_type(fields)
 
         live_res, live_cand, live_best = [], None, None
@@ -222,9 +277,8 @@ def run_evaluation(
         if backend in ("live", "both"):
             try:
                 live_res, live_cand, live_best = live_client.search_with_fallbacks(
-                    batch_candidates,
+                    candidates,
                     max_results=5,
-                    orderby="relevance",
                     pace_callback=lambda: time.sleep(delay) if delay > 0 else None,
                     pos_type=pos_type,
                 )
@@ -235,9 +289,8 @@ def run_evaluation(
         if backend in ("catalog", "both"):
             try:
                 cat_res, cat_cand, cat_best = cat_client.search_with_fallbacks(
-                    batch_candidates,
+                    candidates,
                     max_results=5,
-                    orderby="relevance",
                     pos_type=pos_type,
                 )
             except Exception as e:
@@ -336,7 +389,7 @@ def run_evaluation(
             if leg_found:
                 print(f"      ↳ Legacy matched: '{leg_query}' -> '{valid_leg_results[0].title}'")
             if not leg_found and not new_found:
-                tried_terms = [c[0] for c in batch_candidates]
+                tried_terms = [c[0] for c in candidates]
                 print(f"      ↳ Tried candidates: {', '.join(repr(t) for t in tried_terms)}")
 
     # --- SUMMARY REPORT ---

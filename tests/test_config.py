@@ -32,6 +32,7 @@ class TestConfig(unittest.TestCase):
         self.assertIn(CONFIG_KEY_OVERWRITE, cfg)
         self.assertIn(CONFIG_KEY_THUMB_DELAY, cfg)
         self.assertIn(CONFIG_KEY_FULL_DELAY, cfg)
+        self.assertNotIn("search_backend", cfg)
         self.assertEqual(cfg[CONFIG_KEY_THUMB_DELAY], 50)
         self.assertEqual(cfg[CONFIG_KEY_FULL_DELAY], 300)
 

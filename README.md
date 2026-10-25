@@ -22,7 +22,7 @@ Enrich your Anki flashcards with illustrations from [いらすとや (Irasutoya)
   - **Tiered Confidence Strategy & Audit Tagging**:
     - **Tier 1 (Safe Syntactic Transforms)**: Applied automatically with zero homophone risk.
     - **Tier 2 (Semantic & Reading Fallbacks)**: If an image is matched via a phonetic reading fallback in Batch Mode, the note is automatically tagged with `irasutoya::fallback_reading` for effortless one-click auditability in the Anki Browser.
-  - **Archetype & Relevance Scoring Engine**: Uses Blogger `orderby=relevance` and a scoring engine that favors canonical, standalone illustrations over negative situations, multi-figure scenarios, or incidental mentions (e.g. `本` selects a clean book rather than tax paperwork).
+  - **Archetype & Relevance Scoring Engine**: Favors canonical, standalone illustrations over negative situations, multi-figure scenarios, or incidental mentions (e.g. `本` selects a clean book rather than tax paperwork).
 - **Dual Mode**:
   - **Single Card Interactive Gallery**:
     - Real-time thumbnail gallery with titles and selection checkmark badge.
@@ -49,7 +49,6 @@ Enrich your Anki flashcards with illustrations from [いらすとや (Irasutoya)
   - Ships with an immutable SQLite database indexing ~25,000 Irasutoya posts and ~42,000 illustrations.
   - Searches run locally in memory via substring matching in 2–3 ms, handling 1-2 character queries with zero network delay.
   - Transparent 404/410 self-healing: if an image binary link becomes stale, the add-on automatically re-fetches the post entry from Blogger once to resolve the new image URL.
-  - Search backend is configurable via `config.json` (`"search_backend": "auto"` / `"catalog"` / `"live"`).
 - **Native Undo Support**:
   - Modifies notes via Anki's native operations framework. Press `Cmd+Z` / `Ctrl+Z` to revert batch or single additions at any time.
 

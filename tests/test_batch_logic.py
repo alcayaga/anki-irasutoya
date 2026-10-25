@@ -1,8 +1,22 @@
 """Unit tests for batch processing logic, filename generation, and note evaluation."""
 import unittest
 import urllib.parse
+from typing import Any
+from unittest.mock import MagicMock, patch
 
-from addon.batch import BatchStats, make_safe_media_filename, process_note_record, safe_extract_note_pos_type
+try:
+    import aqt  # noqa: F401
+    HAS_AQT = True
+except ImportError:
+    HAS_AQT = False
+
+from addon.batch import (
+    BatchStats,
+    make_safe_media_filename,
+    process_note_record,
+    run_batch_fill,
+    safe_extract_note_pos_type,
+)
 from addon.feed import IrasutoyaImage
 
 
@@ -227,8 +241,10 @@ class TestBatchLogic(unittest.TestCase):
         self.assertEqual(status, "added")
         self.assertIn("猫のイラスト", urllib.parse.unquote(mod["DefinitionPicture"]))
 
-    def test_batch_legacy_path_caps_at_max_candidates(self):
-        """Verify legacy search path does not iterate past BATCH_MAX_CANDIDATES queries."""
+    def test_batch_legacy_path_evaluates_all_candidates(self):
+        """Verify legacy search path iterates through generated candidates without artificial cap."""
+        from addon.text_utils import generate_search_candidates
+
         queried = []
 
         class QueryTrackingClient(MockIrasutoyaClient):
@@ -249,7 +265,12 @@ class TestBatchLogic(unittest.TestCase):
             allow_tier2=True
         )
         self.assertEqual(status, "not_found")
-        self.assertLessEqual(len(queried), 4)
+        expected = [
+            c[0] for c in generate_search_candidates(
+                note["Expression"], note=note, allow_tier2=True, allow_deinflection=True
+            )
+        ]
+        self.assertEqual(queried, expected)
 
 
     def test_safe_extract_note_pos_type(self):
@@ -268,6 +289,66 @@ class TestBatchLogic(unittest.TestCase):
             "MainDefinition": '<ol><li><i>(v1, JMdict)</i> to eat</li></ol>'
         }
         self.assertEqual(safe_extract_note_pos_type(valid_verb_note), "verb")
+
+    @unittest.skipUnless(HAS_AQT, "aqt not available in headless test environment")
+    def test_run_batch_fill_aborts_when_catalog_missing(self):
+        """Verify run_batch_fill reports all notes as errors when catalog index is unavailable."""
+        mock_store = MagicMock()
+        mock_store.get_index.return_value = None
+
+        mock_col = MagicMock()
+        mock_note = {"Expression": "猫", "DefinitionPicture": ""}
+        mock_col.get_note.return_value = mock_note
+
+        mock_mw = MagicMock()
+        mock_mw.col = mock_col
+
+        def fake_with_progress(task: Any, on_done: Any, **kwargs: Any) -> None:
+            """Simulate taskman with_progress execution."""
+            res = task()
+            fut = MagicMock()
+            fut.exception.return_value = None
+            fut.result.return_value = res
+            on_done(fut)
+
+        mock_mw.taskman.with_progress = fake_with_progress
+
+        class MockQueryOp:
+            """Mock Anki QueryOp executing synchronous operations."""
+
+            def __init__(self, parent: Any = None, op: Any = None, success: Any = None) -> None:
+                """Initialize mock QueryOp."""
+                self.op = op
+                self.success_cb = success
+
+            def with_backend(self) -> "MockQueryOp":
+                """Return self for chained builder call."""
+                return self
+
+            def run_in_background(self) -> None:
+                """Execute op synchronously."""
+                res = self.op(mock_col)
+                if self.success_cb:
+                    self.success_cb(res)
+
+        finished_stats: list = []
+
+        with patch("addon.batch.default_store", return_value=mock_store), \
+             patch("aqt.operations.QueryOp", MockQueryOp), \
+             patch("aqt.mw", mock_mw), \
+             patch("aqt.utils.tooltip"):
+            run_batch_fill(
+                parent_window=None,
+                note_ids=[101],
+                source_field="Expression",
+                target_field="DefinitionPicture",
+                overwrite_mode="skip",
+                on_finish=lambda s: finished_stats.append(s),
+            )
+
+        self.assertEqual(len(finished_stats), 1)
+        self.assertEqual(finished_stats[0].errors, 1)
+        self.assertEqual(finished_stats[0].added, 0)
 
 
 if __name__ == "__main__":

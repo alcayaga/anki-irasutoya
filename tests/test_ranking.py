@@ -15,7 +15,7 @@ from addon.ranking import (
     score_candidate_image,
     select_best_image,
 )
-from addon.text_utils import BATCH_MAX_CANDIDATES, generate_search_candidates
+from addon.text_utils import generate_search_candidates
 
 
 class TestRanking(unittest.TestCase):
@@ -322,7 +322,7 @@ class TestRanking(unittest.TestCase):
                     note = {"Expression": term, "Reading": reading} if reading else {"Expression": term}
                     candidates = generate_search_candidates(
                         term, note=note, allow_tier2=True, allow_deinflection=True
-                    )[:BATCH_MAX_CANDIDATES]
+                    )
                     self.assertTrue(
                         any(
                             classify_match_boundary(target_title, c[0])

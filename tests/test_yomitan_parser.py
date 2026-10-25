@@ -97,6 +97,7 @@ class TestYomitanParser(unittest.TestCase):
         self.assertEqual(meta.forms_star, ["交代", "交替"])
         # Ensure non-star forms like 田圃 are not included in forms_star
         self.assertNotIn("田圃", meta.forms_star)
+        self.assertEqual(meta.forms_all, ["交代", "交替"])
 
     def test_forms_list(self):
         """Test extracting ★ forms from unordered list under (forms...) tag."""
@@ -109,6 +110,40 @@ class TestYomitanParser(unittest.TestCase):
         meta = parse_yomitan_html(html_list)
         self.assertIsNotNone(meta)
         self.assertEqual(meta.forms_star, ["手袋"])
+        self.assertEqual(meta.forms_all, ["手袋", "手ぶくろ"])
+
+    def test_forms_all_extracts_mixed_kana_orthography(self):
+        """Test extracting non-starred orthographic variants from JMdict (forms...) entry."""
+        html_kankeri = (
+            '<ol>'
+            '<li data-dictionary="JMdict [2025-11-01]"><i>(forms, JMdict [2025-11-01])</i> '
+            '<ul><li>缶蹴り</li><li>缶けり</li></ul></li>'
+            '</ol>'
+        )
+        meta = parse_yomitan_html(html_kankeri)
+        self.assertIsNotNone(meta)
+        self.assertEqual(meta.forms_star, [])
+        self.assertEqual(meta.forms_all, ["缶蹴り", "缶けり"])
+
+    def test_forms_all_skips_outdated_markers(self):
+        """Test that forms marked with rare/outdated symbols or tags are excluded from forms_all."""
+        html_rare = (
+            '<ol>'
+            '<li data-dictionary="JMdict [2025-11-01]"><i>(forms, JMdict [2025-11-01])</i> '
+            '<ul>'
+            '<li>標準形</li>'
+            '<li>注意形（⚠️）</li>'
+            '<li>廃用形（rK）</li>'
+            '<li>稀少形（rare）</li>'
+            '<li>〈旧字〉</li>'
+            '<li>棄却形（×）</li>'
+            '<li>記号形（🅁）</li>'
+            '</ul></li>'
+            '</ol>'
+        )
+        meta = parse_yomitan_html(html_rare)
+        self.assertIsNotNone(meta)
+        self.assertEqual(meta.forms_all, ["標準形"])
 
     def test_see_references(self):
         """Test extracting 'see:' references while ignoring antonyms."""

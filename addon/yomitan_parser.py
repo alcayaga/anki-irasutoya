@@ -33,8 +33,15 @@ class YomitanMetadata:
     is_particle_or_aux: bool = False
     verb_class: Optional[str] = None
     forms_star: List[str] = field(default_factory=list)
+    forms_all: List[str] = field(default_factory=list)
     references: List[str] = field(default_factory=list)
     sense_kanji: List[str] = field(default_factory=list)
+
+
+OUTDATED_FORM_MARKERS = frozenset({"⚠️", "×", "🅁", "⛬", "㊒"})
+OUTDATED_TAG_PATTERN = re.compile(
+    r"\b(rk|sk|ok|ik|rare|outdated|irregular|search-only)\b", re.IGNORECASE
+)
 
 
 class YomitanHTMLParser(HTMLParser):
@@ -150,14 +157,25 @@ class YomitanHTMLParser(HTMLParser):
                 cell_text = "".join(self._current_cell_text).strip()
                 if self._current_row_idx == 0:
                     if self._current_col_idx > 0:
-                        clean_hdr = re.sub(r"^[〈（(]|[\s〉）)]+$", "", cell_text).strip()
+                        is_rare_or_outdated = (
+                            cell_text.startswith("〈")
+                            or cell_text.endswith("〉")
+                            or any(m in cell_text for m in OUTDATED_FORM_MARKERS)
+                            or bool(OUTDATED_TAG_PATTERN.search(cell_text))
+                        )
+                        clean_hdr = re.sub(r"^[〈（(\[]|[\s〉）)\]]+$", "", cell_text).strip()
+                        clean_hdr = html.unescape(clean_hdr).strip()
                         self._table_headers.append(clean_hdr)
+                        if not is_rare_or_outdated and clean_hdr and clean_hdr not in self.metadata.forms_all:
+                            self.metadata.forms_all.append(clean_hdr)
                 else:
                     col_offset = self._current_col_idx - 1
                     if "★" in cell_text and 0 <= col_offset < len(self._table_headers):
                         cand = self._table_headers[col_offset]
                         if cand and cand not in self.metadata.forms_star:
                             self.metadata.forms_star.append(cand)
+                        if cand and cand not in self.metadata.forms_all:
+                            self.metadata.forms_all.append(cand)
                 self._current_col_idx += 1
                 self._in_th = False
                 self._in_td = False
@@ -173,9 +191,22 @@ class YomitanHTMLParser(HTMLParser):
                 li_text = "".join(self._current_forms_li_text).strip()
                 if "★" in li_text:
                     clean_term = re.sub(r"[（(]★[)）]|\s*★\s*", "", li_text).strip()
-                    clean_term = re.sub(r"^[〈（(]|[\s〉）)]+$", "", clean_term).strip()
+                    clean_term = re.sub(r"^[〈（(\[]|[\s〉）)\]]+$", "", clean_term).strip()
+                    clean_term = html.unescape(clean_term).strip()
                     if clean_term and clean_term not in self.metadata.forms_star:
                         self.metadata.forms_star.append(clean_term)
+
+                is_rare_or_outdated = (
+                    li_text.startswith("〈")
+                    or any(m in li_text for m in OUTDATED_FORM_MARKERS)
+                    or bool(OUTDATED_TAG_PATTERN.search(li_text))
+                )
+                if not is_rare_or_outdated:
+                    clean_form = re.sub(r"[（(\[][^）)\]]*[）)\]]", "", li_text).strip()
+                    clean_form = re.sub(r"^[〈（(\[]|[\s〉）)\]]+$", "", clean_form).strip()
+                    clean_form = html.unescape(clean_form).strip()
+                    if clean_form and clean_form not in self.metadata.forms_all:
+                        self.metadata.forms_all.append(clean_form)
             elif tag in ("ul", "ol", "li"):
                 # end of forms block
                 self._in_forms_entry = False
@@ -248,7 +279,13 @@ def parse_yomitan_html(html_text: Optional[str]) -> Optional[YomitanMetadata]:
 def _has_data(meta: Optional[YomitanMetadata]) -> bool:
     """Return True if meta contains any parsed POS tags, forms, references, or sense notes."""
     return bool(
-        meta and (meta.pos_tags or meta.forms_star or meta.references or meta.sense_kanji)
+        meta and (
+            meta.pos_tags
+            or meta.forms_star
+            or meta.forms_all
+            or meta.references
+            or meta.sense_kanji
+        )
     )
 
 

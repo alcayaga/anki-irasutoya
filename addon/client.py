@@ -10,8 +10,8 @@ import urllib.parse
 import urllib.request
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
-from .catalog import CatalogStore
-from .feed import IrasutoyaImage, ParsedPost, is_allowed_image_host, parse_entries, parse_entry, upgrade_image_url
+from .catalog import CatalogStore, default_store
+from .feed import IrasutoyaImage, ParsedPost, is_allowed_image_host, parse_entry, upgrade_image_url
 from .ranking import infer_pos_type, is_decorative_asset, is_image_relevant, rank_relevant_images
 
 logger = logging.getLogger(__name__)
@@ -49,27 +49,13 @@ class IrasutoyaClient:
         self,
         user_agent: Optional[str] = None,
         catalog: Optional[CatalogStore] = None,
-        backend: str = "auto",
     ):
         """Initialize the Irasutoya client with custom or default User-Agent and catalog backend."""
         self.user_agent = user_agent or self.DEFAULT_USER_AGENT
         self._opener = urllib.request.build_opener(_HttpsOnlyRedirectHandler)
-        self.catalog = catalog
-        supported_backends = ("auto", "catalog", "live")
-        if backend not in supported_backends:
-            logger.warning("Unknown search backend '%s'; defaulting to 'auto'", backend)
-            backend = "auto"
-        self.backend = backend
+        self.catalog = catalog if catalog is not None else default_store()
         self._healed_posts_cache: Dict[Tuple[str, str], Optional[ParsedPost]] = {}
         self._healed_posts_lock = threading.Lock()
-
-    def uses_catalog(self) -> bool:
-        """Return True if client is configured to query the offline metadata catalog."""
-        return (
-            self.backend != "live"
-            and self.catalog is not None
-            and self.catalog.get_index() is not None
-        )
 
     def _make_request(self, url: str, timeout: int = 10, max_retries: int = 2) -> bytes:
         """Execute HTTP GET with User-Agent, handling rate-limit backoff."""
@@ -105,19 +91,15 @@ class IrasutoyaClient:
     def search(
         self,
         query: str,
-        max_results: Optional[int] = 12,
+        max_results: Optional[int] = None,
         image_size: str = "s800",
-        orderby: Optional[str] = "relevance",
-        is_cancelled: Optional[Callable[[], bool]] = None,
     ) -> List[IrasutoyaImage]:
-        """Search Irasutoya for a given query keyword.
+        """Search Irasutoya catalog for a given query keyword.
 
         Args:
             query: The keyword to search for (e.g. '猫' or '走る').
-            max_results: Maximum posts to fetch from Blogger feed (None for uncapped up to 250 posts).
-            image_size: Resolution replacement, e.g. 's800' or 's0' (original size).
-            orderby: Sort order for Blogger feed ('relevance', 'updated', etc.).
-            is_cancelled: Optional callback returning True if search should abort early.
+            max_results: Optional maximum number of images to return.
+            image_size: Target resolution replacement, e.g. 's800' or 's0' (original size).
 
         Returns:
             A list of IrasutoyaImage objects.
@@ -126,88 +108,21 @@ class IrasutoyaClient:
         if not clean_q:
             return []
 
-        if self.backend == "catalog":
-            if not self.uses_catalog():
-                logger.warning("Catalog backend requested but offline catalog index is unavailable.")
-                return []
-            index = self.catalog.get_index()
-            return index.search(clean_q, image_size=image_size) if index else []
+        index = self.catalog.get_index() if self.catalog is not None else None
+        if index is None:
+            logger.warning("Offline catalog index is unavailable.")
+            return []
 
-        if self.uses_catalog():
-            index = self.catalog.get_index()
-            if index is not None:
-                return index.search(clean_q, image_size=image_size)
-
-        if max_results and max_results > 0:
-            params: dict = {
-                "alt": "json",
-                "q": clean_q,
-                "max-results": max_results,
-            }
-            if orderby:
-                params["orderby"] = orderby
-            url = f"{self.BASE_URL}/feeds/posts/default?{urllib.parse.urlencode(params)}"
-
-            raw_data = self._make_request(url)
-            data = json.loads(raw_data.decode("utf-8"))
-
-            entries = data.get("feed", {}).get("entry", [])
-            return parse_entries(entries, image_size=image_size)
-
-        # Uncapped search: paginate Blogger feed until exhausted (up to 250 posts safety limit)
-        all_entries: list = []
-        page_size = 50
-        max_feed_limit = 250
-        start_index = 1
-
-        while start_index <= max_feed_limit:
-            if is_cancelled and is_cancelled():
-                break
-            page_params: dict = {
-                "alt": "json",
-                "q": clean_q,
-                "max-results": page_size,
-                "start-index": start_index,
-            }
-            if orderby:
-                page_params["orderby"] = orderby
-            url = f"{self.BASE_URL}/feeds/posts/default?{urllib.parse.urlencode(page_params)}"
-            try:
-                raw_data = self._make_request(url)
-                data = json.loads(raw_data.decode("utf-8"))
-                page_entries = []
-                feed = data.get("feed") if isinstance(data, dict) else None
-                if not isinstance(feed, dict):
-                    raise ValueError("Blogger feed response has no feed object.")
-                entries = feed.get("entry")
-                if isinstance(entries, list):
-                    page_entries = entries
-            except InsecureRedirectError:
-                raise
-            except Exception as e:
-                if start_index == 1:
-                    raise
-                logger.warning("Error fetching live feed page at start-index %d: %s", start_index, e)
-                break
-
-            if not page_entries:
-                break
-            all_entries.extend(page_entries)
-            if len(page_entries) < page_size:
-                break
-            start_index += len(page_entries)
-            if start_index <= max_feed_limit:
-                time.sleep(0.3)
-
-        return parse_entries(all_entries, image_size=image_size)
+        results = index.search(clean_q, image_size=image_size)
+        if max_results is not None and max_results > 0:
+            return results[:max_results]
+        return results
 
     def search_with_fallbacks(
         self,
         candidates: Sequence[Tuple[str, str, int]],
         max_results: Optional[int] = 12,
         image_size: str = "s800",
-        orderby: Optional[str] = "relevance",
-        pace_callback: Optional[Callable[[], None]] = None,
         pos_type: Optional[str] = None,
         is_cancelled: Optional[Callable[[], bool]] = None,
     ) -> Tuple[List[IrasutoyaImage], Optional[Tuple[str, str, int]], Optional[IrasutoyaImage]]:
@@ -215,10 +130,8 @@ class IrasutoyaClient:
 
         Args:
             candidates: Sequence of (term, reason_label, tier).
-            max_results: Maximum posts to fetch per query (None or 0 for uncapped).
+            max_results: Maximum illustrations to return for the matched candidate (None for uncapped).
             image_size: Target image resolution code.
-            orderby: Blogger ordering parameter.
-            pace_callback: Optional callback invoked before each network query to pace requests.
             pos_type: Optional Part-of-Speech profile ('verb', 'noun', 'adjective') for category ranking.
             is_cancelled: Optional callback returning True if search should abort early.
 
@@ -230,16 +143,7 @@ class IrasutoyaClient:
                 break
             term = cand[0]
             reason = cand[1]
-            if pace_callback is not None and not self.uses_catalog():
-                pace_callback()
-            search_kwargs = {
-                "max_results": max_results,
-                "image_size": image_size,
-                "orderby": orderby,
-            }
-            if is_cancelled is not None:
-                search_kwargs["is_cancelled"] = is_cancelled
-            images = self.search(term, **search_kwargs)
+            images = self.search(term, max_results=None, image_size=image_size)
 
             # Filter out non-illustration/decorative assets and images not relevant to the query term
             illustration_candidates = [

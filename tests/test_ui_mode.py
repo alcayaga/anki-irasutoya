@@ -38,7 +38,6 @@ def _install_catalog_counts(dlg, counts_map):
         MagicMock(title=f"{q}のイラスト", is_single_image_post=True, description="")
     ] * counts_map.get(q, 0)
     dlg.store.get_index = MagicMock(return_value=mock_index)
-    dlg.client.uses_catalog = MagicMock(return_value=True)
     return mock_index
 
 
@@ -223,8 +222,8 @@ class TestUIMode(unittest.TestCase):
             self.assertIn("No illustrations found for 'ほん'", dlg.status_label.text())
             self.assertEqual(_chip_texts(dlg), ["本  1693", "ほん  3", "ホン  111"])
 
-    def test_live_backend_does_not_suppress_chips_with_catalog(self):
-        """When client uses live backend, candidates are not probed or discarded by catalog."""
+    def test_missing_catalog_does_not_suppress_chips(self):
+        """When catalog index is unavailable, candidates are rendered without probing or suppression."""
         mock_mw = MagicMock()
         mock_note = {"Expression": "本", "Reading": "ほん", "DefinitionPicture": ""}
         mock_mw.col.get_note.return_value = mock_note
@@ -235,13 +234,8 @@ class TestUIMode(unittest.TestCase):
             dlg._thumb_executor.submit = MagicMock()
             dlg._run_on_main = lambda cb: cb()
 
-            # Live backend: uses_catalog returns False
-            dlg.client.uses_catalog = MagicMock(return_value=False)
-            mock_index = MagicMock()
-            mock_index.search.return_value = []  # Catalog reports 0 results
-            dlg.store.get_index = MagicMock(return_value=mock_index)
+            dlg.store.get_index = MagicMock(return_value=None)
 
-            # Live search returns a hit for "本"
             mock_img = IrasutoyaImage(
                 "本のイラスト", "https://example.com/1.png", "https://example.com/1_t.png", "本のイラスト"
             )
@@ -251,9 +245,6 @@ class TestUIMode(unittest.TestCase):
 
             dlg.query_input.setText("本")
             dlg._do_search()
-
-            # Verify catalog index search was never called because uses_catalog is False
-            mock_index.search.assert_not_called()
 
             # Neither candidate was suppressed; neither has catalog count appended
             self.assertEqual(_chip_texts(dlg), ["本", "ほん", "ホン"])
@@ -594,7 +585,6 @@ class TestUIMode(unittest.TestCase):
                 [relevant_img, decorative_img] if q == "猫" else [neko_hira_img]
             )
             dlg.store.get_index = MagicMock(return_value=mock_index)
-            dlg.client.uses_catalog = MagicMock(return_value=True)
             dlg.client.search_with_fallbacks = MagicMock(
                 return_value=([relevant_img], ("猫", "primary", 0), relevant_img)
             )

@@ -1,4 +1,5 @@
 """Unit tests for text query extraction and sanitization utilities."""
+import re
 import unittest
 
 from addon.text_utils import clean_search_query
@@ -218,7 +219,7 @@ class TestTextUtils(unittest.TestCase):
         self.assertEqual(cands_non_str[0], ("本", "primary", 1))
 
         # Test 8: Surface-derived validated deinflected bases precede phonetic readings in Tier 2
-        # to ensure bases are evaluated within BATCH_MAX_CANDIDATES without crowding out note readings
+        # to ensure semantic bases are evaluated ahead of unanchored phonetic readings
         note_kaeru = {
             "Expression": "帰ってくる",
             "Reading": "かえってくる"
@@ -578,6 +579,70 @@ class TestTextUtils(unittest.TestCase):
         self.assertIn("帰ってきた", cand_map)
         self.assertEqual(cand_map["帰ってきた"], ("verb_inflection", 1))
         self.assertNotIn("帰ってくるた", cand_map)
+
+    def test_yomitan_forms_all_orthography_promotion(self):
+        """Test that orthographic Kanji variants from forms_all are promoted to Tier 1."""
+        from addon.text_utils import generate_search_candidates
+        note_kankeri = {
+            "Expression": "缶けり",
+            "Reading": "かんけり",
+            "MainDefinition": (
+                '<ol><li data-dictionary="JMdict [2025-11-01]">'
+                '<i>(forms, JMdict [2025-11-01])</i> '
+                '<ul><li>缶蹴り</li><li>缶けり</li></ul></li></ol>'
+            ),
+        }
+        cands = generate_search_candidates(note_kankeri["Expression"], note=note_kankeri, allow_tier2=True)
+        cand_map = {term: (reason, tier) for term, reason, tier in cands}
+        self.assertIn("缶蹴り", cand_map)
+        self.assertEqual(cand_map["缶蹴り"], ("yomitan_form", 1))
+
+    def test_tier2_semantic_stems_precede_phonetic_readings(self):
+        """Test that verb_stem (控え) precedes phonetic readings (ひかえる, ヒカエル) in Tier 2."""
+        from addon.text_utils import generate_search_candidates
+        note_hikaeru = {
+            "Expression": "控える",
+            "Reading": "ひかえる",
+        }
+        cands = generate_search_candidates(note_hikaeru["Expression"], note=note_hikaeru, allow_tier2=True)
+        cand_terms = [term for term, _, _ in cands]
+        self.assertIn("控え", cand_terms)
+        self.assertIn("ひかえる", cand_terms)
+        self.assertIn("ヒカエル", cand_terms)
+        # 控え must appear before both phonetic readings
+        self.assertLess(cand_terms.index("控え"), cand_terms.index("ひかえる"))
+        self.assertLess(cand_terms.index("控え"), cand_terms.index("ヒカエル"))
+
+    def test_pronoun_katakana_conversion_suppression(self):
+        """Test that Japanese pronouns and demonstratives are suppressed from Katakana conversion."""
+        from addon.text_utils import generate_search_candidates
+        # 1. Blocklisted pronoun わし must not emit ワシ (which would match 鷲 "eagle")
+        note_washi = {
+            "Expression": "わし",
+            "Reading": "わし",
+        }
+        cands_washi = generate_search_candidates(note_washi["Expression"], note=note_washi, allow_tier2=True)
+        cand_terms_washi = {term for term, _, _ in cands_washi}
+        self.assertIn("わし", cand_terms_washi)
+        self.assertNotIn("ワシ", cand_terms_washi)
+
+        # 2. Demonstratives これ, あれ must not emit コレ, アレ
+        for dem in ("これ", "あれ", "それ", "ここ", "どこ"):
+            cands_dem = generate_search_candidates(dem, allow_tier2=True)
+            cand_terms_dem = {term for term, _, _ in cands_dem}
+            self.assertIn(dem, cand_terms_dem)
+            self.assertFalse(any(re.fullmatch(r"[\u30a0-\u30ff]+", t) for t in cand_terms_dem))
+
+        # 3. Dynamic suppression via Yomitan 'pn' POS tag
+        note_custom_pn = {
+            "Expression": "わちき",
+            "Reading": "わちき",
+            "MainDefinition": '<ol><li><i>(pn, JMdict)</i> I; me</li></ol>',
+        }
+        cands_custom = generate_search_candidates(note_custom_pn["Expression"], note=note_custom_pn, allow_tier2=True)
+        cand_terms_custom = {term for term, _, _ in cands_custom}
+        self.assertIn("わちき", cand_terms_custom)
+        self.assertNotIn("ワチキ", cand_terms_custom)
 
 
 if __name__ == "__main__":
