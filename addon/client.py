@@ -145,6 +145,7 @@ class IrasutoyaClient:
             (ranked_images, matched_candidate, best_image)
         """
         first_weak_fallback: Optional[Tuple[List[IrasutoyaImage], Tuple[str, str, int], IrasutoyaImage]] = None
+        phonetic_prefixes = ("note_reading", "note_furigana", "same_field_reading", "yomitan_uk")
 
         for cand in candidates:
             if is_cancelled and is_cancelled():
@@ -165,13 +166,11 @@ class IrasutoyaClient:
                     ranked = ranked[:max_results]
                 best = ranked[0]
 
-                if has_title_illustration_match(illustration_candidates, term):
-                    if (
-                        first_weak_fallback is None
-                        or reason in ("concept_map", "synonym", "deinflected_base")
-                        or cand[2] <= first_weak_fallback[1][2]
-                    ):
-                        return ranked, cand, best
+                if (
+                    not reason.startswith(phonetic_prefixes)
+                    or first_weak_fallback is None
+                ) and has_title_illustration_match(illustration_candidates, term):
+                    return ranked, cand, best
 
                 if first_weak_fallback is None:
                     first_weak_fallback = (ranked, cand, best)

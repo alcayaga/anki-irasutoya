@@ -76,6 +76,13 @@ def populate_manual_concepts(
     Returns:
         True if all targets validated and populated successfully, False otherwise.
     """
+    catalog_path = os.path.abspath(catalog_path)
+    manual_json_path = os.path.abspath(manual_json_path)
+
+    if not os.path.isfile(catalog_path):
+        logger.error("Catalog database not found: %s", catalog_path)
+        return False
+
     if not os.path.isfile(manual_json_path):
         logger.error("Manual concepts file not found: %s", manual_json_path)
         return False
@@ -131,6 +138,7 @@ def populate_manual_concepts(
     finally:
         conn.close()
 
+    # Re-compute and refresh the SHA256 sidecar checksum after writing synonyms
     update_catalog_sha256(catalog_path)
     return True
 

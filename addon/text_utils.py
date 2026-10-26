@@ -2,7 +2,7 @@
 import html
 import re
 import unicodedata
-from typing import Any, List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple
 
 from .synonyms import lookup_concept_map
 from .yomitan_parser import (
@@ -506,7 +506,9 @@ def generate_search_candidates(
     raw_source: Optional[str],
     note: Optional[Any] = None,
     allow_tier2: bool = True,
-    allow_deinflection: bool = True
+    allow_deinflection: bool = True,
+    store: Optional[Any] = None,
+    concept_lookup: Optional[Callable[[str], List[str]]] = None,
 ) -> List[Tuple[str, str, int]]:
     """Generate prioritized search candidate queries with confidence tiers.
     
@@ -516,8 +518,16 @@ def generate_search_candidates(
                         Yomitan uk orthography kana readings, formsTable ★ canonical kanji variants).
         Tier 2 (Phonetic & Reading Fallbacks): Readings from separate note fields,
                        same-field furigana, verb masu-stems, Katakana chōonpu expansion, heuristic compound deinflection,
-                       Yomitan sense-specific kanji (esp.), Yomitan cross-references (see:).
+                       Yomitan sense-specific kanji (esp.), Yomitan cross-references (see:), curated visual concept maps.
     
+    Args:
+        raw_source: Raw text or HTML from the source field.
+        note: Optional Anki note object for extracting Yomitan metadata and secondary reading fields.
+        allow_tier2: Whether to generate Tier 2 phonetic and semantic fallbacks.
+        allow_deinflection: Whether to perform heuristic verb/adjective deinflection.
+        store: Optional CatalogStore instance to resolve concept maps from.
+        concept_lookup: Optional callable mapping a headword to a list of target concept strings.
+
     Returns:
         List of (candidate_query, reason_label, confidence_tier).
     """
@@ -645,9 +655,17 @@ def generate_search_candidates(
                         break
 
         # Curated visual concept map targets (e.g. 亡くなる -> お葬式, 墓; 手に入れる -> 獲得, 宝箱)
-        concept_targets = lookup_concept_map(surface)
+        def _resolve_concepts(term: str) -> List[str]:
+            """Resolve concept map targets using injected lookup, store, or default catalog."""
+            if concept_lookup is not None:
+                return concept_lookup(term)
+            if store is not None:
+                return lookup_concept_map(term, store=store)
+            return lookup_concept_map(term)
+
+        concept_targets = _resolve_concepts(surface)
         if not concept_targets and deinflections:
-            concept_targets = lookup_concept_map(deinflections[0])
+            concept_targets = _resolve_concepts(deinflections[0])
         for c_target in concept_targets:
             add(c_target, "concept_map", 2)
 

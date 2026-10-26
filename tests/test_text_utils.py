@@ -755,6 +755,18 @@ class TestTextUtils(unittest.TestCase):
             concept_cands = [c for c in cands if c[1] == "concept_map"]
             self.assertEqual(len(concept_cands), 0)
 
+    def test_generate_search_candidates_injected_concept_lookup(self) -> None:
+        """Verify generate_search_candidates uses injected concept_lookup callable without patching."""
+        cands = generate_search_candidates(
+            "亡くなる",
+            allow_tier2=True,
+            concept_lookup=lambda term: ["お葬式", "墓"] if term == "亡くなる" else [],
+        )
+        concept_cands = [c for c in cands if c[1] == "concept_map"]
+        self.assertEqual(len(concept_cands), 2)
+        self.assertEqual(concept_cands[0], ("お葬式", "concept_map", 2))
+        self.assertEqual(concept_cands[1], ("墓", "concept_map", 2))
+
 
 if __name__ == "__main__":
     unittest.main()

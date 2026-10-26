@@ -369,11 +369,15 @@ def compile_and_publish_catalog(
                 compare_with_old(conn, compare_with)
 
             # Preserve existing synonyms from previous catalog if present
-            prev_catalog = (
-                out_path
-                if is_sqlite_database(out_path)
-                else (compare_with if compare_with and is_sqlite_database(compare_with) else None)
-            )
+            prev_catalog = None
+            for candidate in (out_path, compare_with):
+                if not candidate:
+                    continue
+                if is_sqlite_database(candidate):
+                    prev_catalog = candidate
+                    break
+                if os.path.isfile(candidate):
+                    logger.warning("Skipping synonym carryover from unreadable catalog %s", candidate)
             if prev_catalog:
                 try:
                     uri_path = urllib.request.pathname2url(os.path.abspath(prev_catalog))
