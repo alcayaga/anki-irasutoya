@@ -50,3 +50,20 @@ def lookup_concept_map(
         List of catalog-verified search queries from the 'manual' concept map source.
     """
     return lookup_synonyms(term, source="manual", store=store)
+
+
+def lookup_kaishi_concept(
+    term: str,
+    store: Optional[CatalogStore] = None,
+) -> List[str]:
+    """Look up prioritized Kaishi 1.5k visual concept target queries for a given term.
+
+    Args:
+        term: Japanese vocabulary headword or phrase to look up.
+        store: Optional CatalogStore instance (defaults to global default_store()).
+
+    Returns:
+        List of catalog-verified search queries from the 'donkuri/kaishi' concept map source.
+    """
+    return lookup_synonyms(term, source="donkuri/kaishi", store=store)
+

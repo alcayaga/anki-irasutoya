@@ -397,6 +397,40 @@ def compile_and_publish_catalog(
                             if meta_row:
                                 conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('synonym_sources', ?)", (meta_row[0],))
                             logger.info("Carried over %d synonyms from previous catalog at %s", len(old_syns), prev_catalog)
+
+                    # Preserve existing image_keywords from previous catalog if present
+                    old_cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='image_keywords'")
+                    if old_cur.fetchone() is not None:
+                        old_cur.execute(
+                            """
+                            SELECT i.key, ik.keyword, ik.source, ik.weight
+                            FROM image_keywords ik
+                            JOIN images i ON ik.image_id = i.id
+                            """
+                        )
+                        old_kws = old_cur.fetchall()
+                        if old_kws:
+                            cur = conn.cursor()
+                            cur.execute("SELECT key, id FROM images")
+                            key_to_new_id = dict(cur.fetchall())
+                            mapped_kws = [
+                                (key_to_new_id[k], kw, src, w)
+                                for k, kw, src, w in old_kws
+                                if k in key_to_new_id
+                            ]
+                            if mapped_kws:
+                                conn.executemany(
+                                    """
+                                    INSERT OR IGNORE INTO image_keywords (image_id, keyword, source, weight)
+                                    VALUES (?, ?, ?, ?)
+                                    """,
+                                    mapped_kws,
+                                )
+                                logger.info(
+                                    "Carried over %d image keywords from previous catalog at %s",
+                                    len(mapped_kws),
+                                    prev_catalog,
+                                )
                     conn.commit()
                 except Exception as e:
                     conn.rollback()
@@ -404,6 +438,19 @@ def compile_and_publish_catalog(
                     raise
                 finally:
                     old_c.close()
+
+            kw_srcs = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT DISTINCT source FROM image_keywords ORDER BY source ASC"
+                )
+            ]
+            if kw_srcs:
+                conn.execute(
+                    "INSERT OR REPLACE INTO meta (key, value) VALUES ('keyword_sources', ?)",
+                    (",".join(kw_srcs),),
+                )
+                conn.commit()
 
             logger.info("Optimizing database with VACUUM and journal_mode=DELETE...")
             conn.execute("PRAGMA journal_mode = DELETE")

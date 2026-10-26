@@ -5,10 +5,24 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from addon.catalog import CatalogStore, create_schema, write_synonyms
+from addon.catalog import (
+    CatalogStore,
+    create_schema,
+    write_image_keywords,
+    write_posts,
+    write_synonyms,
+)
+from addon.feed import IrasutoyaImage, ParsedPost
 from addon.synonyms import (
     lookup_concept_map,
+    lookup_kaishi_concept,
     lookup_synonyms,
+)
+from scripts.build_synonyms import (
+    clean_alt_text,
+    extract_collection_from_apkg,
+    normalize_stem,
+    populate_kaishi_concepts,
 )
 
 
@@ -104,3 +118,152 @@ class TestSynonyms(unittest.TestCase):
             missing_db = os.path.join(tmp_dir, "missing.sqlite")
             missing_store = CatalogStore(missing_db)
             self.assertEqual(lookup_synonyms("亡くなる", store=missing_store), [])
+
+    def test_lookup_kaishi_concept_source_filtering(self) -> None:
+        """Verify lookup_kaishi_concept specifically filters for donkuri/kaishi source mappings."""
+        conn = sqlite3.connect(self.db_path)
+        write_synonyms(
+            conn,
+            source="donkuri/kaishi",
+            mapping={"私": ["自己紹介"], "今": ["時計"]},
+        )
+        conn.close()
+
+        with patch("addon.synonyms.default_store", return_value=self.test_store):
+            self.assertEqual(lookup_kaishi_concept("私"), ["自己紹介"])
+            self.assertEqual(lookup_kaishi_concept("今"), ["時計"])
+            self.assertEqual(lookup_kaishi_concept("亡くなる"), [])
+
+    def test_write_image_keywords_and_meta_stamp(self) -> None:
+        """Verify write_image_keywords stores image keywords and stamps keyword_sources in meta."""
+        conn = sqlite3.connect(self.db_path)
+        written = write_image_keywords(
+            conn,
+            source="donkuri/kaishi",
+            keywords=[(1, "猫", 1.0), (1, "ネコ", 0.8), (2, "犬", 1.0)],
+        )
+        self.assertEqual(written, 3)
+
+        cur = conn.cursor()
+        cur.execute("SELECT image_id, keyword, source, weight FROM image_keywords ORDER BY image_id, keyword")
+        rows = cur.fetchall()
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(rows[0], (1, "ネコ", "donkuri/kaishi", 0.8))
+        self.assertEqual(rows[1], (1, "猫", "donkuri/kaishi", 1.0))
+        self.assertEqual(rows[2], (2, "犬", "donkuri/kaishi", 1.0))
+
+        cur.execute("SELECT value FROM meta WHERE key = 'keyword_sources'")
+        meta_row = cur.fetchone()
+        self.assertIsNotNone(meta_row)
+        self.assertEqual(meta_row[0], "donkuri/kaishi")
+        conn.close()
+
+    def test_normalize_stem_and_clean_alt(self) -> None:
+        """Verify normalize_stem and clean_alt_text handle repeated extensions and media hashes."""
+        self.assertEqual(
+            normalize_stem("jikosyoukai_man-0f017c07b9f1048ff29830827e8503a6984504f6.webp"),
+            "jikosyoukai_man",
+        )
+        self.assertEqual(
+            normalize_stem("jitensya_rensyu_boy.png.png"),
+            "jitensya_rensyu_boy",
+        )
+        self.assertEqual(
+            normalize_stem("pose_touch_hitosashiyubi_man.webp"),
+            "pose_touch_hitosashiyubi_man",
+        )
+        self.assertEqual(
+            clean_alt_text("自己紹介のイラスト（男性） | かわいいフリー素材集 いらすとや"),
+            "自己紹介のイラスト（男性）",
+        )
+        self.assertEqual(
+            clean_alt_text("人差し指で押す人のイラスト（男性）"),
+            "人差し指で押す人のイラスト（男性）",
+        )
+
+    def test_extract_collection_from_apkg_and_populate_kaishi(self) -> None:
+        """Hermetically test collection extraction from synthetic .apkg and Kaishi concept population."""
+        import zipfile
+
+        # 1. Create a synthetic Kaishi SQLite collection with 2 notes
+        kaishi_raw_db = os.path.join(self.temp_dir.name, "raw_kaishi.sqlite")
+        k_conn = sqlite3.connect(kaishi_raw_db)
+        k_conn.execute("CREATE TABLE notes (id INTEGER PRIMARY KEY, flds TEXT NOT NULL)")
+        # Note 1: '自己紹介' word matching cat.png
+        # Note 2: '走る' word matching runner.png
+        k_conn.execute(
+            "INSERT INTO notes (flds) VALUES (?)",
+            ("自己紹介\x1fじこしょうかい\x1f<img src='jiko_man-12345678abcdef01.webp'>",),
+        )
+        k_conn.execute(
+            "INSERT INTO notes (flds) VALUES (?)",
+            ("全力\x1fぜんりょく\x1f<img alt='走る人のイラスト' src='runner.png'>",),
+        )
+        k_conn.commit()
+        k_conn.close()
+
+        # 2. Package into a synthetic .apkg (ZIP with collection.anki21)
+        apkg_path = os.path.join(self.temp_dir.name, "test_deck.apkg")
+        with open(kaishi_raw_db, "rb") as f_in:
+            db_bytes = f_in.read()
+        with zipfile.ZipFile(apkg_path, "w") as z:
+            z.writestr("collection.anki21", db_bytes)
+
+        # 3. Create a test catalog with matching illustrations
+        catalog_path = os.path.join(self.temp_dir.name, "hermetic_catalog.sqlite")
+        cat_conn = sqlite3.connect(catalog_path)
+        img1 = IrasutoyaImage("自己紹介のイラスト（男性）", "https://bp.blogspot.com/s0/jiko_man.png", "t", "自己紹介")
+        img2 = IrasutoyaImage("走る人のイラスト", "https://bp.blogspot.com/s0/runner.png", "t", "走る人")
+        p1 = ParsedPost("101", "自己紹介のイラスト（男性）", "desc", "pub", "upd", (), [img1])
+        p2 = ParsedPost("102", "走る人のイラスト", "desc", "pub", "upd", (), [img2])
+        write_posts(cat_conn, [p1, p2])
+        cat_conn.close()
+
+        # 4. Extract from apkg and populate
+        extracted_db = extract_collection_from_apkg(apkg_path, cache_dir=self.temp_dir.name)
+        self.assertTrue(os.path.isfile(extracted_db))
+
+        success = populate_kaishi_concepts(catalog_path, extracted_db)
+        self.assertTrue(success)
+
+        # 5. Verify database contents
+        verify_conn = sqlite3.connect(catalog_path)
+        cur = verify_conn.cursor()
+        cur.execute("SELECT term, target, source FROM synonyms WHERE source = 'donkuri/kaishi'")
+        syn_rows = cur.fetchall()
+        # '自己紹介' directly matches title '自己紹介のイラスト' -> skipped
+        # '全力' does not match title '走る人のイラスト' -> target '走る人' populated!
+        self.assertEqual(len(syn_rows), 1)
+        self.assertEqual(syn_rows[0], ("全力", "走る人", "donkuri/kaishi"))
+
+        cur.execute("SELECT keyword, source FROM image_keywords WHERE source = 'donkuri/kaishi' ORDER BY keyword")
+        kw_rows = cur.fetchall()
+        self.assertEqual(len(kw_rows), 2)
+        self.assertEqual(kw_rows[0], ("全力", "donkuri/kaishi"))
+        self.assertEqual(kw_rows[1], ("自己紹介", "donkuri/kaishi"))
+
+        cur.execute("SELECT value FROM meta WHERE key = 'keyword_sources'")
+        self.assertEqual(cur.fetchone()[0], "donkuri/kaishi")
+        cur.execute("SELECT value FROM meta WHERE key = 'synonym_sources'")
+        self.assertEqual(cur.fetchone()[0], "donkuri/kaishi")
+        verify_conn.close()
+
+    def test_populate_kaishi_concepts_zero_matches_refuses_overwrite(self) -> None:
+        """Verify populate_kaishi_concepts returns False and leaves catalog untouched when 0 notes match."""
+        empty_kaishi_db = os.path.join(self.temp_dir.name, "empty_kaishi.sqlite")
+        conn = sqlite3.connect(empty_kaishi_db)
+        conn.execute("CREATE TABLE notes (id INTEGER PRIMARY KEY, flds TEXT NOT NULL)")
+        conn.execute("INSERT INTO notes (flds) VALUES (?)", ("言葉\x1fことば\x1f<img src='unmatched_xyz.png'>",))
+        conn.commit()
+        conn.close()
+
+        catalog_path = os.path.join(self.temp_dir.name, "unmatched_catalog.sqlite")
+        cat_conn = sqlite3.connect(catalog_path)
+        img = IrasutoyaImage("猫のイラスト", "https://bp.blogspot.com/s0/cat.png", "t", "猫")
+        p = ParsedPost("101", "猫のイラスト", "desc", "pub", "upd", (), [img])
+        write_posts(cat_conn, [p])
+        cat_conn.close()
+
+        success = populate_kaishi_concepts(catalog_path, empty_kaishi_db)
+        self.assertFalse(success)
+

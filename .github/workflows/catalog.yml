@@ -49,6 +49,7 @@ jobs:
 
       - name: Build and Validate Catalog
         run: |
+          pip install zstandard
           COMPARE_FLAG=""
           if [ -f "/tmp/old_catalog/catalog.sqlite" ]; then
             COMPARE_FLAG="--compare-with /tmp/old_catalog/catalog.sqlite"
@@ -57,6 +58,7 @@ jobs:
           python scripts/build_synonyms.py \
             --catalog addon/data/catalog.sqlite \
             --manual scripts/sources/manual_concepts.json \
+            --kaishi-github \
             --validate
 
       - name: Extract Checksum Output

@@ -499,3 +499,49 @@ def write_synonyms(
     )
     conn.commit()
     return len(rows)
+
+
+def write_image_keywords(
+    conn: sqlite3.Connection,
+    source: str,
+    keywords: Sequence[Tuple[int, str, float]],
+) -> int:
+    """Populate or replace image keywords for a given source and stamp meta table.
+
+    Args:
+        conn: Open SQLite database connection with write access.
+        source: Source identifier (e.g. 'donkuri/kaishi', 'llm_caption').
+        keywords: Sequence of (image_id, keyword, weight) tuples.
+
+    Returns:
+        Number of keyword rows written.
+    """
+    create_schema(conn)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM image_keywords WHERE source = ?", (source,))
+
+    valid_rows: List[Tuple[int, str, str, float]] = []
+    for img_id, kw, weight in keywords:
+        clean_kw = kw.strip()
+        if clean_kw:
+            valid_rows.append((img_id, clean_kw, source, float(weight)))
+
+    if valid_rows:
+        cursor.executemany(
+            """
+            INSERT OR REPLACE INTO image_keywords (image_id, keyword, source, weight)
+            VALUES (?, ?, ?, ?)
+            """,
+            valid_rows,
+        )
+
+    # Update meta keyword_sources
+    cursor.execute("SELECT DISTINCT source FROM image_keywords ORDER BY source ASC")
+    sources = [r[0] for r in cursor.fetchall()]
+    cursor.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES ('keyword_sources', ?)",
+        (",".join(sources),),
+    )
+    conn.commit()
+    return len(valid_rows)
+

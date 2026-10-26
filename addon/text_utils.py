@@ -4,7 +4,7 @@ import re
 import unicodedata
 from typing import Any, Callable, List, Optional, Tuple
 
-from .synonyms import lookup_concept_map
+from .synonyms import lookup_concept_map, lookup_kaishi_concept
 from .yomitan_parser import (
     extract_yomitan_metadata_from_note,
 )
@@ -517,6 +517,7 @@ def generate_search_candidates(
     allow_deinflection: bool = True,
     store: Optional[Any] = None,
     concept_lookup: Optional[Callable[[str], List[str]]] = None,
+    kaishi_lookup: Optional[Callable[[str], List[str]]] = None,
 ) -> List[Tuple[str, str, int]]:
     """Generate prioritized search candidate queries with confidence tiers.
     
@@ -526,7 +527,8 @@ def generate_search_candidates(
                         Yomitan uk orthography kana readings, formsTable ★ canonical kanji variants).
         Tier 2 (Phonetic & Reading Fallbacks): Readings from separate note fields,
                        same-field furigana, verb masu-stems, Katakana chōonpu expansion, heuristic compound deinflection,
-                       Yomitan sense-specific kanji (esp.), Yomitan cross-references (see:), curated visual concept maps.
+                       Yomitan sense-specific kanji (esp.), Yomitan cross-references (see:),
+                       curated visual concept maps, Kaishi 1.5k concept bridges.
     
     Args:
         raw_source: Raw text or HTML from the source field.
@@ -535,6 +537,7 @@ def generate_search_candidates(
         allow_deinflection: Whether to perform heuristic verb/adjective deinflection.
         store: Optional CatalogStore instance to resolve concept maps from.
         concept_lookup: Optional callable mapping a headword to a list of target concept strings.
+        kaishi_lookup: Optional callable mapping a headword to a list of Kaishi 1.5k target strings.
 
     Returns:
         List of (candidate_query, reason_label, confidence_tier).
@@ -676,6 +679,21 @@ def generate_search_candidates(
             concept_targets = _resolve_concepts(deinflections[0])
         for c_target in concept_targets:
             add(c_target, "concept_map", 2)
+
+        # Kaishi 1.5k ground-truth visual concept map targets (source='donkuri/kaishi')
+        def _resolve_kaishi_concepts(term: str) -> List[str]:
+            """Resolve Kaishi concept map targets using injected lookup, store, or default catalog."""
+            if kaishi_lookup is not None:
+                return kaishi_lookup(term)
+            if store is not None:
+                return lookup_kaishi_concept(term, store=store)
+            return lookup_kaishi_concept(term)
+
+        kaishi_targets = _resolve_kaishi_concepts(surface)
+        if not kaishi_targets and deinflections:
+            kaishi_targets = _resolve_kaishi_concepts(deinflections[0])
+        for k_target in kaishi_targets:
+            add(k_target, "kaishi_concept", 2)
 
         # Check dedicated reading and furigana fields on the note (authoritative dictionary readings)
         for f_name, f_type, cleaned_read in _iter_note_readings(note):

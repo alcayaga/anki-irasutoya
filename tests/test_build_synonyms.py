@@ -1,14 +1,22 @@
 """Unit tests for the synonym build and validation CLI (scripts/build_synonyms.py)."""
 import hashlib
+import io
 import json
 import os
 import sqlite3
 import tempfile
 import unittest
+import zipfile
+from unittest.mock import patch
 
 from addon.catalog import create_schema, write_posts, write_synonyms
 from addon.feed import IrasutoyaImage, ParsedPost
-from scripts.build_synonyms import populate_manual_concepts, validate_catalog_synonyms
+from scripts.build_synonyms import (
+    fetch_kaishi_github_slice,
+    main,
+    populate_manual_concepts,
+    validate_catalog_synonyms,
+)
 
 
 class TestBuildSynonyms(unittest.TestCase):
@@ -107,6 +115,103 @@ class TestBuildSynonyms(unittest.TestCase):
         create_schema(conn)
         conn.close()
         self.assertTrue(validate_catalog_synonyms(fresh_db))
+
+    def test_main_cli_kaishi_apkg_and_validate(self) -> None:
+        """Verify main() CLI processes --kaishi-apkg and --validate end-to-end."""
+        # 1. Create a dummy sqlite db with a note
+        raw_db = os.path.join(self.temp_dir.name, "cli_kaishi.sqlite")
+        conn = sqlite3.connect(raw_db)
+        conn.execute("CREATE TABLE notes (id INTEGER PRIMARY KEY, flds TEXT NOT NULL)")
+        conn.execute("INSERT INTO notes (flds) VALUES (?)", ("キャット\x1fきゃっと\x1f<img src='cat.png'>",))
+        conn.commit()
+        conn.close()
+
+        # 2. Pack into zip .apkg
+        apkg_path = os.path.join(self.temp_dir.name, "cli_test.apkg")
+        with open(raw_db, "rb") as f_in:
+            data = f_in.read()
+        with zipfile.ZipFile(apkg_path, "w") as z:
+            z.writestr("collection.anki21", data)
+
+        # 3. Invoke main with --catalog, --kaishi-apkg, --cache-dir, --validate
+        ret = main([
+            "--catalog",
+            self.db_path,
+            "--kaishi-apkg",
+            apkg_path,
+            "--cache-dir",
+            self.temp_dir.name,
+            "--validate",
+        ])
+        self.assertEqual(ret, 0)
+
+        # 4. Confirm data was inserted into catalog
+        v_conn = sqlite3.connect(self.db_path)
+        cur = v_conn.cursor()
+        cur.execute("SELECT keyword, source FROM image_keywords WHERE source = 'donkuri/kaishi'")
+        self.assertEqual(cur.fetchall(), [("キャット", "donkuri/kaishi")])
+        v_conn.close()
+
+    def test_main_cli_kaishi_github_mocked(self) -> None:
+        """Verify main() CLI handles --kaishi-github via mocked collection fetch."""
+        raw_db = os.path.join(self.temp_dir.name, "gh_mock.sqlite")
+        conn = sqlite3.connect(raw_db)
+        conn.execute("CREATE TABLE notes (id INTEGER PRIMARY KEY, flds TEXT NOT NULL)")
+        conn.execute("INSERT INTO notes (flds) VALUES (?)", ("子猫\x1fこねこ\x1f<img src='cat.png'>",))
+        conn.commit()
+        conn.close()
+
+        with patch("scripts.build_synonyms.fetch_kaishi_github_slice", return_value=raw_db):
+            ret = main([
+                "--catalog",
+                self.db_path,
+                "--kaishi-github",
+                "--cache-dir",
+                self.temp_dir.name,
+                "--validate",
+            ])
+            self.assertEqual(ret, 0)
+
+        v_conn = sqlite3.connect(self.db_path)
+        cur = v_conn.cursor()
+        cur.execute("SELECT keyword, source FROM image_keywords WHERE keyword = '子猫'")
+        self.assertEqual(len(cur.fetchall()), 1)
+        v_conn.close()
+
+    def test_fetch_kaishi_github_slice_validates_zip_header(self) -> None:
+        """Verify fetch_kaishi_github_slice raises descriptive ValueError on malformed or truncated headers."""
+        import struct
+
+        def make_urlopen_mock(slice_payload: bytes):
+            def _fake_open(req, *args, **kwargs):
+                url = req.full_url if hasattr(req, "full_url") else str(req)
+                if "api.github.com" in url:
+                    return io.BytesIO(b'{"tag_name": "test_tag", "assets": []}')
+                return io.BytesIO(slice_payload)
+            return _fake_open
+
+        # Case 1: Entry not found
+        with patch("urllib.request.urlopen", side_effect=make_urlopen_mock(b"random bytes")):
+            with self.assertRaises(ValueError) as cm:
+                fetch_kaishi_github_slice(cache_dir=self.temp_dir.name)
+            self.assertIn("collection.anki21b not found", str(cm.exception))
+
+        # Case 2: Invalid signature
+        fake_slice = b"\x00" * 30 + b"collection.anki21b" + b"\x00" * 100
+        with patch("urllib.request.urlopen", side_effect=make_urlopen_mock(fake_slice)):
+            with self.assertRaises(ValueError) as cm:
+                fetch_kaishi_github_slice(cache_dir=self.temp_dir.name)
+            self.assertIn("Invalid ZIP local header signature", str(cm.exception))
+
+        # Case 3: Truncated slice data
+        hdr = struct.pack("<4sHHHHHIIIHH", b"PK\x03\x04", 20, 0, 0, 0, 0, 0, 1000, 1000, 18, 0)
+        truncated_slice = hdr + b"collection.anki21b" + b"short_data"
+        with patch("urllib.request.urlopen", side_effect=make_urlopen_mock(truncated_slice)):
+            with self.assertRaises(ValueError) as cm:
+                fetch_kaishi_github_slice(cache_dir=self.temp_dir.name)
+            self.assertIn("is larger than the fetched 512KB slice", str(cm.exception))
+
+
 
 
 if __name__ == "__main__":

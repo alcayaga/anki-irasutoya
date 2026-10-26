@@ -7,7 +7,7 @@ import stat
 import tempfile
 import unittest
 
-from addon.catalog import write_posts, write_synonyms
+from addon.catalog import write_image_keywords, write_posts, write_synonyms
 from addon.feed import IrasutoyaImage, ParsedPost
 from scripts.build_catalog import (
     compare_with_old,
@@ -282,6 +282,55 @@ class TestBuildCatalog(unittest.TestCase):
         self.assertIsNotNone(meta_row)
         self.assertEqual(meta_row[0], "manual")
         conn.close()
+
+    def test_compile_and_publish_catalog_preserves_image_keywords(self) -> None:
+        """Verify rebuild preserves existing image_keywords mapped by image key without transaction conflicts."""
+        post1 = ParsedPost("1", "猫", "desc", "pub", "upd", (), [IrasutoyaImage("猫", "https://1.bp.blogspot.com/cat.png", "t", "猫")])
+        compile_and_publish_catalog(
+            out_path=self.db_path,
+            posts=[post1],
+            total_results=1,
+            require_probes=False,
+        )
+
+        # Inject image keyword into published catalog for image_id 1
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM images WHERE key = '1/cat.png'")
+        img_id = cur.fetchone()[0]
+        write_image_keywords(conn, "donkuri/kaishi", [(img_id, "ネコ", 1.0)])
+        conn.close()
+
+        # Create a fresh keywords directory with an updated weight for the same keyword
+        kw_dir = os.path.join(self.temp_dir.name, "fresh_kws")
+        os.makedirs(kw_dir, exist_ok=True)
+        with open(os.path.join(kw_dir, "test.jsonl"), "w", encoding="utf-8") as f:
+            f.write(json.dumps({"key": "1/cat.png", "keywords": ["ネコ"], "source": "donkuri/kaishi", "weight": 2.5}) + "\n")
+
+        # Rebuild catalog containing post1 and a new post2 with freshly merged keywords
+        post2 = ParsedPost("2", "犬", "desc", "pub", "upd", (), [IrasutoyaImage("犬", "https://1.bp.blogspot.com/dog.png", "t", "犬")])
+        compile_and_publish_catalog(
+            out_path=self.db_path,
+            posts=[post1, post2],
+            total_results=2,
+            keywords_dir=kw_dir,
+            require_probes=False,
+        )
+
+        # Confirm image keywords were preserved and freshly merged weight (2.5) took priority over old (1.0)
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT ik.keyword, ik.source, ik.weight, i.key FROM image_keywords ik JOIN images i ON ik.image_id = i.id")
+        rows = cur.fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0], ("ネコ", "donkuri/kaishi", 2.5, "1/cat.png"))
+
+        cur.execute("SELECT value FROM meta WHERE key = 'keyword_sources'")
+        meta_row = cur.fetchone()
+        self.assertIsNotNone(meta_row)
+        self.assertEqual(meta_row[0], "donkuri/kaishi")
+        conn.close()
+
 
     def test_compile_and_publish_catalog_raises_on_synonym_carryover_error(self) -> None:
         """Verify compile_and_publish_catalog raises when synonym carryover encounters an error."""
