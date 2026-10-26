@@ -314,6 +314,17 @@ def validate_catalog(
     logger.info("All validation gates passed successfully!")
 
 
+def is_sqlite_database(path: str) -> bool:
+    """Return True if path points to an existing file with a valid SQLite 3 magic header."""
+    if not os.path.isfile(path) or os.path.getsize(path) < 16:
+        return False
+    try:
+        with open(path, "rb") as f:
+            return f.read(16) == b"SQLite format 3\x00"
+    except OSError:
+        return False
+
+
 def compile_and_publish_catalog(
     out_path: str,
     posts: Sequence[ParsedPost],
@@ -342,7 +353,11 @@ def compile_and_publish_catalog(
             compare_with_old(conn, compare_with)
 
         # Preserve existing synonyms from previous catalog if present
-        prev_catalog = compare_with if (compare_with and os.path.isfile(compare_with)) else (out_path if os.path.isfile(out_path) else None)
+        prev_catalog = (
+            out_path
+            if is_sqlite_database(out_path)
+            else (compare_with if compare_with and is_sqlite_database(compare_with) else None)
+        )
         if prev_catalog:
             try:
                 uri_path = urllib.request.pathname2url(os.path.abspath(prev_catalog))
@@ -365,7 +380,8 @@ def compile_and_publish_catalog(
                 conn.commit()
             except Exception as e:
                 conn.rollback()
-                logger.warning("Could not carry over synonyms from %s: %s", prev_catalog, e)
+                logger.error("Could not carry over synonyms from %s: %s", prev_catalog, e)
+                raise
             finally:
                 old_c.close()
 

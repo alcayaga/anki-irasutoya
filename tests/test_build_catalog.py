@@ -279,3 +279,28 @@ class TestBuildCatalog(unittest.TestCase):
         self.assertIsNotNone(meta_row)
         self.assertEqual(meta_row[0], "manual")
         conn.close()
+
+    def test_compile_and_publish_catalog_raises_on_synonym_carryover_error(self) -> None:
+        """Verify compile_and_publish_catalog raises when synonym carryover encounters an error."""
+        post1 = ParsedPost("1", "猫", "desc", "pub", "upd", (), [IrasutoyaImage("猫", "https://1.bp.blogspot.com/cat.png", "t", "猫")])
+        compile_and_publish_catalog(
+            out_path=self.db_path,
+            posts=[post1],
+            total_results=1,
+            require_probes=False,
+        )
+
+        # Break the synonyms table in the previous catalog with an incompatible schema
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("DROP TABLE IF EXISTS synonyms")
+        conn.execute("CREATE TABLE synonyms (incompatible_col INT)")
+        conn.commit()
+        conn.close()
+
+        with self.assertRaises(sqlite3.OperationalError):
+            compile_and_publish_catalog(
+                out_path=self.db_path,
+                posts=[post1],
+                total_results=1,
+                require_probes=False,
+            )
