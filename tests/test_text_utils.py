@@ -697,11 +697,12 @@ class TestTextUtils(unittest.TestCase):
         self.assertNotIn("籠手", cand_map)
 
     def test_yomitan_forms_all_capped_at_three(self):
-        """Test that Tier 1 candidates from forms_all are capped at 3 Kanji forms."""
+        """Test that Tier 1 candidates from forms_all are capped at 3 newly added Kanji forms."""
         from addon.text_utils import generate_search_candidates
+        # Expression is 見本一, which is already in seen as primary
         note = {
-            "Expression": "見本",
-            "Reading": "みほん",
+            "Expression": "見本一",
+            "Reading": "みほんいち",
             "MainDefinition": (
                 '<div class="yomitan-glossary">'
                 '<ol><li data-dictionary="JMdict [2025-11-01]">'
@@ -718,8 +719,9 @@ class TestTextUtils(unittest.TestCase):
         }
         cands = generate_search_candidates(note["Expression"], note=note, allow_tier2=True)
         form_cands = [term for term, reason, _ in cands if reason == "yomitan_form"]
+        # 見本一 was already seen, so exactly 3 new forms (見本二, 見本三, 見本四) are added
         self.assertEqual(len(form_cands), 3)
-        self.assertEqual(form_cands, ["見本一", "見本二", "見本三"])
+        self.assertEqual(form_cands, ["見本二", "見本三", "見本四"])
 
 
 if __name__ == "__main__":

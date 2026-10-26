@@ -243,7 +243,8 @@ class YomitanHTMLParser(HTMLParser):
                         if clean_term and clean_term not in self.metadata.forms_star:
                             self.metadata.forms_star.append(clean_term)
 
-                    clean_form = re.sub(r"[（(\[][^）)\]]*[）)\]]", "", li_text).strip()
+                    clean_form = re.sub(r"[（(]★[)）]|\s*★\s*", "", li_text).strip()
+                    clean_form = re.sub(r"[（(\[][^）)\]]*[）)\]]", "", clean_form).strip()
                     clean_form = re.sub(r"^[〈（(\[]|[\s〉）)\]]+$", "", clean_form).strip()
                     clean_form = html.unescape(clean_form).strip()
                     if clean_form and clean_form not in self.metadata.forms_all:

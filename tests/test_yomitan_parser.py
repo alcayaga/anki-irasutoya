@@ -129,13 +129,13 @@ class TestYomitanParser(unittest.TestCase):
         html_list = (
             '<ol>'
             '<li data-dictionary="JMdict [2025-11-01]"><i>(forms, JMdict [2025-11-01])</i> '
-            '<ul><li>手袋（★）</li><li>手ぶくろ</li></ul></li>'
+            '<ul><li>手袋（★）</li><li>手ぶくろ</li><li>缶蹴り★</li></ul></li>'
             '</ol>'
         )
         meta = parse_yomitan_html(html_list)
         self.assertIsNotNone(meta)
-        self.assertEqual(meta.forms_star, ["手袋"])
-        self.assertEqual(meta.forms_all, ["手袋", "手ぶくろ"])
+        self.assertEqual(meta.forms_star, ["手袋", "缶蹴り"])
+        self.assertEqual(meta.forms_all, ["手袋", "手ぶくろ", "缶蹴り"])
 
     def test_forms_all_extracts_mixed_kana_orthography(self):
         """Test extracting non-starred orthographic variants from JMdict (forms...) entry."""

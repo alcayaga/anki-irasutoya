@@ -523,13 +523,15 @@ def generate_search_candidates(
     candidates: List[Tuple[str, str, int]] = []
     seen = set()
 
-    def add(term: Optional[str], reason: str, tier: int) -> None:
+    def add(term: Optional[str], reason: str, tier: int) -> bool:
         if not term:
-            return
+            return False
         cleaned = clean_search_query(term)
         if cleaned and cleaned not in seen:
             seen.add(cleaned)
             candidates.append((cleaned, reason, tier))
+            return True
+        return False
 
     yomitan_meta = extract_yomitan_metadata_from_note(note) if note is not None else None
 
@@ -572,10 +574,10 @@ def generate_search_candidates(
         added_forms = 0
         for form in yomitan_meta.forms_all:
             if KANJI_RE.search(form):
-                add(form, "yomitan_form", 1)
-                added_forms += 1
-                if added_forms >= 3:
-                    break
+                if add(form, "yomitan_form", 1):
+                    added_forms += 1
+                    if added_forms >= 3:
+                        break
 
     # Bikago polite prefix (e.g. 肉 -> お肉, 肌 -> お肌, 茶 -> お茶, 風呂 -> お風呂)
     bikago = expand_bikago_prefix(surface)
