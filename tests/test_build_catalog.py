@@ -12,6 +12,7 @@ from addon.feed import IrasutoyaImage, ParsedPost
 from scripts.build_catalog import (
     compare_with_old,
     compile_and_publish_catalog,
+    is_sqlite_database,
     load_from_fixtures,
     merge_keywords,
     validate_catalog,
@@ -310,3 +311,60 @@ class TestBuildCatalog(unittest.TestCase):
         # Confirm temporary database was cleaned up
         tmp_files = [f for f in os.listdir(self.temp_dir.name) if f.endswith(".tmp")]
         self.assertEqual(tmp_files, [])
+
+    def test_is_sqlite_database_validation(self) -> None:
+        """Verify is_sqlite_database validates intact database and rejects truncated/corrupt header-only files."""
+        # Non-existent file
+        self.assertFalse(is_sqlite_database(os.path.join(self.temp_dir.name, "missing.sqlite")))
+
+        # Header-only file (valid 16-byte magic header, but corrupt/incomplete SQLite database)
+        header_only = os.path.join(self.temp_dir.name, "header_only.sqlite")
+        with open(header_only, "wb") as f:
+            f.write(b"SQLite format 3\x00")
+        self.assertFalse(is_sqlite_database(header_only))
+
+        # Intact database
+        valid_db = os.path.join(self.temp_dir.name, "valid.sqlite")
+        conn = sqlite3.connect(valid_db)
+        conn.execute("CREATE TABLE t (id INT)")
+        conn.commit()
+        conn.close()
+        self.assertTrue(is_sqlite_database(valid_db))
+
+    def test_compile_and_publish_catalog_falls_back_to_compare_with_on_corrupt_out_path(self) -> None:
+        """Verify compile_and_publish_catalog falls back to compare_with when out_path has corrupt header-only file."""
+        # Create a valid comparison database with synonyms
+        compare_db = os.path.join(self.temp_dir.name, "compare.sqlite")
+        post1 = ParsedPost("1", "猫", "desc", "pub", "upd", (), [IrasutoyaImage("猫", "https://1.bp.blogspot.com/cat.png", "t", "猫")])
+        compile_and_publish_catalog(
+            out_path=compare_db,
+            posts=[post1],
+            total_results=1,
+            require_probes=False,
+        )
+        conn = sqlite3.connect(compare_db)
+        write_synonyms(conn, source="manual", mapping={"ネコ": ["猫"]})
+        conn.close()
+
+        # Create header-only corrupt file at out_path
+        with open(self.db_path, "wb") as f:
+            f.write(b"SQLite format 3\x00")
+
+        # Rebuild targeting out_path with compare_with=compare_db
+        post2 = ParsedPost("2", "犬", "desc", "pub", "upd", (), [IrasutoyaImage("犬", "https://1.bp.blogspot.com/dog.png", "t", "犬")])
+        compile_and_publish_catalog(
+            out_path=self.db_path,
+            posts=[post2],
+            total_results=1,
+            compare_with=compare_db,
+            require_probes=False,
+        )
+
+        # Check synonyms carried over from compare_db
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT term, target, source FROM synonyms")
+        rows = cur.fetchall()
+        conn.close()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0], ("ネコ", "猫", "manual"))

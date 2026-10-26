@@ -1072,8 +1072,8 @@ class TestRanking(unittest.TestCase):
         # "僕" is blocked from description-only matches
         self.assertFalse(is_image_relevant(img_celery, "僕"))
 
-        # Non-pronoun word matching description is allowed
-        self.assertTrue(is_image_relevant(img_celery, "セロリ"))
+        # Non-pronoun word matching only the description is allowed
+        self.assertTrue(is_image_relevant(img_celery, "大好き"))
         img_salary = IrasutoyaImage(
             title="女性のイラスト",
             image_url="https://example.com/woman.png",

@@ -317,13 +317,21 @@ def validate_catalog(
 
 
 def is_sqlite_database(path: str) -> bool:
-    """Return True if path points to an existing file with a valid SQLite 3 magic header."""
-    if not os.path.isfile(path) or os.path.getsize(path) < 16:
-        return False
+    """Return True if path points to a readable, intact SQLite database."""
     try:
+        if not os.path.isfile(path) or os.path.getsize(path) < 16:
+            return False
         with open(path, "rb") as f:
-            return f.read(16) == b"SQLite format 3\x00"
-    except OSError:
+            if f.read(16) != b"SQLite format 3\x00":
+                return False
+        uri_path = urllib.request.pathname2url(os.path.abspath(path))
+        conn = sqlite3.connect(f"file:{uri_path}?mode=ro", uri=True)
+        try:
+            row = conn.execute("PRAGMA integrity_check").fetchone()
+        finally:
+            conn.close()
+        return bool(row and row[0] == "ok")
+    except (OSError, sqlite3.Error):
         return False
 
 
