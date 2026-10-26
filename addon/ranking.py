@@ -362,6 +362,22 @@ def _is_bare_verb_stem(text: str) -> bool:
     )
 
 
+def _is_attributive_kana_form(query: str) -> bool:
+    """Return True if pure Kana query is a valid attributive adjective or verb modifying a noun."""
+    if not query or query in COMMON_OKURIGANA_NOUNS:
+        return False
+    # i-adjectives ending in い (e.g. かわいい, おいしい)
+    if query.endswith("い"):
+        return True
+    # Verbs in dictionary/attributive form
+    if query in COMMON_KANA_VERBS:
+        return True
+    # Kana verbs ending in る with at least 3 moras (e.g. かけぬける, あつまる, およぎまわる)
+    if len(query) >= 3 and query.endswith("る"):
+        return True
+    return False
+
+
 def _is_non_particle_hiragana_prefix(text: str, idx: int) -> bool:
     """Return True if character before text[idx] is Hiragana forming a non-particle compound prefix."""
     prev_ch = text[idx - 1] if idx > 0 else ""
@@ -457,13 +473,15 @@ def classify_match_boundary(text: str, query: str) -> str:
                     and HIRAGANA_CHAR_RE.match(next_ch)
                     and next_ch not in SINGLE_CHAR_PARTICLES
                 )
-                # Reject if followed directly by a Kanji unless query ends in an attributive adjective/verb ending
+                # Reject if followed directly by a Kanji unless query is an attributive adjective or verb
                 next_is_kanji_compound = bool(
                     next_ch
                     and KANJI_CHAR_RE.match(next_ch)
-                    and not query.endswith(ATTRIBUTIVE_ENDINGS)
+                    and not _is_attributive_kana_form(query)
                 )
                 if prev_is_hira or next_is_hira or next_is_kanji_compound:
+                    if not prev_is_hira and not next_is_hira and next_is_kanji_compound and best_quality == "none":
+                        best_quality = "compound"
                     continue
                 return "standalone"
 
@@ -522,32 +540,35 @@ def _is_relevant_single_kanji_subtype(title: str, query: str, categories: Sequen
     """Return True if title is a genuine subtype compound where query is the head noun (e.g. 黒猫, 柴犬)."""
     if len(query) != 1:
         return True
-    idx = title.find(query)
-    if idx == -1:
-        return False
-    next_ch = title[idx + 1] if idx + 1 < len(title) else ""
-    next_is_fused = bool(
-        next_ch
-        and (KANJI_CHAR_RE.match(next_ch) or KATAKANA_CHAR_RE.match(next_ch))
-    )
-    # A subtype compound must be head-final (e.g. 黒猫, not 猫背 or 猫耳)
-    if next_is_fused:
-        return False
-    # If explicitly categorized by Irasutoya as this entity (e.g. 柴犬 in '犬', 盲導犬 in '犬')
-    if query in categories:
-        return True
-    if query in SUBTYPE_ENTITY_QUERIES and idx > 0:
-        prev_ch = title[idx - 1]
-        char_before = title[idx - 2] if idx >= 2 else ""
-        prev_is_word = bool(
-            char_before
-            and (
-                KANJI_CHAR_RE.match(char_before)
-                or _is_non_particle_hiragana_prefix(title, idx - 1)
-            )
+    start = 0
+    while True:
+        idx = title.find(query, start)
+        if idx == -1:
+            break
+        start = idx + 1
+        next_ch = title[idx + 1] if idx + 1 < len(title) else ""
+        next_is_fused = bool(
+            next_ch
+            and (KANJI_CHAR_RE.match(next_ch) or KATAKANA_CHAR_RE.match(next_ch))
         )
-        if prev_ch in SUBTYPE_PREFIXES and not prev_is_word:
+        # A subtype compound must be head-final (e.g. 黒猫, not 猫背 or 猫耳)
+        if next_is_fused:
+            continue
+        # If explicitly categorized by Irasutoya as this entity (e.g. 柴犬 in '犬', 盲導犬 in '犬')
+        if query in categories:
             return True
+        if query in SUBTYPE_ENTITY_QUERIES and idx > 0:
+            prev_ch = title[idx - 1]
+            char_before = title[idx - 2] if idx >= 2 else ""
+            prev_is_word = bool(
+                char_before
+                and (
+                    KANJI_CHAR_RE.match(char_before)
+                    or _is_non_particle_hiragana_prefix(title, idx - 1)
+                )
+            )
+            if prev_ch in SUBTYPE_PREFIXES and not prev_is_word:
+                return True
     return False
 
 

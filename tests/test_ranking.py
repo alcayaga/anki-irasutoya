@@ -791,6 +791,8 @@ class TestRanking(unittest.TestCase):
             ("犬", "子犬のイラスト", ()),
             ("犬", "走る子犬のイラスト", ()),
             ("犬", "盲導犬のイラスト", ("犬",)),
+            ("犬", "犬小屋と柴犬のイラスト", ()),
+            ("犬", "犬小屋と柴犬のイラスト", ("犬",)),
         ]
         for query, title, cats in subtype_cases:
             with self.subTest(subtype=title, query=query):
@@ -799,6 +801,12 @@ class TestRanking(unittest.TestCase):
                     is_image_relevant(img, query),
                     f"Subtype compound '{title}' must remain relevant for query '{query}'",
                 )
+
+        # Multi-occurrence title where all occurrences are fused non-subtypes
+        img_fused_multi = IrasutoyaImage(
+            "犬小屋と犬走りのイラスト", "https://example.com/i.png", "https://example.com/t.png", "犬小屋と犬走りのイラスト"
+        )
+        self.assertFalse(is_image_relevant(img_fused_multi, "犬"))
 
         # Preserved standalone, polite prefix, and exact quoted matches for 1-Kanji queries
         valid_cases = [
@@ -869,6 +877,9 @@ class TestRanking(unittest.TestCase):
         self.assertEqual(classify_match_boundary("おいしい水のイラスト", "おいしい"), "standalone")
         self.assertEqual(classify_match_boundary("かけぬける人のイラスト", "かけぬける"), "standalone")
         self.assertEqual(classify_match_boundary("走る人のイラスト", "走る"), "standalone")
+
+        # 3. Known Okurigana nouns ending in kana (like 'こたつ') modifying Kanji are compounds
+        self.assertEqual(classify_match_boundary("こたつ布団のイラスト", "こたつ"), "compound")
 
     def test_archetype_collection_boost(self) -> None:
         """Verify archetype collection boost prioritizes 'いろいろな{term}' over narrow subtypes."""
