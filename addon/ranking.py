@@ -44,6 +44,11 @@ SUBTYPE_PREFIXES = frozenset({
     # Species & attributes
     "柴", "野", "三",
 })
+# Single-Kanji queries eligible for fallback subtype matching via SUBTYPE_PREFIXES when categories are absent
+SUBTYPE_ENTITY_QUERIES = frozenset({
+    "犬", "猫", "鳥", "魚", "虫", "馬", "牛", "豚", "羊", "熊", "鹿",
+    "車", "船", "花", "木", "草", "葉", "雨", "雪", "雲", "茶", "本",
+})
 COMMON_OKURIGANA_NOUNS = frozenset({
     "祭り", "祭", "周り", "香り", "祈り", "便り", "望み", "恵み", "答え", "知らせ",
     "怒り", "踊り", "誓い", "願い", "想い", "思い", "集まり", "始まり", "終わり",
@@ -531,7 +536,7 @@ def _is_relevant_single_kanji_subtype(title: str, query: str, categories: Sequen
     # If explicitly categorized by Irasutoya as this entity (e.g. 柴犬 in '犬', 盲導犬 in '犬')
     if query in categories:
         return True
-    if idx > 0:
+    if query in SUBTYPE_ENTITY_QUERIES and idx > 0:
         prev_ch = title[idx - 1]
         char_before = title[idx - 2] if idx >= 2 else ""
         prev_is_word = bool(
