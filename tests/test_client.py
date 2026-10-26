@@ -2,7 +2,7 @@
 import json
 import unittest
 import urllib.error
-from typing import Any
+from typing import Any, List, Optional
 from unittest.mock import patch
 
 from addon.client import InsecureRedirectError, IrasutoyaClient, _HttpsOnlyRedirectHandler
@@ -176,6 +176,167 @@ class TestIrasutoyaClient(unittest.TestCase):
         self.assertEqual(best_img.title, "お肉のイラスト")
         self.assertEqual(images[0].title, "お肉のイラスト")
         self.assertEqual(images[1].title, "「肉」のイラスト文字")
+
+    def test_search_with_fallbacks_bypasses_weak_match_for_subsequent_title_match(self):
+        """Verify search_with_fallbacks probes subsequent candidates when earlier candidate has only description match."""
+        client = IrasutoyaClient()
+
+        def mock_search(q, max_results=None, image_size="s800", orderby="relevance"):
+            if q == "死ぬ":
+                # Only matches in description of a single-image post (weak match)
+                img = IrasutoyaImage(
+                    title="ベニクラゲのイラスト",
+                    image_url="https://example.com/jellyfish.png",
+                    thumb_url="https://example.com/t.png",
+                    post_title="ベニクラゲのイラスト",
+                    description="刺されても死ぬほどではありません。",
+                    is_single_image_post=True,
+                )
+                return [img]
+            if q == "お葬式":
+                # Real title illustration match
+                img = IrasutoyaImage(
+                    title="お葬式のイラスト",
+                    image_url="https://example.com/funeral.png",
+                    thumb_url="https://example.com/t.png",
+                    post_title="お葬式のイラスト",
+                )
+                return [img]
+            return []
+
+        client.search = mock_search
+        candidates = [("死ぬ", "primary", 1), ("お葬式", "concept_map", 2)]
+        images, matched_cand, best_img = client.search_with_fallbacks(candidates)
+        self.assertIsNotNone(matched_cand)
+        self.assertEqual(matched_cand[0], "お葬式")
+        self.assertIsNotNone(best_img)
+        self.assertEqual(best_img.title, "お葬式のイラスト")
+
+    def test_search_with_fallbacks_retains_weak_match_when_no_title_match(self):
+        """Verify search_with_fallbacks returns weak description match if no subsequent candidate has a title match."""
+        client = IrasutoyaClient()
+
+        def mock_search(q, max_results=None, image_size="s800", orderby="relevance"):
+            if q == "珍しい言葉":
+                img = IrasutoyaImage(
+                    title="何かのイラスト",
+                    image_url="https://example.com/something.png",
+                    thumb_url="https://example.com/t.png",
+                    post_title="何かのイラスト",
+                    description="珍しい言葉を使ったことわざです。",
+                    is_single_image_post=True,
+                )
+                return [img]
+            return []
+
+        client.search = mock_search
+        candidates = [("珍しい言葉", "primary", 1), ("別の言葉", "fallback", 2)]
+        images, matched_cand, best_img = client.search_with_fallbacks(candidates)
+        self.assertIsNotNone(matched_cand)
+        self.assertEqual(matched_cand[0], "珍しい言葉")
+        self.assertIsNotNone(best_img)
+        self.assertEqual(best_img.title, "何かのイラスト")
+
+    def test_search_with_fallbacks_tier2_reading_does_not_override_tier1_weak_match(self) -> None:
+        """Verify Tier 2 phonetic reading cannot hijack a valid Tier 1 weak description match."""
+        client = IrasutoyaClient()
+
+        def mock_search(
+            q: str,
+            max_results: Optional[int] = None,
+            image_size: str = "s800",
+            orderby: str = "relevance",
+        ) -> List[IrasutoyaImage]:
+            if q == "犬":
+                # Description match only for primary headword
+                img = IrasutoyaImage(
+                    title="動物のイラスト",
+                    image_url="https://example.com/animal.png",
+                    thumb_url="https://example.com/t.png",
+                    post_title="動物のイラスト",
+                    description="可愛い犬のイラストです。",
+                    is_single_image_post=True,
+                )
+                return [img]
+            if q == "けん":
+                # Real title match for an unrelated homophone reading (Tier 2)
+                img = IrasutoyaImage(
+                    title="けんのイラスト",
+                    image_url="https://example.com/ticket.png",
+                    thumb_url="https://example.com/t.png",
+                    post_title="けんのイラスト",
+                )
+                return [img]
+            return []
+
+        client.search = mock_search
+        candidates = [("犬", "primary", 1), ("けん", "note_reading", 2)]
+        images, matched_cand, best_img = client.search_with_fallbacks(candidates)
+        self.assertIsNotNone(matched_cand)
+        self.assertEqual(matched_cand[0], "犬")
+        self.assertIsNotNone(best_img)
+        self.assertEqual(best_img.title, "動物のイラスト")
+
+    def test_search_with_fallbacks_deinflected_base_overrides_tier1_weak_match(self) -> None:
+        """Verify deinflected base title match can override a weak surface match."""
+        client = IrasutoyaClient()
+
+        def mock_search(
+            q: str,
+            max_results: Optional[int] = None,
+            image_size: str = "s800",
+            orderby: str = "relevance",
+        ) -> List[IrasutoyaImage]:
+            if q == "死んでいる":
+                # Description match only on surface form
+                img = IrasutoyaImage(
+                    title="何か別のイラスト",
+                    image_url="https://example.com/other.png",
+                    thumb_url="https://example.com/t.png",
+                    post_title="何か別のイラスト",
+                    description="死んでいる状態を表します。",
+                    is_single_image_post=True,
+                )
+                return [img]
+            if q == "死ぬ":
+                # Title match on deinflected base
+                img = IrasutoyaImage(
+                    title="死ぬ人のイラスト",
+                    image_url="https://example.com/die.png",
+                    thumb_url="https://example.com/t.png",
+                    post_title="死ぬ人のイラスト",
+                )
+                return [img]
+            return []
+
+        client.search = mock_search
+        candidates = [("死んでいる", "primary", 1), ("死ぬ", "deinflected_base", 2)]
+        images, matched_cand, best_img = client.search_with_fallbacks(candidates)
+        self.assertIsNotNone(matched_cand)
+        self.assertEqual(matched_cand[0], "死ぬ")
+        self.assertIsNotNone(best_img)
+        self.assertEqual(best_img.title, "死ぬ人のイラスト")
+
+    def test_search_with_fallbacks_bypasses_callout_only_for_subsequent_title_match(self):
+        """Verify search_with_fallbacks probes subsequent candidates when earlier candidate has only callouts."""
+        client = IrasutoyaClient()
+
+        def mock_search(q, max_results=None, image_size="s800", orderby="relevance"):
+            if q == "今":
+                callout = IrasutoyaImage("イラスト文字「今」", "https://example.com/c.png", "https://example.com/t.png", "今")
+                return [callout]
+            if q == "現在":
+                scene = IrasutoyaImage("現在のイラスト", "https://example.com/s.png", "https://example.com/t.png", "現在のイラスト")
+                return [scene]
+            return []
+
+        client.search = mock_search
+        candidates = [("今", "primary", 1), ("現在", "concept_map", 2)]
+        images, matched_cand, best_img = client.search_with_fallbacks(candidates)
+        self.assertIsNotNone(matched_cand)
+        self.assertEqual(matched_cand[0], "現在")
+        self.assertIsNotNone(best_img)
+        self.assertEqual(best_img.title, "現在のイラスト")
 
     def test_search_with_fallbacks_pos_type_handling(self):
         """Verify search_with_fallbacks preserves fallback candidate POS hints when pos_type=None."""

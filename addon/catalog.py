@@ -44,9 +44,19 @@ class _CatalogImageRecord:
 class CatalogIndex:
     """Immutable, in-memory index for fast substring search across Irasutoya metadata."""
 
-    def __init__(self, records: Sequence[_CatalogImageRecord]) -> None:
-        """Initialize index with precomputed image records."""
+    def __init__(
+        self,
+        records: Sequence[_CatalogImageRecord],
+        synonyms: Optional[Dict[Tuple[str, str], Tuple[str, ...]]] = None,
+    ) -> None:
+        """Initialize index with precomputed image records and synonym mappings."""
         self._records = tuple(records)
+        self._synonyms: Dict[Tuple[str, str], Tuple[str, ...]] = synonyms or {}
+        self._synonyms_by_term: Dict[str, Dict[str, Tuple[str, ...]]] = {}
+        for (term, src), targets in self._synonyms.items():
+            if term not in self._synonyms_by_term:
+                self._synonyms_by_term[term] = {}
+            self._synonyms_by_term[term][src] = targets
 
     def search(self, query: str, image_size: str = "s800") -> List[IrasutoyaImage]:
         """Search illustrations by query keyword substring matching against title/post_title/description."""
@@ -72,6 +82,31 @@ class CatalogIndex:
                     )
                 )
         return matching
+
+    def get_synonyms(self, term: str, source: Optional[str] = None) -> List[str]:
+        """Return target queries for a term, optionally filtered by source in priority order.
+
+        Args:
+            term: Japanese vocabulary headword or phrase.
+            source: Optional specific source name (e.g. 'manual', 'donkuri/kaishi', 'sudachi').
+
+        Returns:
+            List of catalog-verified search queries.
+        """
+        clean = term.strip()
+        if not clean or clean not in self._synonyms_by_term:
+            return []
+        src_map = self._synonyms_by_term[clean]
+        if source is not None:
+            return list(src_map.get(source, ()))
+        results: List[str] = []
+        seen: Set[str] = set()
+        for src in sorted(src_map, key=lambda s: (s != "manual", s)):
+            for t in src_map[src]:
+                if t not in seen:
+                    seen.add(t)
+                    results.append(t)
+        return results
 
     def __len__(self) -> int:
         """Return the total number of images indexed."""
@@ -196,7 +231,22 @@ class CatalogStore:
                             )
                         )
 
-                    self._index = CatalogIndex(records)
+                    # Query synonyms if table exists
+                    synonyms_map: Dict[Tuple[str, str], Tuple[str, ...]] = {}
+                    try:
+                        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='synonyms'")
+                        if cursor.fetchone() is not None:
+                            cursor.execute("SELECT term, target, source FROM synonyms ORDER BY term ASC, source ASC, ord ASC")
+                            temp_syns: Dict[Tuple[str, str], List[str]] = {}
+                            for s_row in cursor.fetchall():
+                                key = (s_row["term"], s_row["source"])
+                                temp_syns.setdefault(key, []).append(s_row["target"])
+                            synonyms_map = {k: tuple(v) for k, v in temp_syns.items()}
+                    except sqlite3.Error as e:
+                        logger.warning("Ignoring unreadable synonyms table in %s: %s", self.path, e)
+                        synonyms_map = {}
+
+                    self._index = CatalogIndex(records, synonyms=synonyms_map)
                     return self._index
                 finally:
                     conn.close()
@@ -289,6 +339,14 @@ def create_schema(conn: sqlite3.Connection) -> None:
             source TEXT NOT NULL,
             weight REAL NOT NULL DEFAULT 1.0,
             PRIMARY KEY (image_id, keyword, source)
+        ) WITHOUT ROWID;
+
+        CREATE TABLE IF NOT EXISTS synonyms (
+            term TEXT NOT NULL,
+            target TEXT NOT NULL,
+            source TEXT NOT NULL,
+            ord INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (term, source, ord)
         ) WITHOUT ROWID;
 
         CREATE INDEX IF NOT EXISTS images_post ON images(post_id);
@@ -392,3 +450,52 @@ def write_posts(
         meta_rows,
     )
     conn.commit()
+
+
+def write_synonyms(
+    conn: sqlite3.Connection,
+    source: str,
+    mapping: Dict[str, Sequence[str]],
+) -> int:
+    """Populate or replace synonyms for a given source and stamp meta table.
+
+    Args:
+        conn: Open SQLite database connection with write access.
+        source: Source identifier (e.g. 'manual', 'donkuri/kaishi', 'sudachi').
+        mapping: Dictionary mapping vocabulary headwords to sequences of target queries.
+
+    Returns:
+        Number of synonym rows written.
+    """
+    create_schema(conn)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM synonyms WHERE source = ?", (source,))
+
+    rows: List[Tuple[str, str, str, int]] = []
+    for term, targets in sorted(mapping.items()):
+        clean_term = term.strip()
+        if not clean_term:
+            continue
+        for ord_idx, target in enumerate(targets):
+            clean_target = str(target).strip()
+            if clean_target:
+                rows.append((clean_term, clean_target, source, ord_idx))
+
+    if rows:
+        cursor.executemany(
+            """
+            INSERT OR REPLACE INTO synonyms (term, target, source, ord)
+            VALUES (?, ?, ?, ?)
+            """,
+            rows,
+        )
+
+    # Update meta synonym_sources
+    cursor.execute("SELECT DISTINCT source FROM synonyms ORDER BY source ASC")
+    sources = [r[0] for r in cursor.fetchall()]
+    cursor.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES ('synonym_sources', ?)",
+        (",".join(sources),),
+    )
+    conn.commit()
+    return len(rows)

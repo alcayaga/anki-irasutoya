@@ -4,13 +4,16 @@ from unittest.mock import patch
 
 from addon.feed import IrasutoyaImage
 from addon.ranking import (
+    PRONOUNS_DESCRIPTION_BLOCKLIST,
     calculate_category_score,
     classify_match_boundary,
+    has_title_illustration_match,
     infer_note_pos_type,
     infer_pos_type,
     is_callout_asset,
     is_decorative_asset,
     is_image_relevant,
+    is_title_match,
     rank_relevant_images,
     score_candidate_image,
     select_best_image,
@@ -20,6 +23,12 @@ from addon.text_utils import generate_search_candidates
 
 class TestRanking(unittest.TestCase):
     """Test suite for boundary classification, image relevance heuristics, and ranking."""
+
+    def setUp(self) -> None:
+        """Isolate ranking and candidate evaluation from external catalog concept lookups."""
+        patcher = patch("addon.text_utils.lookup_concept_map", return_value=[])
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_score_candidate_image(self):
         """Test archetype scoring engine penalties and boosts."""
@@ -1001,6 +1010,79 @@ class TestRanking(unittest.TestCase):
         self.assertGreater(score_noh, score_ronin)
         best = select_best_image([img_ronin, img_noh, img_masquerade], "仮面", pos_type="noun")
         self.assertEqual(best, img_masquerade)
+
+    def test_is_title_match(self) -> None:
+        """Verify is_title_match accurately identifies matches in title or post_title."""
+        img_title = IrasutoyaImage("お葬式のイラスト", "https://example.com/1.png", "https://example.com/t.png", "お葬式")
+        self.assertTrue(is_title_match(img_title, "お葬式"))
+        self.assertTrue(is_title_match(img_title, "葬式"))
+
+        img_post = IrasutoyaImage("イラスト", "https://example.com/2.png", "https://example.com/t.png", "警察官のイラスト")
+        self.assertTrue(is_title_match(img_post, "警察官"))
+
+        # Description-only match has False for is_title_match
+        img_desc = IrasutoyaImage(
+            title="セロリのイラスト",
+            image_url="https://example.com/3.png",
+            thumb_url="https://example.com/t.png",
+            post_title="セロリのイラスト",
+            description="料理に使われるセロリのイラストです。",
+            is_single_image_post=True,
+        )
+        self.assertFalse(is_title_match(img_desc, "料理"))
+
+        # Empty/whitespace inputs
+        self.assertFalse(is_title_match(img_title, ""))
+        self.assertFalse(is_title_match(img_title, "   "))
+
+    def test_has_title_illustration_match(self) -> None:
+        """Verify has_title_illustration_match filters out decorative, callout, and description-only images."""
+        callout = IrasutoyaImage("イラスト文字「今」", "https://example.com/1.png", "https://example.com/t.png", "今")
+        decorative = IrasutoyaImage("ライン素材", "https://example.com/2.png", "https://example.com/t.png", "ライン素材")
+        desc_only = IrasutoyaImage(
+            title="ベニクラゲのイラスト",
+            image_url="https://example.com/3.png",
+            thumb_url="https://example.com/t.png",
+            post_title="ベニクラゲのイラスト",
+            description="死ぬほどではありません。",
+            is_single_image_post=True,
+        )
+        real_scene = IrasutoyaImage("お墓のイラスト", "https://example.com/4.png", "https://example.com/t.png", "お墓のイラスト")
+
+        self.assertFalse(has_title_illustration_match([callout], "今"))
+        self.assertFalse(has_title_illustration_match([decorative], "今"))
+        self.assertFalse(has_title_illustration_match([desc_only], "死ぬ"))
+        self.assertTrue(has_title_illustration_match([callout, desc_only, real_scene], "墓"))
+        self.assertFalse(has_title_illustration_match([], "テスト"))
+
+    def test_pronouns_description_blocklist(self) -> None:
+        """Verify personal pronouns in PRONOUNS_DESCRIPTION_BLOCKLIST do not match via post descriptions."""
+        self.assertIn("私", PRONOUNS_DESCRIPTION_BLOCKLIST)
+        self.assertIn("僕", PRONOUNS_DESCRIPTION_BLOCKLIST)
+        self.assertIn("彼", PRONOUNS_DESCRIPTION_BLOCKLIST)
+
+        img_celery = IrasutoyaImage(
+            title="セロリのイラスト",
+            image_url="https://example.com/celery.png",
+            thumb_url="https://example.com/t.png",
+            post_title="セロリのイラスト",
+            description="僕はセロリが大好きです。",
+            is_single_image_post=True,
+        )
+        # "僕" is blocked from description-only matches
+        self.assertFalse(is_image_relevant(img_celery, "僕"))
+
+        # Non-pronoun word matching only the description is allowed
+        self.assertTrue(is_image_relevant(img_celery, "大好き"))
+        img_salary = IrasutoyaImage(
+            title="女性のイラスト",
+            image_url="https://example.com/woman.png",
+            thumb_url="https://example.com/t.png",
+            post_title="女性のイラスト",
+            description="私の年収は普通です。",
+            is_single_image_post=True,
+        )
+        self.assertFalse(is_image_relevant(img_salary, "私"))
 
 
 if __name__ == "__main__":

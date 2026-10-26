@@ -59,6 +59,7 @@ class TestPackageAddon(unittest.TestCase):
         self.assertTrue(is_allowlisted("icons/chevron_down.svg"))
         self.assertTrue(is_allowlisted("data/catalog.sqlite"))
 
+        self.assertFalse(is_allowlisted("data/concept_map.json"))
         self.assertFalse(is_allowlisted("meta.json"))
         self.assertFalse(is_allowlisted(".DS_Store"))
         self.assertFalse(is_allowlisted("client.pyc"))
