@@ -24,6 +24,12 @@ from addon.text_utils import generate_search_candidates
 class TestRanking(unittest.TestCase):
     """Test suite for boundary classification, image relevance heuristics, and ranking."""
 
+    def setUp(self) -> None:
+        """Isolate ranking and candidate evaluation from external catalog concept lookups."""
+        patcher = patch("addon.text_utils.lookup_concept_map", return_value=[])
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_score_candidate_image(self):
         """Test archetype scoring engine penalties and boosts."""
         img_exact = IrasutoyaImage(

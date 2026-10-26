@@ -9,6 +9,12 @@ from addon.text_utils import clean_search_query, generate_search_candidates
 class TestTextUtils(unittest.TestCase):
     """Test suite for sanitizing and stripping noise from Anki field values."""
 
+    def setUp(self) -> None:
+        """Isolate candidate generator tests from external catalog concept lookups."""
+        patcher = patch("addon.text_utils.lookup_concept_map", return_value=[])
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_empty_and_none(self):
         """Test handling of None and empty string inputs."""
         self.assertEqual(clean_search_query(None), "")
