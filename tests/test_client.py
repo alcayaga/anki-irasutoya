@@ -2,7 +2,7 @@
 import json
 import unittest
 import urllib.error
-from typing import Any
+from typing import Any, List, Optional
 from unittest.mock import patch
 
 from addon.client import InsecureRedirectError, IrasutoyaClient, _HttpsOnlyRedirectHandler
@@ -237,6 +237,46 @@ class TestIrasutoyaClient(unittest.TestCase):
         self.assertIsNotNone(best_img)
         self.assertEqual(best_img.title, "何かのイラスト")
 
+    def test_search_with_fallbacks_tier2_reading_does_not_override_tier1_weak_match(self) -> None:
+        """Verify Tier 2 phonetic reading cannot hijack a valid Tier 1 weak description match."""
+        client = IrasutoyaClient()
+
+        def mock_search(
+            q: str,
+            max_results: Optional[int] = None,
+            image_size: str = "s800",
+            orderby: str = "relevance",
+        ) -> List[IrasutoyaImage]:
+            if q == "犬":
+                # Description match only for primary headword
+                img = IrasutoyaImage(
+                    title="動物のイラスト",
+                    image_url="https://example.com/animal.png",
+                    thumb_url="https://example.com/t.png",
+                    post_title="動物のイラスト",
+                    description="可愛い犬のイラストです。",
+                    is_single_image_post=True,
+                )
+                return [img]
+            if q == "けん":
+                # Real title match for an unrelated homophone reading (Tier 2)
+                img = IrasutoyaImage(
+                    title="けんのイラスト",
+                    image_url="https://example.com/ticket.png",
+                    thumb_url="https://example.com/t.png",
+                    post_title="けんのイラスト",
+                )
+                return [img]
+            return []
+
+        client.search = mock_search
+        candidates = [("犬", "primary", 1), ("けん", "note_reading", 2)]
+        images, matched_cand, best_img = client.search_with_fallbacks(candidates)
+        self.assertIsNotNone(matched_cand)
+        self.assertEqual(matched_cand[0], "犬")
+        self.assertIsNotNone(best_img)
+        self.assertEqual(best_img.title, "動物のイラスト")
+
     def test_search_with_fallbacks_bypasses_callout_only_for_subsequent_title_match(self):
         """Verify search_with_fallbacks probes subsequent candidates when earlier candidate has only callouts."""
         client = IrasutoyaClient()
@@ -251,7 +291,7 @@ class TestIrasutoyaClient(unittest.TestCase):
             return []
 
         client.search = mock_search
-        candidates = [("今", "primary", 1), ("現在", "synonym", 2)]
+        candidates = [("今", "primary", 1), ("現在", "concept_map", 2)]
         images, matched_cand, best_img = client.search_with_fallbacks(candidates)
         self.assertIsNotNone(matched_cand)
         self.assertEqual(matched_cand[0], "現在")

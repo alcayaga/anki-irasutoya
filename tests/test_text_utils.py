@@ -750,9 +750,10 @@ class TestTextUtils(unittest.TestCase):
 
     def test_generate_search_candidates_suppressed_when_tier2_false(self) -> None:
         """Verify concept map targets are suppressed when allow_tier2 is False."""
-        cands = generate_search_candidates("亡くなる", allow_tier2=False)
-        concept_cands = [c for c in cands if c[1] == "concept_map"]
-        self.assertEqual(len(concept_cands), 0)
+        with patch("addon.text_utils.lookup_concept_map", return_value=["お葬式", "墓"]):
+            cands = generate_search_candidates("亡くなる", allow_tier2=False)
+            concept_cands = [c for c in cands if c[1] == "concept_map"]
+            self.assertEqual(len(concept_cands), 0)
 
 
 if __name__ == "__main__":

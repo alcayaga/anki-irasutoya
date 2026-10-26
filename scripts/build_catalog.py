@@ -389,7 +389,15 @@ def compile_and_publish_catalog(
         conn.execute("PRAGMA journal_mode = DELETE")
         conn.execute("VACUUM")
         conn.commit()
-    finally:
+    except Exception:
+        conn.close()
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+        raise
+    else:
         conn.close()
 
     # Validate temporary file BEFORE publishing

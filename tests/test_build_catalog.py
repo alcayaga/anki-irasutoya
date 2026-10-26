@@ -304,3 +304,6 @@ class TestBuildCatalog(unittest.TestCase):
                 total_results=1,
                 require_probes=False,
             )
+
+        # Confirm temporary database was cleaned up
+        self.assertFalse(os.path.exists(f"{self.db_path}.tmp"))

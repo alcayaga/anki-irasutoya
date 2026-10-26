@@ -97,6 +97,8 @@ class TestBuildSynonyms(unittest.TestCase):
         conn = sqlite3.connect(fresh_db)
         post = ParsedPost("1", "猫のイラスト", "desc", "pub", "upd", (), [IrasutoyaImage("猫", "https://cat.png", "t", "猫")])
         write_posts(conn, [post])
+        conn.execute("DROP TABLE synonyms")
+        conn.commit()
         conn.close()
         self.assertTrue(validate_catalog_synonyms(fresh_db))
 

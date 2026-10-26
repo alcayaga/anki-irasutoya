@@ -166,7 +166,12 @@ class IrasutoyaClient:
                 best = ranked[0]
 
                 if has_title_illustration_match(illustration_candidates, term):
-                    return ranked, cand, best
+                    if (
+                        first_weak_fallback is None
+                        or reason in ("concept_map", "synonym")
+                        or cand[2] <= first_weak_fallback[1][2]
+                    ):
+                        return ranked, cand, best
 
                 if first_weak_fallback is None:
                     first_weak_fallback = (ranked, cand, best)
