@@ -365,3 +365,21 @@ class TestCatalog(unittest.TestCase):
         results = index.search("black_cat_synonym")
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].title, "かわいい黒猫のイラスト")
+
+    def test_store_corrupted_synonyms_table_ignored_without_failing_index(self) -> None:
+        """Verify malformed synonyms table does not prevent CatalogStore from loading images."""
+        conn = sqlite3.connect(self.db_path)
+        write_posts(conn, self._sample_posts())
+        # Break the synonyms table with an incompatible schema
+        conn.execute("DROP TABLE IF EXISTS synonyms")
+        conn.execute("CREATE TABLE synonyms (incompatible_col INT)")
+        conn.commit()
+        conn.close()
+
+        store = CatalogStore(self.db_path)
+        index = store.get_index()
+        self.assertIsNotNone(index)
+        self.assertEqual(index.get_synonyms("any"), [])
+        # Image search still works normally
+        results = index.search("黒猫")
+        self.assertEqual(len(results), 2)

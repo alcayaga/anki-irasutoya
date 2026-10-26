@@ -233,14 +233,18 @@ class CatalogStore:
 
                     # Query synonyms if table exists
                     synonyms_map: Dict[Tuple[str, str], Tuple[str, ...]] = {}
-                    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='synonyms'")
-                    if cursor.fetchone() is not None:
-                        cursor.execute("SELECT term, target, source FROM synonyms ORDER BY term ASC, source ASC, ord ASC")
-                        temp_syns: Dict[Tuple[str, str], List[str]] = {}
-                        for s_row in cursor.fetchall():
-                            key = (s_row["term"], s_row["source"])
-                            temp_syns.setdefault(key, []).append(s_row["target"])
-                        synonyms_map = {k: tuple(v) for k, v in temp_syns.items()}
+                    try:
+                        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='synonyms'")
+                        if cursor.fetchone() is not None:
+                            cursor.execute("SELECT term, target, source FROM synonyms ORDER BY term ASC, source ASC, ord ASC")
+                            temp_syns: Dict[Tuple[str, str], List[str]] = {}
+                            for s_row in cursor.fetchall():
+                                key = (s_row["term"], s_row["source"])
+                                temp_syns.setdefault(key, []).append(s_row["target"])
+                            synonyms_map = {k: tuple(v) for k, v in temp_syns.items()}
+                    except sqlite3.Error as e:
+                        logger.warning("Ignoring unreadable synonyms table in %s: %s", self.path, e)
+                        synonyms_map = {}
 
                     self._index = CatalogIndex(records, synonyms=synonyms_map)
                     return self._index

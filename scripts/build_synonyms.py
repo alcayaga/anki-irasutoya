@@ -175,9 +175,12 @@ def validate_catalog_synonyms(catalog_path: Optional[str] = None) -> bool:
     all_valid = True
     failed_rows: List[Tuple[str, str, str]] = []
 
+    target_ok: Dict[str, bool] = {}
     for term, target, source, _ord in rows:
-        results = filter_relevant_illustrations(index.search(target), target)
-        if not has_title_illustration_match(results, target):
+        if target not in target_ok:
+            results = filter_relevant_illustrations(index.search(target), target)
+            target_ok[target] = has_title_illustration_match(results, target)
+        if not target_ok[target]:
             logger.error(
                 "Validation FAILED [%s]: '%s' -> target '%s' has 0 title illustration matches in catalog",
                 source,

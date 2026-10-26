@@ -277,6 +277,46 @@ class TestIrasutoyaClient(unittest.TestCase):
         self.assertIsNotNone(best_img)
         self.assertEqual(best_img.title, "動物のイラスト")
 
+    def test_search_with_fallbacks_deinflected_base_overrides_tier1_weak_match(self) -> None:
+        """Verify deinflected base title match can override a weak surface match."""
+        client = IrasutoyaClient()
+
+        def mock_search(
+            q: str,
+            max_results: Optional[int] = None,
+            image_size: str = "s800",
+            orderby: str = "relevance",
+        ) -> List[IrasutoyaImage]:
+            if q == "死んでいる":
+                # Description match only on surface form
+                img = IrasutoyaImage(
+                    title="何か別のイラスト",
+                    image_url="https://example.com/other.png",
+                    thumb_url="https://example.com/t.png",
+                    post_title="何か別のイラスト",
+                    description="死んでいる状態を表します。",
+                    is_single_image_post=True,
+                )
+                return [img]
+            if q == "死ぬ":
+                # Title match on deinflected base
+                img = IrasutoyaImage(
+                    title="死ぬ人のイラスト",
+                    image_url="https://example.com/die.png",
+                    thumb_url="https://example.com/t.png",
+                    post_title="死ぬ人のイラスト",
+                )
+                return [img]
+            return []
+
+        client.search = mock_search
+        candidates = [("死んでいる", "primary", 1), ("死ぬ", "deinflected_base", 2)]
+        images, matched_cand, best_img = client.search_with_fallbacks(candidates)
+        self.assertIsNotNone(matched_cand)
+        self.assertEqual(matched_cand[0], "死ぬ")
+        self.assertIsNotNone(best_img)
+        self.assertEqual(best_img.title, "死ぬ人のイラスト")
+
     def test_search_with_fallbacks_bypasses_callout_only_for_subsequent_title_match(self):
         """Verify search_with_fallbacks probes subsequent candidates when earlier candidate has only callouts."""
         client = IrasutoyaClient()

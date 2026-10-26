@@ -7,6 +7,7 @@ import logging
 import os
 import sqlite3
 import sys
+import tempfile
 import time
 import urllib.parse
 import urllib.request
@@ -19,6 +20,7 @@ if REPO_ROOT not in sys.path:
 
 from addon.catalog import CatalogStore, write_posts  # noqa: E402
 from addon.feed import ParsedPost, parse_entry  # noqa: E402
+from scripts.build_synonyms import validate_catalog_synonyms  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("build_catalog")
@@ -338,79 +340,84 @@ def compile_and_publish_catalog(
     out_path = os.path.abspath(out_path)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
-    tmp_path = f"{out_path}.tmp"
-    if os.path.exists(tmp_path):
-        os.remove(tmp_path)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=os.path.dirname(out_path),
+        prefix=os.path.basename(out_path) + ".",
+        suffix=".tmp",
+    )
+    os.close(fd)
+    os.chmod(tmp_path, 0o644)
 
-    logger.info("Writing %d posts to temporary database at %s...", len(posts), tmp_path)
-    conn = sqlite3.connect(tmp_path)
+    published = False
     try:
-        write_posts(conn, posts, source_total_results=total_results)
-        if keywords_dir:
-            merge_keywords(conn, keywords_dir)
+        logger.info("Writing %d posts to temporary database at %s...", len(posts), tmp_path)
+        conn = sqlite3.connect(tmp_path)
+        try:
+            write_posts(conn, posts, source_total_results=total_results)
+            if keywords_dir:
+                merge_keywords(conn, keywords_dir)
 
-        if compare_with:
-            compare_with_old(conn, compare_with)
+            if compare_with:
+                compare_with_old(conn, compare_with)
 
-        # Preserve existing synonyms from previous catalog if present
-        prev_catalog = (
-            out_path
-            if is_sqlite_database(out_path)
-            else (compare_with if compare_with and is_sqlite_database(compare_with) else None)
-        )
-        if prev_catalog:
-            try:
-                uri_path = urllib.request.pathname2url(os.path.abspath(prev_catalog))
-                old_c = sqlite3.connect(f"file:{uri_path}?mode=ro", uri=True)
-            except Exception:
-                old_c = sqlite3.connect(prev_catalog)
-            try:
-                old_cur = old_c.cursor()
-                old_cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='synonyms'")
-                if old_cur.fetchone() is not None:
-                    old_cur.execute("SELECT term, target, source, ord FROM synonyms")
-                    old_syns = old_cur.fetchall()
-                    if old_syns:
-                        conn.executemany("INSERT OR REPLACE INTO synonyms (term, target, source, ord) VALUES (?, ?, ?, ?)", old_syns)
-                        old_cur.execute("SELECT value FROM meta WHERE key = 'synonym_sources'")
-                        meta_row = old_cur.fetchone()
-                        if meta_row:
-                            conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('synonym_sources', ?)", (meta_row[0],))
-                        logger.info("Carried over %d synonyms from previous catalog at %s", len(old_syns), prev_catalog)
-                conn.commit()
-            except Exception as e:
-                conn.rollback()
-                logger.error("Could not carry over synonyms from %s: %s", prev_catalog, e)
-                raise
-            finally:
-                old_c.close()
+            # Preserve existing synonyms from previous catalog if present
+            prev_catalog = (
+                out_path
+                if is_sqlite_database(out_path)
+                else (compare_with if compare_with and is_sqlite_database(compare_with) else None)
+            )
+            if prev_catalog:
+                try:
+                    uri_path = urllib.request.pathname2url(os.path.abspath(prev_catalog))
+                    old_c = sqlite3.connect(f"file:{uri_path}?mode=ro", uri=True)
+                except Exception:
+                    old_c = sqlite3.connect(prev_catalog)
+                try:
+                    old_cur = old_c.cursor()
+                    old_cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='synonyms'")
+                    if old_cur.fetchone() is not None:
+                        old_cur.execute("SELECT term, target, source, ord FROM synonyms")
+                        old_syns = old_cur.fetchall()
+                        if old_syns:
+                            conn.executemany("INSERT OR REPLACE INTO synonyms (term, target, source, ord) VALUES (?, ?, ?, ?)", old_syns)
+                            old_cur.execute("SELECT value FROM meta WHERE key = 'synonym_sources'")
+                            meta_row = old_cur.fetchone()
+                            if meta_row:
+                                conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('synonym_sources', ?)", (meta_row[0],))
+                            logger.info("Carried over %d synonyms from previous catalog at %s", len(old_syns), prev_catalog)
+                    conn.commit()
+                except Exception as e:
+                    conn.rollback()
+                    logger.error("Could not carry over synonyms from %s: %s", prev_catalog, e)
+                    raise
+                finally:
+                    old_c.close()
 
-        logger.info("Optimizing database with VACUUM and journal_mode=DELETE...")
-        conn.execute("PRAGMA journal_mode = DELETE")
-        conn.execute("VACUUM")
-        conn.commit()
-    except Exception:
-        conn.close()
-        if os.path.exists(tmp_path):
+            logger.info("Optimizing database with VACUUM and journal_mode=DELETE...")
+            conn.execute("PRAGMA journal_mode = DELETE")
+            conn.execute("VACUUM")
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Validate temporary file BEFORE publishing
+        validate_catalog(tmp_path, total_results, require_probes=require_probes, max_size_mb=max_size_mb)
+        if not validate_catalog_synonyms(tmp_path):
+            logger.warning(
+                "One or more carried-over synonyms in %s have no title matches in the rebuilt catalog",
+                tmp_path,
+            )
+
+        # Atomically replace final catalog
+        os.replace(tmp_path, out_path)
+        published = True
+        logger.info("Successfully published catalog to %s", out_path)
+    finally:
+        if not published and os.path.exists(tmp_path):
             try:
                 os.remove(tmp_path)
             except OSError:
                 pass
-        raise
-    else:
-        conn.close()
-
-    # Validate temporary file BEFORE publishing
-    try:
-        validate_catalog(tmp_path, total_results, require_probes=require_probes, max_size_mb=max_size_mb)
-    except Exception:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
-        raise
-
-    # Atomically replace final catalog
-    os.replace(tmp_path, out_path)
-    logger.info("Successfully published catalog to %s", out_path)
 
     # Compute sha256 checksum
     hasher = hashlib.sha256()

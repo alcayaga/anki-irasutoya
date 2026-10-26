@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import stat
 import tempfile
 import unittest
 
@@ -189,8 +190,8 @@ class TestBuildCatalog(unittest.TestCase):
             )
 
         # Original db content is untouched, tmp_path is removed
-        tmp_path = f"{self.db_path}.tmp"
-        self.assertFalse(os.path.exists(tmp_path))
+        tmp_files = [f for f in os.listdir(self.temp_dir.name) if f.endswith(".tmp")]
+        self.assertEqual(tmp_files, [])
         with open(self.db_path, "r") as f:
             self.assertEqual(f.read(), "ORIGINAL_CONTENT")
 
@@ -211,10 +212,11 @@ class TestBuildCatalog(unittest.TestCase):
 
         self.assertEqual(published_path, self.db_path)
         self.assertTrue(os.path.exists(self.db_path))
+        self.assertEqual(stat.S_IMODE(os.stat(self.db_path).st_mode), 0o644)
 
         # Ensure temp file was cleaned up / replaced
-        tmp_path = f"{self.db_path}.tmp"
-        self.assertFalse(os.path.exists(tmp_path))
+        tmp_files = [f for f in os.listdir(self.temp_dir.name) if f.endswith(".tmp")]
+        self.assertEqual(tmp_files, [])
 
         # Check published SQLite database integrity and contents
         conn = sqlite3.connect(self.db_path)
@@ -306,4 +308,5 @@ class TestBuildCatalog(unittest.TestCase):
             )
 
         # Confirm temporary database was cleaned up
-        self.assertFalse(os.path.exists(f"{self.db_path}.tmp"))
+        tmp_files = [f for f in os.listdir(self.temp_dir.name) if f.endswith(".tmp")]
+        self.assertEqual(tmp_files, [])
