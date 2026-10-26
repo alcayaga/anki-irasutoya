@@ -608,9 +608,10 @@ def score_candidate_image(
     post_title = img.post_title.strip()
 
     qual_title = classify_match_boundary(title, clean_q)
+    relevant = is_image_relevant(img, clean_q)
 
     # 1. Exact canonical matches
-    if is_image_relevant(img, clean_q):
+    if relevant:
         if title == f"{clean_q}のイラスト":
             score += 100.0
         elif _is_canonical_mark_title(title, clean_q):
@@ -629,7 +630,7 @@ def score_candidate_image(
             score += 30.0
 
     # Archetype collection boost (e.g. いろいろなネジのイラスト)
-    if is_image_relevant(img, clean_q) and any(
+    if relevant and any(
         title in (
             f"{prefix}{clean_q}のイラスト",
             f"{prefix}お{clean_q}のイラスト",
@@ -657,7 +658,7 @@ def score_candidate_image(
             score += 35.0
         else:
             score -= 35.0
-    elif is_image_relevant(img, clean_q):
+    elif relevant:
         # Matched only via description on single-image post
         score += 15.0
     else:
