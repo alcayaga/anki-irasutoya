@@ -761,6 +761,7 @@ class TestRanking(unittest.TestCase):
             ("聞", "新聞のイラスト"),
             ("猫", "猫背のイラスト"),
             ("猫", "猫耳のイラスト"),
+            ("本", "三本のバラのイラスト"),
         ]
         for query, title in compound_cases:
             with self.subTest(query=query, title=title):

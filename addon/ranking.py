@@ -42,7 +42,7 @@ SUBTYPE_PREFIXES = frozenset({
     # Size & age
     "大", "小", "子", "巨", "微", "老", "若", "新", "古",
     # Species & attributes
-    "柴", "野", "三",
+    "柴", "野",
 })
 # Single-Kanji queries eligible for fallback subtype matching via SUBTYPE_PREFIXES when categories are absent
 SUBTYPE_ENTITY_QUERIES = frozenset({
