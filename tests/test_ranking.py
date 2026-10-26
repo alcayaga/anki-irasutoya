@@ -756,6 +756,8 @@ class TestRanking(unittest.TestCase):
             ("口", "人口ピラミッドのイラスト"),
             ("手", "空手のイラスト"),
             ("手", "切手のイラスト"),
+            ("猫", "猫背のイラスト"),
+            ("猫", "猫耳のイラスト"),
         ]
         for query, title in compound_cases:
             with self.subTest(query=query, title=title):
@@ -775,6 +777,22 @@ class TestRanking(unittest.TestCase):
             description="かつて北アメリカに生息していた動物",
         )
         self.assertFalse(is_image_relevant(desc_img, "北"))
+
+        # Preserved genuine subtype compounds where single-character query is the head noun
+        subtype_cases = [
+            ("猫", "黒猫のイラスト", ()),
+            ("犬", "柴犬のイラスト", ("犬",)),
+            ("犬", "柴犬のイラスト", ()),
+            ("犬", "子犬のイラスト", ()),
+            ("犬", "盲導犬のイラスト", ("犬",)),
+        ]
+        for query, title, cats in subtype_cases:
+            with self.subTest(subtype=title, query=query):
+                img = IrasutoyaImage(title, "https://example.com/i.png", "https://example.com/t.png", title, categories=cats)
+                self.assertTrue(
+                    is_image_relevant(img, query),
+                    f"Subtype compound '{title}' must remain relevant for query '{query}'",
+                )
 
         # Preserved standalone, polite prefix, and exact quoted matches for 1-Kanji queries
         valid_cases = [

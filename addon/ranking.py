@@ -36,6 +36,14 @@ NATURAL_DISASTER_QUERIES = frozenset({
     "豪雨", "暴風", "暴風雨", "大雨", "大雪", "嵐", "ハリケーン", "サイクロン",
     "山火事", "火災", "火事", "災害", "自然災害", "避難", "防災",
 })
+SUBTYPE_PREFIXES = frozenset({
+    # Colors
+    "黒", "白", "赤", "青", "黄", "茶", "灰", "緑", "紫", "金", "銀",
+    # Size & age
+    "大", "小", "子", "巨", "微", "老", "若", "新", "古",
+    # Species & attributes
+    "柴", "野", "三",
+})
 COMMON_OKURIGANA_NOUNS = frozenset({
     "祭り", "祭", "周り", "香り", "祈り", "便り", "望み", "恵み", "答え", "知らせ",
     "怒り", "踊り", "誓い", "願い", "想い", "思い", "集まり", "始まり", "終わり",
@@ -503,6 +511,36 @@ def classify_match_boundary(text: str, query: str) -> str:
     return best_quality
 
 
+def _is_relevant_single_kanji_subtype(title: str, query: str, categories: Sequence[str] = ()) -> bool:
+    """Return True if title is a genuine subtype compound where query is the head noun (e.g. 黒猫, 柴犬)."""
+    if len(query) != 1:
+        return True
+    idx = title.find(query)
+    if idx == -1:
+        return False
+    next_ch = title[idx + 1] if idx + 1 < len(title) else ""
+    next_is_fused = bool(
+        next_ch
+        and (KANJI_CHAR_RE.match(next_ch) or KATAKANA_CHAR_RE.match(next_ch))
+    )
+    # A subtype compound must be head-final (e.g. 黒猫, not 猫背 or 猫耳)
+    if next_is_fused:
+        return False
+    # If explicitly categorized by Irasutoya as this entity (e.g. 柴犬 in '犬', 盲導犬 in '犬')
+    if query in categories:
+        return True
+    if idx > 0:
+        prev_ch = title[idx - 1]
+        char_before = title[idx - 2] if idx >= 2 else ""
+        prev_is_word = bool(
+            char_before
+            and (KANJI_CHAR_RE.match(char_before) or HIRAGANA_CHAR_RE.match(char_before))
+        )
+        if prev_ch in SUBTYPE_PREFIXES and not prev_is_word:
+            return True
+    return False
+
+
 def is_image_relevant(img: IrasutoyaImage, query: str) -> bool:
     """Check if the individual image itself is semantically relevant with boundary safety.
 
@@ -519,9 +557,12 @@ def is_image_relevant(img: IrasutoyaImage, query: str) -> bool:
     if qual_title in ("exact_quoted", "standalone", "polite_prefix", "inflected"):
         return True
     if qual_title == "compound":
-        # Disallow compound matches for all single-character queries (e.g. 北 in 北京ダック, 手 in 空手, 彼 in 彼岸花)
+        # For single-character queries, only genuine subtype compounds (e.g. 黒猫 for 猫, 柴犬 for 犬)
+        # where the query is the head noun are eligible; incidental compounds are rejected.
         if len(clean_q) == 1:
-            return False
+            cats = getattr(img, "categories", ())
+            if not _is_relevant_single_kanji_subtype(title, clean_q, cats):
+                return False
         # Bare verb stems fused with following Kanji form different nouns (売り場, 勝ち組, 食べ物, 買い物)
         if _is_bare_verb_stem(clean_q) and re.search(
             re.escape(clean_q) + KANJI_CHAR_RE.pattern, title
