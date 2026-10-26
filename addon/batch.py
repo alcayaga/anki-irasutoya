@@ -11,7 +11,6 @@ from .client import IrasutoyaClient
 from .config import (
     CONFIG_KEY_FULL_DELAY,
     CONFIG_KEY_IMAGE_SIZE,
-    CONFIG_KEY_SEARCH_BACKEND,
     get_config,
 )
 from .ranking import (
@@ -21,7 +20,7 @@ from .ranking import (
     is_image_relevant,
     select_best_image,
 )
-from .text_utils import BATCH_MAX_CANDIDATES, generate_search_candidates
+from .text_utils import generate_search_candidates
 from .yomitan_parser import extract_yomitan_metadata_from_note
 
 logger = logging.getLogger(__name__)
@@ -62,6 +61,9 @@ class BatchStats:
 
         if self.errors > 0:
             msg += f", Errors: {self.errors}"
+        if self.details:
+            details_str = "; ".join(self.details)
+            msg += f" ({details_str})"
         if self.canceled:
             if self.added > 0:
                 return f"Canceled. Partial results committed: {msg}"
@@ -114,18 +116,17 @@ def process_note_record(
         return "skipped_empty_query", None
 
     primary_query = candidates[0][0]
-    batch_candidates = candidates[:BATCH_MAX_CANDIDATES]
 
     try:
         pos_type = safe_extract_note_pos_type(note)
         if hasattr(client, "search_with_fallbacks"):
             images, matched_cand, best_img = client.search_with_fallbacks(
-                batch_candidates, max_results=12, image_size=image_size, pos_type=pos_type
+                candidates, max_results=12, image_size=image_size, pos_type=pos_type
             )
         else:
             matched_cand = None
             best_img = None
-            for cand in batch_candidates:
+            for cand in candidates:
                 imgs = client.search(cand[0], max_results=3, image_size=image_size)
                 valid_imgs = [
                     img for img in imgs
@@ -199,10 +200,9 @@ def run_batch_fill(
         delay_ms = 300.0
     delay_sec = max(0.05, delay_ms / 1000.0)
     image_size = config.get(CONFIG_KEY_IMAGE_SIZE, "s800")
-    search_backend = config.get(CONFIG_KEY_SEARCH_BACKEND, "auto")
     store = default_store()
     store.warm_async()
-    client = IrasutoyaClient(catalog=store, backend=search_backend)
+    client = IrasutoyaClient(catalog=store)
 
     def read_notes_task(col: any) -> Tuple[List[Tuple[any, List[Tuple[str, str, int]], bool]], int, int]:
         """Read note terms in a short collection-backed task and generate candidate search queries."""
@@ -229,6 +229,22 @@ def run_batch_fill(
     ) -> Tuple[BatchStats, List[Tuple[any, str, bytes, bool]]]:
         """Download images and pace requests outside the collection lock using fallback search."""
         items, load_errors, missing_field_skips = data
+        if store.get_index() is None:
+            logger.error("Offline catalog unavailable; aborting batch fill.")
+            catalog_errors = 0
+            catalog_skips = missing_field_skips
+            for _, candidates, has_target in items:
+                if (has_target and overwrite_mode == "skip") or not candidates:
+                    catalog_skips += 1
+                else:
+                    catalog_errors += 1
+            return BatchStats(
+                total=total,
+                errors=catalog_errors + load_errors,
+                skipped=catalog_skips,
+                details=["Offline catalog unavailable or failed to load"],
+            ), []
+
         stats = BatchStats(total=total, errors=load_errors, skipped=missing_field_skips)
         pending_writes: List[Tuple[any, str, bytes, bool]] = []
         last_request_time = 0.0
@@ -268,16 +284,12 @@ def run_batch_fill(
                 stats.skipped += 1
                 continue
 
-            batch_candidates = candidates[:BATCH_MAX_CANDIDATES]
             try:
                 pos_type = safe_extract_note_pos_type(note)
-                # pace_request applies before each candidate query to avoid rate limits,
-                # incurring polite pacing delays for up to BATCH_MAX_CANDIDATES queries per note.
                 images, matched_cand, best_img = client.search_with_fallbacks(
-                    batch_candidates,
+                    candidates,
                     max_results=12,
                     image_size=image_size,
-                    pace_callback=pace_request,
                     pos_type=pos_type,
                 )
                 if not best_img or not matched_cand:

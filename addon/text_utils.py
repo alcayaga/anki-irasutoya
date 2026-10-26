@@ -34,7 +34,16 @@ NOTE_FURIGANA_FIELDS = (
     "VocabFurigana",
 )
 
-BATCH_MAX_CANDIDATES = 5
+KANJI_RE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf々〆〇]")
+
+PRONOUN_KATAKANA_BLOCKLIST = frozenset({
+    "わし", "おれ", "ぼく", "わたし", "あたし", "わたくし", "うち",
+    "きみ", "おまえ", "あんた", "あなた", "かれ", "かのじょ", "かれら",
+    "われ", "われわれ", "じぶん", "てまえ", "こいつ", "そいつ", "あいつ", "どいつ",
+    "だれ", "なに", "なん", "ここ", "そこ", "あそこ", "どこ",
+    "これ", "それ", "あれ", "どれ", "こちら", "そちら", "あちら", "どちら",
+    "こっち", "そっち", "あっち", "どっち",
+})
 
 
 def to_katakana(text: str) -> str:
@@ -472,6 +481,26 @@ def _find_note_reading(note: Any) -> Optional[str]:
     return readings[0][2] if readings else None
 
 
+def _should_suppress_katakana_conversion(
+    term: Optional[str],
+    yomitan_meta: Optional[Any] = None
+) -> bool:
+    """Return True if term is a Japanese pronoun or demonstrative that must NOT be converted to Katakana.
+
+    Prevents homophone hijacking (e.g. pronoun わし -> ワシ matching 鷲 'eagle',
+    or pronoun あれ -> アレ matching irrelevant terms).
+    """
+    if not term:
+        return False
+    clean = clean_search_query(term)
+    if clean in PRONOUN_KATAKANA_BLOCKLIST:
+        return True
+    if yomitan_meta and hasattr(yomitan_meta, "pos_tags"):
+        if "pn" in yomitan_meta.pos_tags:
+            return True
+    return False
+
+
 def generate_search_candidates(
     raw_source: Optional[str],
     note: Optional[Any] = None,
@@ -494,13 +523,15 @@ def generate_search_candidates(
     candidates: List[Tuple[str, str, int]] = []
     seen = set()
 
-    def add(term: Optional[str], reason: str, tier: int) -> None:
+    def add(term: Optional[str], reason: str, tier: int) -> bool:
         if not term:
-            return
+            return False
         cleaned = clean_search_query(term)
         if cleaned and cleaned not in seen:
             seen.add(cleaned)
             candidates.append((cleaned, reason, tier))
+            return True
+        return False
 
     yomitan_meta = extract_yomitan_metadata_from_note(note) if note is not None else None
 
@@ -535,7 +566,18 @@ def generate_search_candidates(
                 and not is_grammar_function_word(cleaned_uk)
             ):
                 add(cleaned_uk, "yomitan_uk_reading", 1)
-                add(to_katakana(cleaned_uk), "yomitan_uk_katakana", 1)
+                if not _should_suppress_katakana_conversion(cleaned_uk, yomitan_meta):
+                    add(to_katakana(cleaned_uk), "yomitan_uk_katakana", 1)
+
+    # Yomitan orthographic forms containing at least one Kanji (e.g. 缶けり -> 缶蹴り)
+    if yomitan_meta and yomitan_meta.forms_all:
+        added_forms = 0
+        for form in yomitan_meta.forms_all:
+            if KANJI_RE.search(form):
+                if add(form, "yomitan_form", 1):
+                    added_forms += 1
+                    if added_forms >= 3:
+                        break
 
     # Bikago polite prefix (e.g. 肉 -> お肉, 肌 -> お肌, 茶 -> お茶, 風呂 -> お風呂)
     bikago = expand_bikago_prefix(surface)
@@ -553,29 +595,23 @@ def generate_search_candidates(
     if (
         re.fullmatch(r"[\u3040-\u309F]+", surface)
         and not is_grammar_function_word(surface)
+        and not _should_suppress_katakana_conversion(surface, yomitan_meta)
     ):
         add(to_katakana(surface), "loanword_katakana", 1)
 
-    # 3. Tier 2 Semantic & Phonetic Fallbacks (Validated Deinflection, Note Fields, Readings, Sense Kanji, Cross-References, Masu-Stems, Elongation, Speculative Deinflection)
+    # 3. Tier 2 Semantic & Phonetic Fallbacks (Validated Deinflection, Masu-Stems, Sense Kanji, Cross-References, Note Fields, Readings, Elongation, Speculative Deinflection)
     if allow_tier2:
         deinflections = deinflect_japanese(surface) if allow_deinflection else []
         # Primary validated deinflection from surface (e.g. 帰ってくる -> 帰る, 走っている -> 走る, 待っている -> 待つ)
         # Surface-derived base preserves Kanji stem with zero homophone risk; rank before phonetic readings
-        # while keeping only the single validated base form to preserve note reading slots in batch mode
         if deinflections:
             add(deinflections[0], "deinflected_base", 2)
 
-        # Check dedicated reading and furigana fields on the note (authoritative dictionary readings)
-        for f_name, f_type, cleaned_read in _iter_note_readings(note):
-            prefix = f"note_{f_type}_{f_name}"
-            add(cleaned_read, prefix, 2)
-            add(to_katakana(cleaned_read), f"{prefix}_katakana", 2)
-
-        # Same-field reading extracted from furigana brackets (e.g. 檸檬[れもん] -> れもん, 本[ほん] -> ほん)
-        # Suppress single kana and grammar function words to avoid homophone collisions
-        if same_field_reading and not is_grammar_function_word(same_field_reading):
-            add(same_field_reading, "same_field_reading", 2)
-            add(to_katakana(same_field_reading), "same_field_reading_katakana", 2)
+        # Masu-stems (e.g. 控え, 疲れ, 勝ち, 売り, 休み) preserve Kanji semantic stem;
+        # rank ahead of phonetic kana readings to prevent homophone hijacking (e.g. 控える -> 控え matching 買い控え)
+        for inflected in verb_inflections:
+            if not inflected.endswith(("た", "だ", "う")):
+                add(inflected, "verb_stem", 2)
 
         # Yomitan sense-specific Kanji splits from notes (e.g. 止める -> esp. 停める, 留める)
         if yomitan_meta and yomitan_meta.sense_kanji:
@@ -607,11 +643,19 @@ def generate_search_candidates(
                     if added_refs >= 3:
                         break
 
-        # Masu-stems (e.g. 疲れ, 勝ち, 売り, 休み) can function as distinct nouns,
-        # so classify them as Tier 2 fallbacks with audit tagging.
-        for inflected in verb_inflections:
-            if not inflected.endswith(("た", "だ", "う")):
-                add(inflected, "verb_stem", 2)
+        # Check dedicated reading and furigana fields on the note (authoritative dictionary readings)
+        for f_name, f_type, cleaned_read in _iter_note_readings(note):
+            prefix = f"note_{f_type}_{f_name}"
+            add(cleaned_read, prefix, 2)
+            if not _should_suppress_katakana_conversion(cleaned_read, yomitan_meta):
+                add(to_katakana(cleaned_read), f"{prefix}_katakana", 2)
+
+        # Same-field reading extracted from furigana brackets (e.g. 檸檬[れもん] -> れもん, 本[ほん] -> ほん)
+        # Suppress single kana and grammar function words to avoid homophone collisions
+        if same_field_reading and not is_grammar_function_word(same_field_reading):
+            add(same_field_reading, "same_field_reading", 2)
+            if not _should_suppress_katakana_conversion(same_field_reading, yomitan_meta):
+                add(to_katakana(same_field_reading), "same_field_reading_katakana", 2)
 
         # Katakana elongation mark expansion (メンバ -> メンバー, サーバ -> サーバー)
         for chouon_variant in expand_katakana_chouon(surface):

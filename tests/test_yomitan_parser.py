@@ -97,18 +97,81 @@ class TestYomitanParser(unittest.TestCase):
         self.assertEqual(meta.forms_star, ["交代", "交替"])
         # Ensure non-star forms like 田圃 are not included in forms_star
         self.assertNotIn("田圃", meta.forms_star)
+        self.assertEqual(meta.forms_all, ["交代", "交替"])
+
+    def test_forms_table_column_status_filtering(self):
+        """Test that formsTable columns with all-rare cells, rare-starred cells, or marked headers are excluded."""
+        html_table = (
+            '<div class="yomitan-glossary">'
+            '<table data-sc-content="formsTable">'
+            '<tbody>'
+            '<tr><th></th><th>標準</th><th>並記</th><th>〈田圃〉</th><th>古語</th><th>旧記</th></tr>'
+            '<tr><th>ひょうじゅん</th><td>★</td><td>⛬</td><td>★</td><td>★⛬</td><td class="rare">★</td></tr>'
+            '<tr><th>ならび</th><td></td><td>🅁</td><td>🅁</td><td>🅁</td><td>×</td></tr>'
+            '</tbody></table>'
+            '</div>'
+        )
+        meta = parse_yomitan_html(html_table)
+        self.assertIsNotNone(meta)
+        self.assertIn("標準", meta.forms_star)
+        self.assertIn("標準", meta.forms_all)
+        self.assertNotIn("並記", meta.forms_all)
+        self.assertNotIn("並記", meta.forms_star)
+        self.assertNotIn("田圃", meta.forms_star)
+        self.assertNotIn("田圃", meta.forms_all)
+        self.assertNotIn("古語", meta.forms_star)
+        self.assertNotIn("古語", meta.forms_all)
+        self.assertNotIn("旧記", meta.forms_star)
+        self.assertNotIn("旧記", meta.forms_all)
 
     def test_forms_list(self):
         """Test extracting ★ forms from unordered list under (forms...) tag."""
         html_list = (
             '<ol>'
             '<li data-dictionary="JMdict [2025-11-01]"><i>(forms, JMdict [2025-11-01])</i> '
-            '<ul><li>手袋（★）</li><li>手ぶくろ</li></ul></li>'
+            '<ul><li>手袋（★）</li><li>手ぶくろ</li><li>缶蹴り★</li></ul></li>'
             '</ol>'
         )
         meta = parse_yomitan_html(html_list)
         self.assertIsNotNone(meta)
-        self.assertEqual(meta.forms_star, ["手袋"])
+        self.assertEqual(meta.forms_star, ["手袋", "缶蹴り"])
+        self.assertEqual(meta.forms_all, ["手袋", "手ぶくろ", "缶蹴り"])
+
+    def test_forms_all_extracts_mixed_kana_orthography(self):
+        """Test extracting non-starred orthographic variants from JMdict (forms...) entry."""
+        html_kankeri = (
+            '<ol>'
+            '<li data-dictionary="JMdict [2025-11-01]"><i>(forms, JMdict [2025-11-01])</i> '
+            '<ul><li>缶蹴り</li><li>缶けり</li></ul></li>'
+            '</ol>'
+        )
+        meta = parse_yomitan_html(html_kankeri)
+        self.assertIsNotNone(meta)
+        self.assertEqual(meta.forms_star, [])
+        self.assertEqual(meta.forms_all, ["缶蹴り", "缶けり"])
+
+    def test_forms_all_skips_outdated_markers(self):
+        """Test that forms marked with rare/outdated symbols or tags are excluded from forms_all."""
+        html_rare = (
+            '<ol>'
+            '<li data-dictionary="JMdict [2025-11-01]"><i>(forms, JMdict [2025-11-01])</i> '
+            '<ul>'
+            '<li>標準形</li>'
+            '<li>注意形（⚠️）</li>'
+            '<li>素警告形（⚠）</li>'
+            '<li>廃用形（rK）</li>'
+            '<li>稀少形（rare）</li>'
+            '<li>〈旧字〉</li>'
+            '<li>棄却形（×）</li>'
+            '<li>記号形（🅁）</li>'
+            '<li>星付稀少（★⛬）</li>'
+            '</ul></li>'
+            '</ol>'
+        )
+        meta = parse_yomitan_html(html_rare)
+        self.assertIsNotNone(meta)
+        self.assertEqual(meta.forms_all, ["標準形"])
+        self.assertNotIn("星付稀少", meta.forms_star)
 
     def test_see_references(self):
         """Test extracting 'see:' references while ignoring antonyms."""
