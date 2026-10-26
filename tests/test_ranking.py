@@ -781,9 +781,11 @@ class TestRanking(unittest.TestCase):
         # Preserved genuine subtype compounds where single-character query is the head noun
         subtype_cases = [
             ("猫", "黒猫のイラスト", ()),
+            ("猫", "かわいい黒猫のイラスト", ()),
             ("犬", "柴犬のイラスト", ("犬",)),
             ("犬", "柴犬のイラスト", ()),
             ("犬", "子犬のイラスト", ()),
+            ("犬", "走る子犬のイラスト", ()),
             ("犬", "盲導犬のイラスト", ("犬",)),
         ]
         for query, title, cats in subtype_cases:
@@ -802,6 +804,7 @@ class TestRanking(unittest.TestCase):
             ("肌", "つるつるのお肌の女性のイラスト", "polite_prefix"),
             ("北", "「北」のイラスト文字", "exact_quoted"),
             ("本", "赤い本のイラスト", "standalone"),
+            ("挨拶", "「こんにちは」の挨拶のイラスト", "standalone"),
         ]
         for query, title, expected_boundary in valid_cases:
             with self.subTest(query=query, title=title):

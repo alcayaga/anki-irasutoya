@@ -374,11 +374,13 @@ def _is_non_particle_hiragana_prefix(text: str, idx: int) -> bool:
     if idx < 2:
         return True
     char_before = text[idx - 2]
+    CLOSING_BRACKETS = ("」", "』", "）", ")", "】", "］", "]", "〉", "》")
     if not (
         KANJI_CHAR_RE.match(char_before)
         or KATAKANA_CHAR_RE.match(char_before)
         or HIRAGANA_CHAR_RE.match(char_before)
         or char_before.isalnum()
+        or char_before in CLOSING_BRACKETS
     ):
         return True
     return prev_ch not in SINGLE_CHAR_PARTICLES + ATTRIBUTIVE_ENDINGS
@@ -534,7 +536,10 @@ def _is_relevant_single_kanji_subtype(title: str, query: str, categories: Sequen
         char_before = title[idx - 2] if idx >= 2 else ""
         prev_is_word = bool(
             char_before
-            and (KANJI_CHAR_RE.match(char_before) or HIRAGANA_CHAR_RE.match(char_before))
+            and (
+                KANJI_CHAR_RE.match(char_before)
+                or _is_non_particle_hiragana_prefix(title, idx - 1)
+            )
         )
         if prev_ch in SUBTYPE_PREFIXES and not prev_is_word:
             return True
