@@ -109,9 +109,12 @@ class TestRanking(unittest.TestCase):
         kaimono_img = IrasutoyaImage("買い物のイラスト", "https://example.com/km.png", "https://example.com/t.png", "買い物")
         self.assertFalse(is_image_relevant(kaimono_img, "買い"))
 
-        # Genuine Kanji-noun compounds, okurigana nouns, and adjectives modifying nouns should still be accepted
+        # Single-Kanji noun compounds must be rejected as irrelevant (乾燥肌 != 肌, 北京ダック != 北)
         hada_img = IrasutoyaImage("乾燥肌のイラスト", "https://example.com/h.png", "https://example.com/t.png", "乾燥肌")
-        self.assertTrue(is_image_relevant(hada_img, "肌"))
+        self.assertFalse(is_image_relevant(hada_img, "肌"))
+        # Polite-prefix nouns (お肌) remain relevant for single-Kanji nouns
+        ohada_img = IrasutoyaImage("つるつるのお肌の女性のイラスト", "https://example.com/oh.png", "https://example.com/t.png", "お肌のイラスト")
+        self.assertTrue(is_image_relevant(ohada_img, "肌"))
         matsuri_img = IrasutoyaImage("祭り会場のイラスト", "https://example.com/m.png", "https://example.com/t.png", "祭り会場")
         self.assertTrue(is_image_relevant(matsuri_img, "祭り"))
         summer_matsuri_img = IrasutoyaImage("夏祭りのイラスト", "https://example.com/sm.png", "https://example.com/t.png", "夏祭り")
@@ -377,7 +380,7 @@ class TestRanking(unittest.TestCase):
     def test_category_weights_boost_objects_for_nouns(self):
         """Verify physical object categories boost tangible entities when query is a noun."""
         img_obj = IrasutoyaImage(
-            title="乗用車のイラスト",
+            title="青い車のイラスト",
             image_url="https://example.com/car.png",
             thumb_url="https://example.com/t.png",
             post_title="車のイラスト",
@@ -740,6 +743,264 @@ class TestRanking(unittest.TestCase):
         score_neutral = score_candidate_image(img_neutral, "勝つ", pos_type="verb")
         # Action category boost (+35.0) should be included because qual_title == "inflected" gates allow_boost=True
         self.assertAlmostEqual(score_inflected - score_neutral, 35.0)
+
+    def test_single_kanji_compound_rejection_and_kata_boundary(self) -> None:
+        """Verify 1-Kanji queries reject compound matches while preserving standalone and polite forms."""
+        # Rejected compounds for single-Kanji queries
+        compound_cases = [
+            ("北", "北京ダックのイラスト"),
+            ("北", "北海道のキャラクター"),
+            ("北", "南北線"),
+            ("彼", "彼岸花のイラスト（花）"),
+            ("身", "刺身のイラスト"),
+            ("口", "人口ピラミッドのイラスト"),
+            ("手", "空手のイラスト"),
+            ("手", "切手のイラスト"),
+            ("手", "大手のイラスト"),
+            ("会", "大会のイラスト"),
+            ("聞", "新聞のイラスト"),
+            ("猫", "猫背のイラスト"),
+            ("猫", "猫耳のイラスト"),
+            ("本", "三本のバラのイラスト"),
+        ]
+        for query, title in compound_cases:
+            with self.subTest(query=query, title=title):
+                img = IrasutoyaImage(title, "https://example.com/i.png", "https://example.com/t.png", title)
+                self.assertFalse(
+                    is_image_relevant(img, query),
+                    f"Compound title '{title}' must not match 1-Kanji query '{query}'",
+                )
+
+        # Boundary test: Kanji followed by Katakana (e.g. 北アメリカ) must be classified as compound
+        self.assertEqual(classify_match_boundary("北アメリカ", "北"), "compound")
+        desc_img = IrasutoyaImage(
+            "リョコウバトのイラスト",
+            "https://example.com/i.png",
+            "https://example.com/t.png",
+            "リョコウバトのイラスト",
+            description="かつて北アメリカに生息していた動物",
+        )
+        self.assertFalse(is_image_relevant(desc_img, "北"))
+
+        # Preserved genuine subtype compounds where single-character query is the head noun
+        subtype_cases = [
+            ("猫", "黒猫のイラスト", ()),
+            ("猫", "かわいい黒猫のイラスト", ()),
+            ("犬", "柴犬のイラスト", ("犬",)),
+            ("犬", "柴犬のイラスト", ()),
+            ("犬", "子犬のイラスト", ()),
+            ("犬", "走る子犬のイラスト", ()),
+            ("犬", "盲導犬のイラスト", ("犬",)),
+            ("犬", "犬小屋と柴犬のイラスト", ()),
+            ("犬", "犬小屋と柴犬のイラスト", ("犬",)),
+        ]
+        for query, title, cats in subtype_cases:
+            with self.subTest(subtype=title, query=query):
+                img = IrasutoyaImage(title, "https://example.com/i.png", "https://example.com/t.png", title, categories=cats)
+                self.assertTrue(
+                    is_image_relevant(img, query),
+                    f"Subtype compound '{title}' must remain relevant for query '{query}'",
+                )
+
+        # Multi-occurrence title where all occurrences are fused non-subtypes
+        img_fused_multi = IrasutoyaImage(
+            "犬小屋と犬走りのイラスト", "https://example.com/i.png", "https://example.com/t.png", "犬小屋と犬走りのイラスト"
+        )
+        self.assertFalse(is_image_relevant(img_fused_multi, "犬"))
+
+        # Preserved standalone, polite prefix, and exact quoted matches for 1-Kanji queries
+        valid_cases = [
+            ("手", "手のイラスト", "exact_quoted"),
+            ("口", "口のイラスト", "exact_quoted"),
+            ("手", "お手のイラスト", "polite_prefix"),
+            ("肌", "つるつるのお肌の女性のイラスト", "polite_prefix"),
+            ("北", "「北」のイラスト文字", "exact_quoted"),
+            ("本", "赤い本のイラスト", "standalone"),
+            ("挨拶", "「こんにちは」の挨拶のイラスト", "standalone"),
+        ]
+        for query, title, expected_boundary in valid_cases:
+            with self.subTest(query=query, title=title):
+                img = IrasutoyaImage(title, "https://example.com/i.png", "https://example.com/t.png", title)
+                self.assertEqual(classify_match_boundary(title, query), expected_boundary)
+                self.assertTrue(is_image_relevant(img, query))
+
+    def test_natural_disaster_category_exemption(self) -> None:
+        """Verify natural disaster queries are exempted from the '災害' category penalty."""
+        img_typhoon_aerial = IrasutoyaImage(
+            title="上から見た台風のイラスト",
+            image_url="https://example.com/t1.png",
+            thumb_url="https://example.com/th1.png",
+            post_title="上から見た台風のイラスト",
+            categories=("天気", "災害", "地図"),
+        )
+        img_typhoon_disaster = IrasutoyaImage(
+            title="台風のイラスト（自然災害）",
+            image_url="https://example.com/t2.png",
+            thumb_url="https://example.com/th2.png",
+            post_title="台風のイラスト（自然災害）",
+            categories=("災害",),
+        )
+
+        score_aerial = score_candidate_image(img_typhoon_aerial, "台風", pos_type="noun")
+        score_disaster = score_candidate_image(img_typhoon_disaster, "台風", pos_type="noun")
+
+        # Must not receive the -25.0 hazard penalty for '災害'
+        self.assertAlmostEqual(score_aerial, 25.4, delta=0.1)
+        self.assertAlmostEqual(score_disaster, 84.6, delta=0.1)
+
+        # Other disaster terms in NATURAL_DISASTER_QUERIES also exempt '災害' penalty
+        for term in ("地震", "津波", "噴火", "竜巻", "土砂崩れ", "雪崩", "豪雨"):
+            with self.subTest(term=term):
+                cat_score = calculate_category_score(("災害",), term, pos_type="noun")
+                self.assertEqual(cat_score, 0.0)
+
+        # Non-disaster queries still receive the '災害' penalty
+        car_disaster_score = calculate_category_score(("災害", "車"), "車", pos_type="noun")
+        self.assertEqual(car_disaster_score, -25.0)
+
+    def test_hiragana_particle_prefix_and_kanji_suffix_guard(self) -> None:
+        """Verify Hiragana boundary guards reject false particle matches and kanji collisions."""
+        # 1. Reading 'くちょう' for '口調' must not match 'はくちょう座'
+        title_constellation = "はくちょう座のイラスト（星座）"
+        self.assertEqual(classify_match_boundary(title_constellation, "くちょう"), "none")
+        self.assertEqual(classify_match_boundary("、はくちょう座", "くちょう"), "none")
+        img_constellation = IrasutoyaImage(
+            title=title_constellation,
+            image_url="https://example.com/c.png",
+            thumb_url="https://example.com/t.png",
+            post_title=title_constellation,
+        )
+        self.assertFalse(is_image_relevant(img_constellation, "くちょう"))
+
+        # 2. Adjective and verb attributive forms modifying a Kanji noun must remain standalone
+        self.assertEqual(classify_match_boundary("かわいい猫のイラスト", "かわいい"), "standalone")
+        self.assertEqual(classify_match_boundary("おいしい水のイラスト", "おいしい"), "standalone")
+        self.assertEqual(classify_match_boundary("かけぬける人のイラスト", "かけぬける"), "standalone")
+        self.assertEqual(classify_match_boundary("走る人のイラスト", "走る"), "standalone")
+
+        # 3. Known Okurigana nouns ending in kana (like 'こたつ') modifying Kanji are compounds
+        self.assertEqual(classify_match_boundary("こたつ布団のイラスト", "こたつ"), "compound")
+
+    def test_archetype_collection_boost(self) -> None:
+        """Verify archetype collection boost prioritizes 'いろいろな{term}' over narrow subtypes."""
+        img_collection = IrasutoyaImage(
+            title="いろいろなネジのイラスト",
+            image_url="https://example.com/col.png",
+            thumb_url="https://example.com/t.png",
+            post_title="いろいろなネジのイラスト",
+            categories=("道具",),
+        )
+        img_resin = IrasutoyaImage(
+            title="樹脂のネジのイラスト",
+            image_url="https://example.com/res.png",
+            thumb_url="https://example.com/t.png",
+            post_title="樹脂のネジのイラスト",
+            categories=("道具",),
+        )
+
+        score_col = score_candidate_image(img_collection, "ネジ", pos_type="noun")
+        score_res = score_candidate_image(img_resin, "ネジ", pos_type="noun")
+
+        # Collection illustration (+15.0 boost) beats the narrower resin subtype
+        self.assertAlmostEqual(score_col, 60.4, delta=0.1)
+        self.assertAlmostEqual(score_res, 47.0, delta=0.1)
+        self.assertGreater(score_col, score_res)
+
+        # Single canonical title still beats collection title
+        img_exact = IrasutoyaImage(
+            title="ネジのイラスト",
+            image_url="https://example.com/ex.png",
+            thumb_url="https://example.com/t.png",
+            post_title="ネジのイラスト",
+            categories=("道具",),
+        )
+        score_exact = score_candidate_image(img_exact, "ネジ", pos_type="noun")
+        self.assertGreater(score_exact, score_col)
+
+        # Other collection prefixes also receive the boost
+        for prefix in ("色々な", "様々な", "さまざまな"):
+            with self.subTest(prefix=prefix):
+                img_alt = IrasutoyaImage(
+                    title=f"{prefix}ネジのイラスト",
+                    image_url="https://example.com/alt.png",
+                    thumb_url="https://example.com/t.png",
+                    post_title=f"{prefix}ネジのイラスト",
+                    categories=("道具",),
+                )
+                score_alt = score_candidate_image(img_alt, "ネジ", pos_type="noun")
+                self.assertGreater(score_alt, score_res)
+
+    def test_attributive_byproduct_modifier_penalty(self) -> None:
+        """Verify byproduct modifier titles receive penalty and do not claim headword bonus."""
+        img_bundle = IrasutoyaImage(
+            title="髪の毛の束のイラスト",
+            image_url="https://example.com/bundle.png",
+            thumb_url="https://example.com/t.png",
+            post_title="髪の毛の束のイラスト",
+            categories=("髪", "リクエスト"),
+        )
+        img_brush = IrasutoyaImage(
+            title="髪の毛のついたヘアブラシのイラスト（黒い毛）",
+            image_url="https://example.com/brush.png",
+            thumb_url="https://example.com/t.png",
+            post_title="髪の毛のついたヘアブラシのイラスト",
+            categories=("ペット", "髪", "道具"),
+        )
+        img_rice = IrasutoyaImage(
+            title="髪の毛の入ったご飯のイラスト",
+            image_url="https://example.com/rice.png",
+            thumb_url="https://example.com/t.png",
+            post_title="髪の毛の入ったご飯のイラスト",
+            categories=("食事", "髪", "リクエスト"),
+        )
+
+        score_bundle = score_candidate_image(img_bundle, "髪の毛", pos_type="noun")
+        score_brush = score_candidate_image(img_brush, "髪の毛", pos_type="noun")
+        score_rice = score_candidate_image(img_rice, "髪の毛", pos_type="noun")
+
+        self.assertAlmostEqual(score_bundle, 87.0, delta=0.1)
+        self.assertAlmostEqual(score_brush, 17.4, delta=0.1)
+        self.assertAlmostEqual(score_rice, 3.8, delta=0.1)
+        self.assertGreater(score_bundle, score_brush)
+        self.assertGreater(score_bundle, score_rice)
+
+    def test_compound_prefix_synonym_headword_tolerance(self) -> None:
+        """Verify compound headwords with standalone synonyms receive positive adjustment."""
+        img_masquerade = IrasutoyaImage(
+            title="仮面舞踏会のマスクのイラスト",
+            image_url="https://example.com/mask.png",
+            thumb_url="https://example.com/t.png",
+            post_title="仮面舞踏会のマスクのイラスト",
+            categories=("ファッション", "パーティ"),
+        )
+        img_noh = IrasutoyaImage(
+            title="能面のイラスト",
+            image_url="https://example.com/noh.png",
+            thumb_url="https://example.com/t.png",
+            post_title="能面のイラスト",
+            description="能楽で使われる仮面、能面（女面）のイラストです。",
+            categories=("おもちゃ", "日本", "道具", "美術", "リクエスト"),
+        )
+        img_ronin = IrasutoyaImage(
+            title="仮面浪人のイラスト",
+            image_url="https://example.com/ronin.png",
+            thumb_url="https://example.com/t.png",
+            post_title="仮面浪人のイラスト",
+            categories=("リクエスト", "受験"),
+        )
+
+        score_masquerade = score_candidate_image(img_masquerade, "仮面", pos_type="noun")
+        score_noh = score_candidate_image(img_noh, "仮面", pos_type="noun")
+        score_ronin = score_candidate_image(img_ronin, "仮面", pos_type="noun")
+
+        self.assertAlmostEqual(score_masquerade, 23.8, delta=0.1)
+        self.assertAlmostEqual(score_noh, 9.4, delta=0.1)
+        self.assertAlmostEqual(score_ronin, -42.2, delta=0.1)
+
+        self.assertGreater(score_masquerade, score_noh)
+        self.assertGreater(score_noh, score_ronin)
+        best = select_best_image([img_ronin, img_noh, img_masquerade], "仮面", pos_type="noun")
+        self.assertEqual(best, img_masquerade)
 
 
 if __name__ == "__main__":

@@ -165,7 +165,7 @@ class TestIrasutoyaClient(unittest.TestCase):
             if q == "肉":
                 # Returns both a text callout (with high quoted/post title bonus) and a relevant scene
                 callout = IrasutoyaImage("「肉」のイラスト文字", "https://example.com/c.png", "https://example.com/t.png", "肉のイラスト")
-                scene = IrasutoyaImage("培養肉のイラスト", "https://example.com/s.png", "https://example.com/t.png", "培養肉のイラスト")
+                scene = IrasutoyaImage("お肉のイラスト", "https://example.com/s.png", "https://example.com/t.png", "お肉のイラスト")
                 return [callout, scene]
             return []
 
@@ -173,8 +173,8 @@ class TestIrasutoyaClient(unittest.TestCase):
         candidates = [("肉", "primary", 1)]
         images, matched_cand, best_img = client.search_with_fallbacks(candidates)
         self.assertIsNotNone(best_img)
-        self.assertEqual(best_img.title, "培養肉のイラスト")
-        self.assertEqual(images[0].title, "培養肉のイラスト")
+        self.assertEqual(best_img.title, "お肉のイラスト")
+        self.assertEqual(images[0].title, "お肉のイラスト")
         self.assertEqual(images[1].title, "「肉」のイラスト文字")
 
     def test_search_with_fallbacks_pos_type_handling(self):

@@ -18,7 +18,6 @@ KANJI_CHAR_RE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf々〆〇]")
 HIRAGANA_CHAR_RE = re.compile(r"[\u3040-\u309F]")
 # Exclude ゠ (U+30A0) and ・ (U+30FB); they are word separators, not Katakana letters.
 KATAKANA_CHAR_RE = re.compile(r"[\u30A1-\u30FA\u30FC-\u30FF]")
-ABSTRACT_SINGLE_KANJI = frozenset({"中", "部", "件", "方", "事", "物", "歳"})
 
 DECORATIVE_NOISE_KEYWORDS = ("ライン素材", "背景", "フレーム", "枠", "テンプレート", "壁紙")
 TEXT_CALLOUT_KEYWORDS = ("イラスト文字",)
@@ -27,6 +26,29 @@ VERB_TERMINAL_ENDINGS = ("う", "く", "ぐ", "す", "つ", "ぬ", "ぶ", "む",
 SINGLE_CHAR_PARTICLES = ("の", "が", "を", "に", "で", "と", "は", "も", "へ", "や", "な", "か")
 MULTI_CHAR_PARTICLES = ("から", "より", "ながら", "など", "だけ", "ほど", "ばかり", "まで")
 ATTRIBUTIVE_ENDINGS = ("い",) + VERB_TERMINAL_ENDINGS
+COLLECTION_PREFIXES = ("いろいろな", "色々な", "様々な", "さまざまな")
+COMPOUND_HEADWORD_SYNONYMS = {
+    "仮面": ("マスク", "お面", "面"),
+}
+BYPRODUCT_MODIFIER_SEPARATORS = ("のついた", "がついた", "の付いた", "が付いた", "の入った", "が入った")
+NATURAL_DISASTER_QUERIES = frozenset({
+    "台風", "地震", "津波", "洪水", "噴火", "竜巻", "落雷", "土砂崩れ", "雪崩",
+    "豪雨", "暴風", "暴風雨", "大雨", "大雪", "嵐", "ハリケーン", "サイクロン",
+    "山火事", "火災", "火事", "災害", "自然災害", "避難", "防災",
+})
+SUBTYPE_PREFIXES = frozenset({
+    # Colors
+    "黒", "白", "赤", "青", "黄", "茶", "灰", "緑", "紫", "金", "銀",
+    # Size & age
+    "大", "小", "子", "巨", "微", "老", "若", "新", "古",
+    # Species & attributes
+    "柴", "野",
+})
+# Single-Kanji queries eligible for fallback subtype matching via SUBTYPE_PREFIXES when categories are absent
+SUBTYPE_ENTITY_QUERIES = frozenset({
+    "犬", "猫", "鳥", "魚", "虫", "馬", "牛", "豚", "羊", "熊", "鹿",
+    "車", "船", "花", "木", "草", "葉", "雨", "雪", "雲", "茶", "本",
+})
 COMMON_OKURIGANA_NOUNS = frozenset({
     "祭り", "祭", "周り", "香り", "祈り", "便り", "望み", "恵み", "答え", "知らせ",
     "怒り", "踊り", "誓い", "願い", "想い", "思い", "集まり", "始まり", "終わり",
@@ -169,6 +191,18 @@ def _is_canonical_mark_title(title: Optional[str], query: str) -> bool:
     )
 
 
+def _is_byproduct_modifier_title(text: Optional[str], query: str) -> bool:
+    """Return True if title describes a byproduct modifier (e.g. 髪の毛のついたブラシ, 髪の毛の入ったご飯)."""
+    if not text or not query:
+        return False
+    q = query.strip()
+    return any(
+        text.startswith(f"{prefix}{sep}")
+        for prefix in (q, f"お{q}", f"ご{q}")
+        for sep in BYPRODUCT_MODIFIER_SEPARATORS
+    )
+
+
 def calculate_category_score(
     categories: Sequence[str],
     query: str,
@@ -207,6 +241,8 @@ def calculate_category_score(
     has_unrelated_hazard = False
     for cat, penalty in SITUATIONAL_HAZARD_CATEGORIES.items():
         if cat in cat_set and cat not in clean_q:
+            if cat == "災害" and clean_q in NATURAL_DISASTER_QUERIES:
+                continue
             has_unrelated_hazard = True
             # Avoid applying duplicate penalty if title keyword already applied it
             if title and cat in SITUATIONAL_NOISE_KEYWORDS and cat in title:
@@ -326,6 +362,22 @@ def _is_bare_verb_stem(text: str) -> bool:
     )
 
 
+def _is_attributive_kana_form(query: str) -> bool:
+    """Return True if pure Kana query is a valid attributive adjective or verb modifying a noun."""
+    if not query or query in COMMON_OKURIGANA_NOUNS:
+        return False
+    # i-adjectives ending in い (e.g. かわいい, おいしい)
+    if query.endswith("い"):
+        return True
+    # Verbs in dictionary/attributive form
+    if query in COMMON_KANA_VERBS:
+        return True
+    # Kana verbs ending in る with at least 3 moras (e.g. かけぬける, あつまる, およぎまわる)
+    if len(query) >= 3 and query.endswith("る"):
+        return True
+    return False
+
+
 def _is_non_particle_hiragana_prefix(text: str, idx: int) -> bool:
     """Return True if character before text[idx] is Hiragana forming a non-particle compound prefix."""
     prev_ch = text[idx - 1] if idx > 0 else ""
@@ -336,7 +388,23 @@ def _is_non_particle_hiragana_prefix(text: str, idx: int) -> bool:
     # Verbal te-form clause connector (〜って, 〜いて, 〜して, etc.) is not a compound prefix
     if prev_ch == "て" and idx >= 2 and HIRAGANA_CHAR_RE.match(text[idx - 2]):
         return False
-    return prev_ch not in ("お", "ご") + SINGLE_CHAR_PARTICLES + ATTRIBUTIVE_ENDINGS
+    if prev_ch in ("お", "ご"):
+        return False
+    # A single-character particle or attributive ending cannot exist at string-initial idx == 1
+    # or immediately following punctuation/bracket/whitespace
+    if idx < 2:
+        return True
+    char_before = text[idx - 2]
+    CLOSING_BRACKETS = ("」", "』", "）", ")", "】", "］", "]", "〉", "》")
+    if not (
+        KANJI_CHAR_RE.match(char_before)
+        or KATAKANA_CHAR_RE.match(char_before)
+        or HIRAGANA_CHAR_RE.match(char_before)
+        or char_before.isalnum()
+        or char_before in CLOSING_BRACKETS
+    ):
+        return True
+    return prev_ch not in SINGLE_CHAR_PARTICLES + ATTRIBUTIVE_ENDINGS
 
 
 def classify_match_boundary(text: str, query: str) -> str:
@@ -405,7 +473,15 @@ def classify_match_boundary(text: str, query: str) -> str:
                     and HIRAGANA_CHAR_RE.match(next_ch)
                     and next_ch not in SINGLE_CHAR_PARTICLES
                 )
-                if prev_is_hira or next_is_hira:
+                # Reject if followed directly by a Kanji unless query is an attributive adjective or verb
+                next_is_kanji_compound = bool(
+                    next_ch
+                    and KANJI_CHAR_RE.match(next_ch)
+                    and not _is_attributive_kana_form(query)
+                )
+                if prev_is_hira or next_is_hira or next_is_kanji_compound:
+                    if not prev_is_hira and not next_is_hira and next_is_kanji_compound and best_quality == "none":
+                        best_quality = "compound"
                     continue
                 return "standalone"
 
@@ -414,8 +490,9 @@ def classify_match_boundary(text: str, query: str) -> str:
             prev_is_kanji = bool(prev_ch and KANJI_CHAR_RE.match(prev_ch))
             next_is_kanji = bool(next_ch and KANJI_CHAR_RE.match(next_ch))
             prev_is_kata = bool(prev_ch and KATAKANA_CHAR_RE.match(prev_ch))
+            next_is_kata = bool(next_ch and KATAKANA_CHAR_RE.match(next_ch))
             prev_is_non_particle_hira = _is_non_particle_hiragana_prefix(text, idx)
-            if prev_is_kanji or next_is_kanji or prev_is_kata or prev_is_non_particle_hira:
+            if prev_is_kanji or next_is_kanji or prev_is_kata or next_is_kata or prev_is_non_particle_hira:
                 if best_quality == "none":
                     best_quality = "compound"
             else:
@@ -459,6 +536,42 @@ def classify_match_boundary(text: str, query: str) -> str:
     return best_quality
 
 
+def _is_relevant_single_kanji_subtype(title: str, query: str, categories: Sequence[str] = ()) -> bool:
+    """Return True if title is a genuine subtype compound where query is the head noun (e.g. 黒猫, 柴犬)."""
+    if len(query) != 1:
+        return True
+    start = 0
+    while True:
+        idx = title.find(query, start)
+        if idx == -1:
+            break
+        start = idx + 1
+        next_ch = title[idx + 1] if idx + 1 < len(title) else ""
+        next_is_fused = bool(
+            next_ch
+            and (KANJI_CHAR_RE.match(next_ch) or KATAKANA_CHAR_RE.match(next_ch))
+        )
+        # A subtype compound must be head-final (e.g. 黒猫, not 猫背 or 猫耳)
+        if next_is_fused:
+            continue
+        # If explicitly categorized by Irasutoya as this entity (e.g. 柴犬 in '犬', 盲導犬 in '犬')
+        if query in categories:
+            return True
+        if query in SUBTYPE_ENTITY_QUERIES and idx > 0:
+            prev_ch = title[idx - 1]
+            char_before = title[idx - 2] if idx >= 2 else ""
+            prev_is_word = bool(
+                char_before
+                and (
+                    KANJI_CHAR_RE.match(char_before)
+                    or _is_non_particle_hiragana_prefix(title, idx - 1)
+                )
+            )
+            if prev_ch in SUBTYPE_PREFIXES and not prev_is_word:
+                return True
+    return False
+
+
 def is_image_relevant(img: IrasutoyaImage, query: str) -> bool:
     """Check if the individual image itself is semantically relevant with boundary safety.
 
@@ -475,9 +588,12 @@ def is_image_relevant(img: IrasutoyaImage, query: str) -> bool:
     if qual_title in ("exact_quoted", "standalone", "polite_prefix", "inflected"):
         return True
     if qual_title == "compound":
-        # Disallow compound matches for 1-Kanji grammatical/abstract words
-        if len(clean_q) == 1 and clean_q in ABSTRACT_SINGLE_KANJI:
-            return False
+        # For single-character queries, only genuine subtype compounds (e.g. 黒猫 for 猫, 柴犬 for 犬)
+        # where the query is the head noun are eligible; incidental compounds are rejected.
+        if len(clean_q) == 1:
+            cats = getattr(img, "categories", ())
+            if not _is_relevant_single_kanji_subtype(title, clean_q, cats):
+                return False
         # Bare verb stems fused with following Kanji form different nouns (売り場, 勝ち組, 食べ物, 買い物)
         if _is_bare_verb_stem(clean_q) and re.search(
             re.escape(clean_q) + KANJI_CHAR_RE.pattern, title
@@ -513,9 +629,10 @@ def score_candidate_image(
     post_title = img.post_title.strip()
 
     qual_title = classify_match_boundary(title, clean_q)
+    relevant = is_image_relevant(img, clean_q)
 
     # 1. Exact canonical matches
-    if is_image_relevant(img, clean_q):
+    if relevant:
         if title == f"{clean_q}のイラスト":
             score += 100.0
         elif _is_canonical_mark_title(title, clean_q):
@@ -526,12 +643,23 @@ def score_candidate_image(
             score += 90.0
         elif title == clean_q:
             score += 85.0
-        elif title.startswith(f"{clean_q}の"):
+        elif title.startswith(f"{clean_q}の") and not _is_byproduct_modifier_title(title, clean_q):
             score += 60.0
         elif post_title == f"{clean_q}のイラスト" or _is_canonical_mark_title(post_title, clean_q):
             score += 50.0
-        elif post_title.startswith(f"{clean_q}の"):
+        elif post_title.startswith(f"{clean_q}の") and not _is_byproduct_modifier_title(post_title, clean_q):
             score += 30.0
+
+    # Archetype collection boost (e.g. いろいろなネジのイラスト)
+    if relevant and any(
+        title in (
+            f"{prefix}{clean_q}のイラスト",
+            f"{prefix}お{clean_q}のイラスト",
+            f"{prefix}ご{clean_q}のイラスト",
+        )
+        for prefix in COLLECTION_PREFIXES
+    ):
+        score += 15.0
 
     # 2. Boundary, politeness, and focus bonuses
     if qual_title == "exact_quoted" or f"「{clean_q}」" in title or f"（{clean_q}）" in title:
@@ -543,8 +671,15 @@ def score_candidate_image(
     elif qual_title == "inflected":
         score += 30.0
     elif qual_title == "compound":
-        score -= 35.0
-    elif is_image_relevant(img, clean_q):
+        has_synonym = any(
+            classify_match_boundary(title, syn) in ("exact_quoted", "standalone", "polite_prefix")
+            for syn in COMPOUND_HEADWORD_SYNONYMS.get(clean_q, ())
+        )
+        if has_synonym:
+            score += 35.0
+        else:
+            score -= 35.0
+    elif relevant:
         # Matched only via description on single-image post
         score += 15.0
     else:
@@ -560,6 +695,10 @@ def score_candidate_image(
             if noise == "マーク" and is_canonical_mark:
                 continue
             score -= 25.0
+
+    # Attributive byproduct modifier penalty (e.g. 髪の毛のついたヘアブラシ, 髪の毛の入ったご飯)
+    if _is_byproduct_modifier_title(title, clean_q) or _is_byproduct_modifier_title(post_title, clean_q):
+        score -= 20.0
 
     # 5. Heavy penalty for text callouts (イラスト文字 / trailing 文字) so illustrations always win if available
     is_callout = is_callout_asset(img, clean_q)
