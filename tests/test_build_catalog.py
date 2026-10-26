@@ -6,7 +6,7 @@ import sqlite3
 import tempfile
 import unittest
 
-from addon.catalog import write_posts
+from addon.catalog import write_posts, write_synonyms
 from addon.feed import IrasutoyaImage, ParsedPost
 from scripts.build_catalog import (
     compare_with_old,
@@ -237,3 +237,45 @@ class TestBuildCatalog(unittest.TestCase):
 
         basename = os.path.basename(self.db_path)
         self.assertEqual(sha_content, f"{expected_digest}  {basename}\n")
+
+    def test_compile_and_publish_catalog_preserves_synonyms(self) -> None:
+        """Verify rebuild preserves existing synonyms without sqlite transaction or VACUUM conflicts."""
+        post1 = ParsedPost("1", "猫", "desc", "pub", "upd", (), [IrasutoyaImage("猫", "https://1.bp.blogspot.com/cat.png", "t", "猫")])
+        compile_and_publish_catalog(
+            out_path=self.db_path,
+            posts=[post1],
+            total_results=1,
+            require_probes=False,
+        )
+
+        # Inject synonyms into published catalog
+        conn = sqlite3.connect(self.db_path)
+        write_synonyms(conn, "manual", {"headword": ["target1", "target2"]})
+        conn.close()
+
+        # Rebuild catalog on top of existing catalog containing synonyms
+        post2 = ParsedPost("2", "犬", "desc", "pub", "upd", (), [IrasutoyaImage("犬", "https://1.bp.blogspot.com/dog.png", "t", "犬")])
+        compile_and_publish_catalog(
+            out_path=self.db_path,
+            posts=[post2],
+            total_results=1,
+            require_probes=False,
+        )
+
+        # Confirm new post was written, synonyms were preserved, and meta was kept
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT blogger_id FROM posts")
+        self.assertEqual(cur.fetchone()[0], "2")
+
+        cur.execute("SELECT term, target, source, ord FROM synonyms ORDER BY ord")
+        rows = cur.fetchall()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0], ("headword", "target1", "manual", 0))
+        self.assertEqual(rows[1], ("headword", "target2", "manual", 1))
+
+        cur.execute("SELECT value FROM meta WHERE key = 'synonym_sources'")
+        meta_row = cur.fetchone()
+        self.assertIsNotNone(meta_row)
+        self.assertEqual(meta_row[0], "manual")
+        conn.close()

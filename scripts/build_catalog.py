@@ -341,6 +341,34 @@ def compile_and_publish_catalog(
         if compare_with:
             compare_with_old(conn, compare_with)
 
+        # Preserve existing synonyms from previous catalog if present
+        prev_catalog = compare_with if (compare_with and os.path.isfile(compare_with)) else (out_path if os.path.isfile(out_path) else None)
+        if prev_catalog:
+            try:
+                uri_path = urllib.request.pathname2url(os.path.abspath(prev_catalog))
+                old_c = sqlite3.connect(f"file:{uri_path}?mode=ro", uri=True)
+            except Exception:
+                old_c = sqlite3.connect(prev_catalog)
+            try:
+                old_cur = old_c.cursor()
+                old_cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='synonyms'")
+                if old_cur.fetchone() is not None:
+                    old_cur.execute("SELECT term, target, source, ord FROM synonyms")
+                    old_syns = old_cur.fetchall()
+                    if old_syns:
+                        conn.executemany("INSERT OR REPLACE INTO synonyms (term, target, source, ord) VALUES (?, ?, ?, ?)", old_syns)
+                        old_cur.execute("SELECT value FROM meta WHERE key = 'synonym_sources'")
+                        meta_row = old_cur.fetchone()
+                        if meta_row:
+                            conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('synonym_sources', ?)", (meta_row[0],))
+                        logger.info("Carried over %d synonyms from previous catalog at %s", len(old_syns), prev_catalog)
+                conn.commit()
+            except Exception as e:
+                conn.rollback()
+                logger.warning("Could not carry over synonyms from %s: %s", prev_catalog, e)
+            finally:
+                old_c.close()
+
         logger.info("Optimizing database with VACUUM and journal_mode=DELETE...")
         conn.execute("PRAGMA journal_mode = DELETE")
         conn.execute("VACUUM")

@@ -10,6 +10,7 @@ from addon.catalog import (
     CatalogStore,
     create_schema,
     write_posts,
+    write_synonyms,
 )
 from addon.feed import IrasutoyaImage, ParsedPost
 
@@ -94,9 +95,36 @@ class TestCatalog(unittest.TestCase):
             "categories",
             "post_categories",
             "image_keywords",
+            "synonyms",
         }
         self.assertTrue(expected_tables.issubset(tables))
         conn.close()
+
+    def test_synonyms_storage_and_querying(self):
+        """Verify write_synonyms populates synonyms table and CatalogIndex exposes get_synonyms."""
+        conn = sqlite3.connect(self.db_path)
+        write_posts(conn, self._sample_posts())
+        write_synonyms(
+            conn,
+            source="manual",
+            mapping={"ねこ": ["黒猫", "白猫"], "フルーツ": ["りんご"]},
+        )
+        write_synonyms(
+            conn,
+            source="sudachi",
+            mapping={"ねこ": ["猫"]},
+        )
+        conn.close()
+
+        store = CatalogStore(self.db_path)
+        index = store.get_index()
+        self.assertIsNotNone(index)
+        self.assertEqual(index.get_synonyms("ねこ", source="manual"), ["黒猫", "白猫"])
+        self.assertEqual(index.get_synonyms("ねこ", source="sudachi"), ["猫"])
+        all_targets = index.get_synonyms("ねこ")
+        self.assertEqual(all_targets, ["黒猫", "白猫", "猫"])
+        self.assertEqual(index.get_synonyms("フルーツ", source="manual"), ["りんご"])
+        self.assertEqual(index.get_synonyms("未登録"), [])
 
     def test_write_posts_and_meta(self):
         """Verify write_posts populates database, normalizes /s0/ URLs, and writes meta stats."""

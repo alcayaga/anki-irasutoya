@@ -1,11 +1,12 @@
 """Boundary classification, relevance scoring, and archetype ranking for Irasutoya illustrations."""
 import logging
 import re
-from typing import Any, List, Optional, Sequence
+from typing import Any, FrozenSet, List, Optional, Sequence
 
 from .feed import IrasutoyaImage
 from .text_utils import (
     NON_VERB_GODAN_LOOKALIKES,
+    PRONOUN_KATAKANA_BLOCKLIST,
     SAFE_2MORA_LOANWORDS,
     conjugate_japanese_verb,
     is_adjective_ending,
@@ -56,6 +57,30 @@ COMMON_OKURIGANA_NOUNS = frozenset({
     "一つ", "二つ", "三つ", "四つ", "五つ", "六つ", "七つ", "八つ", "九つ",
     "近く", "遠く", "多く",
 })
+
+PRONOUNS_DESCRIPTION_BLOCKLIST: FrozenSet[str] = frozenset(
+    PRONOUN_KATAKANA_BLOCKLIST
+    | {
+        "私",
+        "僕",
+        "俺",
+        "君",
+        "彼",
+        "彼女",
+        "あなた",
+        "貴方",
+        "我々",
+        "自分",
+        "手前",
+        "あたし",
+        "わたくし",
+        "おまえ",
+        "あんた",
+        "此方",
+        "其方",
+        "彼方",
+    }
+)
 
 COMMON_KANA_VERBS = frozenset({
     "はしる", "たべる", "あるく", "およぐ", "のむ", "あそぶ",
@@ -572,6 +597,26 @@ def _is_relevant_single_kanji_subtype(title: str, query: str, categories: Sequen
     return False
 
 
+def _is_valid_boundary_match(img: IrasutoyaImage, text: str, query: str) -> bool:
+    """Return True if text matches query with an accepted boundary class and semantic safety."""
+    if not text or not query:
+        return False
+    qual = classify_match_boundary(text, query)
+    if qual in ("exact_quoted", "standalone", "polite_prefix", "inflected"):
+        return True
+    if qual != "compound":
+        return False
+    if len(query) == 1 and not _is_relevant_single_kanji_subtype(
+        text, query, getattr(img, "categories", ())
+    ):
+        return False
+    if _is_bare_verb_stem(query) and re.search(
+        re.escape(query) + KANJI_CHAR_RE.pattern, text
+    ):
+        return False
+    return True
+
+
 def is_image_relevant(img: IrasutoyaImage, query: str) -> bool:
     """Check if the individual image itself is semantically relevant with boundary safety.
 
@@ -584,25 +629,15 @@ def is_image_relevant(img: IrasutoyaImage, query: str) -> bool:
     title = img.title.strip()
 
     # 1. Title boundary classification
-    qual_title = classify_match_boundary(title, clean_q)
-    if qual_title in ("exact_quoted", "standalone", "polite_prefix", "inflected"):
-        return True
-    if qual_title == "compound":
-        # For single-character queries, only genuine subtype compounds (e.g. 黒猫 for 猫, 柴犬 for 犬)
-        # where the query is the head noun are eligible; incidental compounds are rejected.
-        if len(clean_q) == 1:
-            cats = getattr(img, "categories", ())
-            if not _is_relevant_single_kanji_subtype(title, clean_q, cats):
-                return False
-        # Bare verb stems fused with following Kanji form different nouns (売り場, 勝ち組, 食べ物, 買い物)
-        if _is_bare_verb_stem(clean_q) and re.search(
-            re.escape(clean_q) + KANJI_CHAR_RE.pattern, title
-        ):
-            return False
+    if _is_valid_boundary_match(img, title, clean_q):
         return True
 
     # 2. Single-image post caption/description match
-    if getattr(img, "is_single_image_post", True) and not is_grammar_function_word(clean_q):
+    if (
+        getattr(img, "is_single_image_post", True)
+        and not is_grammar_function_word(clean_q)
+        and clean_q not in PRONOUNS_DESCRIPTION_BLOCKLIST
+    ):
         desc = getattr(img, "description", "").strip()
         if desc:
             qual_desc = classify_match_boundary(desc, clean_q)
@@ -740,6 +775,45 @@ def is_decorative_asset(img: IrasutoyaImage, query: str) -> bool:
     clean_q = query.strip()
     title = img.title.strip()
     return any(noise in title and noise not in clean_q for noise in DECORATIVE_NOISE_KEYWORDS)
+
+
+def is_title_match(img: IrasutoyaImage, query: str) -> bool:
+    """Check if image matches query in title or post_title with boundary safety."""
+    clean_q = query.strip()
+    if not clean_q:
+        return False
+    title = getattr(img, "title", "").strip()
+    if _is_valid_boundary_match(img, title, clean_q):
+        return True
+
+    post_title = getattr(img, "post_title", "").strip()
+    if post_title and _is_valid_boundary_match(img, post_title, clean_q):
+        return True
+
+    tokens = clean_q.split()
+    if len(tokens) > 1 and all(
+        classify_match_boundary(title, t) != "none"
+        or (post_title and classify_match_boundary(post_title, t) != "none")
+        for t in tokens
+    ):
+        return True
+
+    return False
+
+
+def has_title_illustration_match(images: Sequence[IrasutoyaImage], query: str) -> bool:
+    """Return True if images contain at least one non-decorative, non-callout illustration matching query in title."""
+    clean_q = query.strip()
+    if not clean_q or not images:
+        return False
+    for img in images:
+        if is_decorative_asset(img, clean_q):
+            continue
+        if is_callout_asset(img, clean_q):
+            continue
+        if is_title_match(img, clean_q):
+            return True
+    return False
 
 
 def rank_relevant_images(

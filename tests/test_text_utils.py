@@ -1,8 +1,9 @@
 """Unit tests for text query extraction and sanitization utilities."""
 import re
 import unittest
+from unittest.mock import patch
 
-from addon.text_utils import clean_search_query
+from addon.text_utils import clean_search_query, generate_search_candidates
 
 
 class TestTextUtils(unittest.TestCase):
@@ -722,6 +723,30 @@ class TestTextUtils(unittest.TestCase):
         # 見本一 was already seen, so exactly 3 new forms (見本二, 見本三, 見本四) are added
         self.assertEqual(len(form_cands), 3)
         self.assertEqual(form_cands, ["見本二", "見本三", "見本四"])
+
+    def test_generate_search_candidates_emits_concept_map(self) -> None:
+        """Verify generate_search_candidates emits manual concept map targets in Tier 2."""
+        with patch("addon.text_utils.lookup_concept_map", return_value=["お葬式", "墓"]):
+            cands = generate_search_candidates("亡くなる", allow_tier2=True)
+            concept_cands = [c for c in cands if c[1] == "concept_map"]
+            self.assertEqual(len(concept_cands), 2)
+            self.assertEqual(concept_cands[0], ("お葬式", "concept_map", 2))
+            self.assertEqual(concept_cands[1], ("墓", "concept_map", 2))
+
+    def test_generate_search_candidates_deinflected_concept_map(self) -> None:
+        """Verify generate_search_candidates deinflects surface term to match concept map."""
+        with patch("addon.text_utils.lookup_concept_map", side_effect=lambda term: ["獲得", "宝箱"] if term == "手に入れる" else []):
+            cands = generate_search_candidates("手に入れている", allow_tier2=True, allow_deinflection=True)
+            concept_cands = [c for c in cands if c[1] == "concept_map"]
+            self.assertEqual(len(concept_cands), 2)
+            self.assertEqual(concept_cands[0], ("獲得", "concept_map", 2))
+            self.assertEqual(concept_cands[1], ("宝箱", "concept_map", 2))
+
+    def test_generate_search_candidates_suppressed_when_tier2_false(self) -> None:
+        """Verify concept map targets are suppressed when allow_tier2 is False."""
+        cands = generate_search_candidates("亡くなる", allow_tier2=False)
+        concept_cands = [c for c in cands if c[1] == "concept_map"]
+        self.assertEqual(len(concept_cands), 0)
 
 
 if __name__ == "__main__":

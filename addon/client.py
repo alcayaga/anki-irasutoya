@@ -12,7 +12,13 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from .catalog import CatalogStore, default_store
 from .feed import IrasutoyaImage, ParsedPost, is_allowed_image_host, parse_entry, upgrade_image_url
-from .ranking import infer_pos_type, is_decorative_asset, is_image_relevant, rank_relevant_images
+from .ranking import (
+    has_title_illustration_match,
+    infer_pos_type,
+    is_decorative_asset,
+    is_image_relevant,
+    rank_relevant_images,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +144,8 @@ class IrasutoyaClient:
         Returns:
             (ranked_images, matched_candidate, best_image)
         """
+        first_weak_fallback: Optional[Tuple[List[IrasutoyaImage], Tuple[str, str, int], IrasutoyaImage]] = None
+
         for cand in candidates:
             if is_cancelled and is_cancelled():
                 break
@@ -156,7 +164,15 @@ class IrasutoyaClient:
                 if max_results and max_results > 0:
                     ranked = ranked[:max_results]
                 best = ranked[0]
-                return ranked, cand, best
+
+                if has_title_illustration_match(illustration_candidates, term):
+                    return ranked, cand, best
+
+                if first_weak_fallback is None:
+                    first_weak_fallback = (ranked, cand, best)
+
+        if first_weak_fallback is not None:
+            return first_weak_fallback
 
         return [], None, None
 

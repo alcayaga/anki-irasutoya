@@ -4,6 +4,7 @@ import re
 import unicodedata
 from typing import Any, List, Optional, Tuple
 
+from .synonyms import lookup_concept_map
 from .yomitan_parser import (
     extract_yomitan_metadata_from_note,
 )
@@ -642,6 +643,13 @@ def generate_search_candidates(
                     added_refs += 1
                     if added_refs >= 3:
                         break
+
+        # Curated visual concept map targets (e.g. 亡くなる -> お葬式, 墓; 手に入れる -> 獲得, 宝箱)
+        concept_targets = lookup_concept_map(surface)
+        if not concept_targets and deinflections:
+            concept_targets = lookup_concept_map(deinflections[0])
+        for c_target in concept_targets:
+            add(c_target, "concept_map", 2)
 
         # Check dedicated reading and furigana fields on the note (authoritative dictionary readings)
         for f_name, f_type, cleaned_read in _iter_note_readings(note):

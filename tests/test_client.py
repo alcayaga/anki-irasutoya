@@ -177,6 +177,87 @@ class TestIrasutoyaClient(unittest.TestCase):
         self.assertEqual(images[0].title, "お肉のイラスト")
         self.assertEqual(images[1].title, "「肉」のイラスト文字")
 
+    def test_search_with_fallbacks_bypasses_weak_match_for_subsequent_title_match(self):
+        """Verify search_with_fallbacks probes subsequent candidates when earlier candidate has only description match."""
+        client = IrasutoyaClient()
+
+        def mock_search(q, max_results=None, image_size="s800", orderby="relevance"):
+            if q == "死ぬ":
+                # Only matches in description of a single-image post (weak match)
+                img = IrasutoyaImage(
+                    title="ベニクラゲのイラスト",
+                    image_url="https://example.com/jellyfish.png",
+                    thumb_url="https://example.com/t.png",
+                    post_title="ベニクラゲのイラスト",
+                    description="刺されても死ぬほどではありません。",
+                    is_single_image_post=True,
+                )
+                return [img]
+            if q == "お葬式":
+                # Real title illustration match
+                img = IrasutoyaImage(
+                    title="お葬式のイラスト",
+                    image_url="https://example.com/funeral.png",
+                    thumb_url="https://example.com/t.png",
+                    post_title="お葬式のイラスト",
+                )
+                return [img]
+            return []
+
+        client.search = mock_search
+        candidates = [("死ぬ", "primary", 1), ("お葬式", "concept_map", 2)]
+        images, matched_cand, best_img = client.search_with_fallbacks(candidates)
+        self.assertIsNotNone(matched_cand)
+        self.assertEqual(matched_cand[0], "お葬式")
+        self.assertIsNotNone(best_img)
+        self.assertEqual(best_img.title, "お葬式のイラスト")
+
+    def test_search_with_fallbacks_retains_weak_match_when_no_title_match(self):
+        """Verify search_with_fallbacks returns weak description match if no subsequent candidate has a title match."""
+        client = IrasutoyaClient()
+
+        def mock_search(q, max_results=None, image_size="s800", orderby="relevance"):
+            if q == "珍しい言葉":
+                img = IrasutoyaImage(
+                    title="何かのイラスト",
+                    image_url="https://example.com/something.png",
+                    thumb_url="https://example.com/t.png",
+                    post_title="何かのイラスト",
+                    description="珍しい言葉を使ったことわざです。",
+                    is_single_image_post=True,
+                )
+                return [img]
+            return []
+
+        client.search = mock_search
+        candidates = [("珍しい言葉", "primary", 1), ("別の言葉", "fallback", 2)]
+        images, matched_cand, best_img = client.search_with_fallbacks(candidates)
+        self.assertIsNotNone(matched_cand)
+        self.assertEqual(matched_cand[0], "珍しい言葉")
+        self.assertIsNotNone(best_img)
+        self.assertEqual(best_img.title, "何かのイラスト")
+
+    def test_search_with_fallbacks_bypasses_callout_only_for_subsequent_title_match(self):
+        """Verify search_with_fallbacks probes subsequent candidates when earlier candidate has only callouts."""
+        client = IrasutoyaClient()
+
+        def mock_search(q, max_results=None, image_size="s800", orderby="relevance"):
+            if q == "今":
+                callout = IrasutoyaImage("イラスト文字「今」", "https://example.com/c.png", "https://example.com/t.png", "今")
+                return [callout]
+            if q == "現在":
+                scene = IrasutoyaImage("現在のイラスト", "https://example.com/s.png", "https://example.com/t.png", "現在のイラスト")
+                return [scene]
+            return []
+
+        client.search = mock_search
+        candidates = [("今", "primary", 1), ("現在", "synonym", 2)]
+        images, matched_cand, best_img = client.search_with_fallbacks(candidates)
+        self.assertIsNotNone(matched_cand)
+        self.assertEqual(matched_cand[0], "現在")
+        self.assertIsNotNone(best_img)
+        self.assertEqual(best_img.title, "現在のイラスト")
+
     def test_search_with_fallbacks_pos_type_handling(self):
         """Verify search_with_fallbacks preserves fallback candidate POS hints when pos_type=None."""
         client = IrasutoyaClient()
