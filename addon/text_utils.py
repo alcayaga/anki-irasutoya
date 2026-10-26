@@ -35,6 +35,14 @@ NOTE_FURIGANA_FIELDS = (
     "VocabFurigana",
 )
 
+# Prefixes of candidate reason labels representing phonetic readings (risk of homophone collision)
+PHONETIC_REASON_PREFIXES: Tuple[str, ...] = (
+    "note_reading",
+    "note_furigana",
+    "same_field_reading",
+    "yomitan_uk",
+)
+
 KANJI_RE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf々〆〇]")
 
 PRONOUN_KATAKANA_BLOCKLIST = frozenset({
