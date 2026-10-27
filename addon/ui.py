@@ -152,6 +152,7 @@ QRadioButton {{
 
 
 PAGE_SIZE = 24
+MAX_SUGGESTION_CHIPS = 8
 
 
 def make_description_snippet(description: str, query: str, max_chars: int = 70) -> str:
@@ -906,13 +907,24 @@ class IrasutoyaDialog(QDialog):
 
         main_layout.addLayout(search_box_layout)
 
-        # Suggestion Chips Row
-        self.chips_widget = QWidget(self)
+        # Suggestion Chips Scroll Area & Container
+        self.chips_scroll = QScrollArea(self)
+        self.chips_scroll.setWidgetResizable(True)
+        self.chips_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.chips_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.chips_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.chips_scroll.setFixedHeight(34)
+        self.chips_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        self.chips_scroll.setVisible(False)
+
+        self.chips_widget = QWidget()
+        self.chips_widget.setStyleSheet("background: transparent;")
         self.chips_layout = QHBoxLayout(self.chips_widget)
         self.chips_layout.setContentsMargins(0, 0, 0, 0)
         self.chips_layout.setSpacing(6)
+        self.chips_scroll.setWidget(self.chips_widget)
         self.chips_widget.setVisible(False)
-        main_layout.addWidget(self.chips_widget)
+        main_layout.addWidget(self.chips_scroll)
 
         # Status Label
         self.status_label = QLabel("Search for an illustration or click 'Search' above.", self)
@@ -1054,8 +1066,13 @@ class IrasutoyaDialog(QDialog):
                 self.status_label.setStyleSheet("color: #8E8E93; font-size: 12px;")
                 self.status_label.setText("Source field is empty.")
 
-    def _do_search(self) -> None:
-        """Fetch search results from Irasutoya with fallback candidate generation asynchronously."""
+    def _do_search(self, direct: bool = False) -> None:
+        """Fetch search results from Irasutoya with fallback candidate generation asynchronously.
+
+        Args:
+            direct: If True, execute a direct query for the exact search term without
+                traversing alternative fallback inflections (used when clicking a specific chip).
+        """
         query = self.query_input.text().strip()
         if not query:
             self.status_label.setStyleSheet("color: #FF453A; font-size: 12px;")
@@ -1077,13 +1094,16 @@ class IrasutoyaDialog(QDialog):
         if is_card_term:
             display_chips = self._card_candidates
             restore_term = None
-            if query == self._card_source_term:
+            if direct:
+                search_candidates = [(query, "primary", 1)]
+            elif query == self._card_source_term:
                 search_candidates = self._card_candidates
             else:
                 search_candidates = generate_search_candidates(query, note=self.first_note, allow_tier2=True)
         else:
-            search_candidates = generate_search_candidates(query, note=None, allow_tier2=True)
-            display_chips = search_candidates
+            candidates = generate_search_candidates(query, note=None, allow_tier2=True)
+            display_chips = candidates
+            search_candidates = [(query, "primary", 1)] if direct else candidates
             restore_term = self._card_source_term if (self._card_source_term and self._card_source_term != query) else None
 
         def background_search() -> None:
@@ -1174,12 +1194,25 @@ class IrasutoyaDialog(QDialog):
 
         if matched_cand and matched_cand[1] != "primary":
             self.status_label.setStyleSheet("color: #0A84FF; font-size: 12px; font-weight: 500;")
+            has_weak_desc = bool(probed_counts and probed_counts.get(query, 0) > 0)
+            reason_text = f"No direct title match for '{query}'" if has_weak_desc else f"No direct results for '{query}'"
             self.status_label.setText(
-                f"ℹ️ No direct results for '{query}'. Showing results for '{matched_cand[0]}' ({matched_cand[1]})."
+                f"ℹ️ {reason_text}. Showing results for '{matched_cand[0]}' ({matched_cand[1]})."
             )
         else:
             self.status_label.setStyleSheet("color: #98989D; font-size: 12px;")
-            self.status_label.setText(f"Found {len(images)} illustrations. Click one to select.")
+            all_desc = bool(images) and all(
+                not (
+                    (query.casefold() in img.title.casefold())
+                    or (query.casefold() in img.post_title.casefold())
+                )
+                for img in images
+            )
+            count_str = f"{len(images)} illustration" if len(images) == 1 else f"{len(images)} illustrations"
+            if all_desc:
+                self.status_label.setText(f"Found {count_str} (description match). Click one to select.")
+            else:
+                self.status_label.setText(f"Found {count_str}. Click one to select.")
 
         self._update_suggestion_chips(
             display_chips, active_term=active_term, restore_term=restore_term, probed_counts=probed_counts
@@ -1221,6 +1254,8 @@ class IrasutoyaDialog(QDialog):
         )
         if not has_alternatives and not restore_term:
             self.chips_widget.setVisible(False)
+            if hasattr(self, "chips_scroll"):
+                self.chips_scroll.setVisible(False)
             return
 
         lbl = QLabel("Try:", self)
@@ -1242,22 +1277,28 @@ class IrasutoyaDialog(QDialog):
                 "border: 1px dashed #0A84FF; border-radius: 10px; "
                 "padding: 2px 8px; font-size: 11px; font-weight: 500; color: #0A84FF;"
             )
-            btn_restore.clicked.connect(lambda _, t=restore_term: self._on_chip_clicked(t))
+            btn_restore.clicked.connect(lambda _, t=restore_term: self._on_restore_clicked(t))
             self.chips_layout.addWidget(btn_restore)
 
-        # Show up to 5 top candidate chips, ensuring active_term is visible if outside top 5
+        # Show up to MAX_SUGGESTION_CHIPS candidate chips, ensuring active_term is visible if outside top N
+        max_cands = MAX_SUGGESTION_CHIPS - 1 if restore_term else MAX_SUGGESTION_CHIPS
         displayed_candidates: List[Tuple[str, str, int, Optional[int]]] = []
         active_cand = next((c for c in probed_candidates if c[0] == active_term), None)
-        if active_cand and active_cand not in probed_candidates[:5]:
-            displayed_candidates = probed_candidates[:4] + [active_cand]
+        if active_cand and active_cand not in probed_candidates[:max_cands]:
+            displayed_candidates = probed_candidates[:max_cands - 1] + [active_cand]
         else:
-            displayed_candidates = probed_candidates[:5]
+            displayed_candidates = probed_candidates[:max_cands]
 
         for cand_term, _reason, _tier, count in displayed_candidates:
             is_active = (cand_term == active_term)
             btn_text = f"{cand_term}  {count}" if (count is not None and count > 0) else cand_term
             btn = QPushButton(btn_text, self)
             btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            if count is not None and count > 0:
+                count_str = f"{count} illustration" if count == 1 else f"{count} illustrations"
+                btn.setToolTip(f"Search for '{cand_term}' ({count_str})")
+            else:
+                btn.setToolTip(f"Search for '{cand_term}'")
             if is_active:
                 btn.setStyleSheet(
                     "background-color: rgba(10, 132, 255, 0.18); "
@@ -1275,12 +1316,20 @@ class IrasutoyaDialog(QDialog):
 
         self.chips_layout.addStretch()
         self.chips_widget.setVisible(True)
+        if hasattr(self, "chips_scroll"):
+            self.chips_scroll.setVisible(True)
 
     def _on_chip_clicked(self, term: str) -> None:
-        """Handle clicking a suggestion chip to switch search query."""
+        """Handle clicking a suggestion chip to switch search query directly."""
         if hasattr(self, "query_input"):
             self.query_input.setText(term)
-            self._do_search()
+            self._do_search(direct=True)
+
+    def _on_restore_clicked(self, term: str) -> None:
+        """Handle clicking the restore chip to reset search to original card query."""
+        if hasattr(self, "query_input"):
+            self.query_input.setText(term)
+            self._do_search(direct=False)
 
     def _clear_gallery(self) -> None:
         """Remove all cards from the gallery."""

@@ -1,5 +1,6 @@
 import os
 import unittest
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 from unittest.mock import MagicMock, patch
 
 try:
@@ -9,6 +10,7 @@ try:
     from addon.ui import (
         CHEVRON_ICON_PATH,
         DIALOG_STYLESHEET,
+        MAX_SUGGESTION_CHIPS,
         PAGE_SIZE,
         ImageCardWidget,
         IrasutoyaDialog,
@@ -643,6 +645,195 @@ class TestUIMode(unittest.TestCase):
 
             # Next page should have been loaded (now 48 cards)
             self.assertEqual(len(dlg.image_cards), 48)
+
+    def test_suggestion_chips_cap_expanded_to_eight(self) -> None:
+        """Verify suggestion chips row displays up to 8 candidates without truncation."""
+        dlg = IrasutoyaDialog(parent=None, browser=None, note_ids=[1001])
+        self.addCleanup(dlg.close)
+
+        # 10 candidates with positive catalog results
+        cands: List[Tuple[str, str, int]] = [(f"word_{i}", "candidate", 1) for i in range(10)]
+        counts: Dict[str, int] = {f"word_{i}": i + 1 for i in range(10)}
+
+        dlg._update_suggestion_chips(cands, active_term="word_0", probed_counts=counts)
+        rendered = _chip_texts(dlg)
+        self.assertEqual(len(rendered), MAX_SUGGESTION_CHIPS)
+        self.assertEqual(len(rendered), 8)
+        self.assertEqual(rendered, [f"word_{i}  {i + 1}" for i in range(8)])
+
+    def test_suggestion_chips_restore_chip_reserves_slot(self) -> None:
+        """When restore_term chip is active, candidate chips are capped at 7 to keep total row at 8."""
+        dlg = IrasutoyaDialog(parent=None, browser=None, note_ids=[1001])
+        self.addCleanup(dlg.close)
+
+        cands: List[Tuple[str, str, int]] = [(f"cand_{i}", "candidate", 1) for i in range(10)]
+        counts: Dict[str, int] = {f"cand_{i}": i + 1 for i in range(10)}
+        counts["card_term"] = 99
+
+        dlg._update_suggestion_chips(
+            cands,
+            active_term="cand_0",
+            restore_term="card_term",
+            probed_counts=counts,
+        )
+        rendered = _chip_texts(dlg)
+        self.assertEqual(len(rendered), MAX_SUGGESTION_CHIPS)
+        self.assertEqual(rendered[0], "↩ card_term  99")
+        # 1 restore chip + 7 candidate chips = 8 total chips
+        self.assertEqual(len(rendered[1:]), 7)
+
+    def test_suggestion_chips_click_executes_direct_search_without_fallback_loop(self) -> None:
+        """Clicking a suggestion chip executes a direct query and breaks the fallback loop."""
+        mock_mw = MagicMock()
+        mock_note = {"Expression": "手に入れる", "Reading": "", "DefinitionPicture": ""}
+        mock_mw.col.get_note.return_value = mock_note
+
+        with patch("addon.ui.mw", mock_mw), patch("threading.Thread", _SyncThread):
+            dlg = IrasutoyaDialog(parent=None, browser=None, note_ids=[1001])
+            self.addCleanup(dlg.close)
+            dlg._thumb_executor.submit = MagicMock()
+            dlg._run_on_main = lambda cb: cb()
+
+            counts_map = {
+                "手に入れる": 1,
+                "手に入れた": 5,
+                "手に入れよう": 2,
+                "手に入れ": 14,
+                "獲得": 9,
+                "宝箱": 4,
+            }
+            _install_catalog_counts(dlg, counts_map)
+            dlg._card_candidates = [
+                ("手に入れる", "primary", 1),
+                ("手に入れた", "verb_inflection", 1),
+                ("手に入れよう", "verb_inflection", 1),
+                ("手に入れ", "verb_stem", 2),
+                ("獲得", "concept_map", 2),
+                ("宝箱", "concept_map", 2),
+            ]
+
+            img_shock = IrasutoyaImage(
+                title="ポイントに悲しむ人のイラスト（男性）",
+                image_url="https://example.com/shock.png",
+                thumb_url="https://example.com/shock_t.png",
+                post_title="ポイントに悲しむ人のイラスト（男性）",
+                description="ポイントを手に入れることができずに落ち込んで泣いている男性のイラストです。",
+            )
+            img_ticket = IrasutoyaImage(
+                title="チケットを手に入れた人のイラスト（女性）",
+                image_url="https://example.com/ticket.png",
+                thumb_url="https://example.com/ticket_t.png",
+                post_title="チケットを手に入れた人のイラスト（女性）",
+                description="チケットを手に入れた女性のイラストです。",
+            )
+
+            def mock_search_with_fallbacks(
+                candidates: Sequence[Tuple[str, str, int]], **kwargs: Any
+            ) -> Tuple[List[IrasutoyaImage], Optional[Tuple[str, str, int]], Optional[IrasutoyaImage]]:
+                """Mock search_with_fallbacks behavior distinguishing direct vs fallback queries."""
+                cand_terms = [c[0] for c in candidates]
+                if "手に入れた" in cand_terms and len(cand_terms) > 1:
+                    matched = next(c for c in candidates if c[0] == "手に入れた")
+                    return [img_ticket] * 5, matched, img_ticket
+                first_c = candidates[0]
+                if first_c[0] == "手に入れる":
+                    return [img_shock], first_c, img_shock
+                return [img_ticket] * 5, first_c, img_ticket
+
+            dlg.client.search_with_fallbacks = MagicMock(side_effect=mock_search_with_fallbacks)
+
+            # Initial card search (runs fallback traversal)
+            dlg.query_input.setText("手に入れる")
+            dlg._do_search()
+
+            # Active term should be '手に入れた' via fallback
+            self.assertEqual(dlg._current_query, "手に入れた")
+            self.assertIn("No direct title match for '手に入れる'", dlg.status_label.text())
+            self.assertIn("手に入れた", dlg.status_label.text())
+
+            # Candidate chips should include all 6 candidates up to 8
+            rendered_chips = _chip_texts(dlg)
+            self.assertIn("手に入れる  1", rendered_chips)
+            self.assertIn("宝箱  4", rendered_chips)
+            self.assertEqual(len(rendered_chips), 6)
+
+            # Click the '手に入れる 1' suggestion chip
+            dlg._on_chip_clicked("手に入れる")
+
+            # Must have performed a direct query, breaking the fallback loop!
+            self.assertEqual(dlg._current_query, "手に入れる")
+            self.assertEqual(dlg.query_input.text(), "手に入れる")
+            self.assertIn("description match", dlg.status_label.text())
+            self.assertEqual(len(dlg.image_cards), 1)
+            self.assertTrue(dlg.image_cards[0].is_description_match)
+
+    def test_status_banner_distinguishes_title_match_fallback(self) -> None:
+        """Status banner distinguishes between lack of title match and zero results."""
+        dlg = IrasutoyaDialog(parent=None, browser=None, note_ids=[1001])
+        self.addCleanup(dlg.close)
+
+        mock_img = IrasutoyaImage(
+            title="結果イラスト",
+            image_url="https://example.com/res.png",
+            thumb_url="https://example.com/res_t.png",
+            post_title="結果イラスト",
+        )
+
+        # 1. Fallback when query had non-zero description count
+        dlg._on_search_finished(
+            gen=dlg._search_generation,
+            query="手に入れる",
+            display_chips=[("手に入れる", "primary", 1)],
+            matched_cand=("手に入れた", "verb_inflection", 1),
+            images=[mock_img],
+            probed_counts={"手に入れる": 1},
+        )
+        self.assertIn("No direct title match for '手に入れる'", dlg.status_label.text())
+
+        # 2. Fallback when query had zero catalog results
+        dlg._on_search_finished(
+            gen=dlg._search_generation,
+            query="走っている",
+            display_chips=[("走っている", "primary", 1)],
+            matched_cand=("走る", "verb_deinflection", 2),
+            images=[mock_img],
+            probed_counts={"走っている": 0},
+        )
+        self.assertIn("No direct results for '走っている'", dlg.status_label.text())
+
+    def test_suggestion_chips_horizontal_scroll_area(self) -> None:
+        """Suggestion chips row is housed inside a frameless QScrollArea with synced visibility."""
+        dlg = IrasutoyaDialog(parent=None, browser=None, note_ids=[1001])
+        self.addCleanup(dlg.close)
+
+        self.assertTrue(hasattr(dlg, "chips_scroll"))
+        self.assertEqual(dlg.chips_scroll.widget(), dlg.chips_widget)
+        self.assertEqual(
+            dlg.chips_scroll.horizontalScrollBarPolicy(),
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded,
+        )
+        self.assertEqual(
+            dlg.chips_scroll.verticalScrollBarPolicy(),
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff,
+        )
+
+        # Initially hidden
+        self.assertTrue(dlg.chips_scroll.isHidden())
+        self.assertTrue(dlg.chips_widget.isHidden())
+
+        # Render 2 candidates -> becomes visible
+        dlg._update_suggestion_chips(
+            [("猫", "primary", 1), ("ねこ", "reading", 2)],
+            active_term="猫",
+            probed_counts={"猫": 5, "ねこ": 3},
+        )
+        self.assertFalse(dlg.chips_scroll.isHidden())
+        self.assertFalse(dlg.chips_widget.isHidden())
+
+        # Collapse chips -> hides both
+        dlg._update_suggestion_chips([], active_term="")
+        self.assertTrue(dlg.chips_scroll.isHidden())
+        self.assertTrue(dlg.chips_widget.isHidden())
 
 
 if __name__ == "__main__":
