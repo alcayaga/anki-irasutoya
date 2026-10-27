@@ -283,6 +283,36 @@ class TestSynonyms(unittest.TestCase):
         success = populate_kaishi_concepts(catalog_path, empty_kaishi_db)
         self.assertFalse(success)
 
+    def test_populate_kaishi_concepts_creates_schema_on_fresh_catalog(self) -> None:
+        """Verify populate_kaishi_concepts succeeds on a fresh catalog without pre-existing synonym tables."""
+        catalog_path = os.path.join(self.temp_dir.name, "fresh_schema_catalog.sqlite")
+        cat_conn = sqlite3.connect(catalog_path)
+        img = IrasutoyaImage("猫のイラスト", "https://bp.blogspot.com/s0/cat.png", "t", "猫")
+        p = ParsedPost("101", "猫のイラスト", "desc", "pub", "upd", (), [img])
+        write_posts(cat_conn, [p])
+        cat_conn.execute("DROP TABLE IF EXISTS synonyms")
+        cat_conn.execute("DROP TABLE IF EXISTS image_keywords")
+        cat_conn.commit()
+        cat_conn.close()
+
+        kaishi_db = os.path.join(self.temp_dir.name, "fresh_schema_kaishi.sqlite")
+        conn = sqlite3.connect(kaishi_db)
+        conn.execute("CREATE TABLE notes (id INTEGER PRIMARY KEY, flds TEXT NOT NULL)")
+        conn.execute("INSERT INTO notes (flds) VALUES (?)", ("キャット\x1fきゃっと\x1f<img src='cat.png'>",))
+        conn.commit()
+        conn.close()
+
+        success = populate_kaishi_concepts(catalog_path, kaishi_db, min_matched=1)
+        self.assertTrue(success)
+
+        v_conn = sqlite3.connect(catalog_path)
+        cur = v_conn.cursor()
+        cur.execute("SELECT count(*) FROM synonyms WHERE source = 'donkuri/kaishi'")
+        self.assertEqual(cur.fetchone()[0], 1)
+        cur.execute("SELECT count(*) FROM image_keywords WHERE source = 'donkuri/kaishi'")
+        self.assertEqual(cur.fetchone()[0], 1)
+        v_conn.close()
+
     def test_populate_kaishi_concepts_incomplete_collection_refuses_replacement(self) -> None:
         """Verify populate_kaishi_concepts refuses to replace an existing full collection with a partial one."""
         catalog_path = os.path.join(self.temp_dir.name, "partial_replace_catalog.sqlite")

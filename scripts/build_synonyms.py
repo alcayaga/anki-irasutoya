@@ -380,6 +380,12 @@ def populate_kaishi_concepts(
         logger.error("Kaishi database not found: %s", kaishi_db_path)
         return False
 
+    init_conn = sqlite3.connect(catalog_path)
+    try:
+        create_schema(init_conn)
+    finally:
+        init_conn.close()
+
     store = CatalogStore(catalog_path)
     index = store.get_index()
     if index is None:
@@ -509,6 +515,7 @@ def populate_kaishi_concepts(
     committed = False
     conn = sqlite3.connect(catalog_path)
     try:
+        create_schema(conn)
         cur = conn.cursor()
         cur.execute("SELECT count(*) FROM synonyms WHERE source = 'donkuri/kaishi'")
         existing_syns_row = cur.fetchone()
@@ -533,7 +540,6 @@ def populate_kaishi_concepts(
             )
             return False
 
-        create_schema(conn)
         conn.execute("BEGIN TRANSACTION")
         write_synonyms(conn, source="donkuri/kaishi", mapping=synonyms_dict, commit=False)
         write_image_keywords(conn, source="donkuri/kaishi", keywords=image_keywords, commit=False)
