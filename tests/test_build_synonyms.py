@@ -185,7 +185,7 @@ class TestBuildSynonyms(unittest.TestCase):
         def make_urlopen_mock(slice_payload: bytes):
             def _fake_open(req, *args, **kwargs):
                 url = req.full_url if hasattr(req, "full_url") else str(req)
-                if "api.github.com" in url:
+                if url.startswith("https://api.github.com/"):
                     return io.BytesIO(b'{"tag_name": "test_tag", "assets": []}')
                 return io.BytesIO(slice_payload)
             return _fake_open
