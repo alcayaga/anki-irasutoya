@@ -766,6 +766,29 @@ class TestUIMode(unittest.TestCase):
             self.assertIn("description match", dlg.status_label.text())
             self.assertEqual(len(dlg.image_cards), 1)
             self.assertTrue(dlg.image_cards[0].is_description_match)
+            self.assertCountEqual(
+                _chip_texts(dlg),
+                [
+                    "手に入れる  1",
+                    "手に入れた  5",
+                    "手に入れよう  2",
+                    "手に入れ  14",
+                    "獲得  9",
+                    "宝箱  4",
+                ],
+            )
+            chip_tooltips = [
+                dlg.chips_layout.itemAt(i).widget().toolTip()
+                for i in range(dlg.chips_layout.count())
+                if dlg.chips_layout.itemAt(i).widget()
+                and isinstance(dlg.chips_layout.itemAt(i).widget(), QPushButton)
+            ]
+            self.assertTrue(
+                any(
+                    "Search for '手に入れる' (1 description match / 本文一致)" in tooltip
+                    for tooltip in chip_tooltips
+                )
+            )
 
     def test_status_banner_distinguishes_title_match_fallback(self) -> None:
         """Status banner distinguishes between lack of title match and zero results."""
@@ -896,8 +919,16 @@ class TestUIMode(unittest.TestCase):
             description="文字のイラストです。",
             categories=("文字",),
         )
+        img_boundary_compound = IrasutoyaImage(
+            title="犬歯のイラスト",
+            image_url="https://example.com/d.png",
+            thumb_url="https://example.com/dt.png",
+            post_title="犬歯",
+            description="犬の歯磨きのイラストです。",
+        )
 
         self.assertTrue(_is_desc_only_match([img_desc_only], "手に入れる"))
+        self.assertTrue(_is_desc_only_match([img_boundary_compound], "犬"))
         self.assertFalse(_is_desc_only_match([img_title_match], "手に入れた"))
         self.assertFalse(_is_desc_only_match([img_callout_title], "手に入れる"))
         self.assertFalse(_is_desc_only_match([], "手に入れる"))

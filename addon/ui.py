@@ -50,7 +50,7 @@ from .config import (
     update_user_preferences,
 )
 from .feed import IrasutoyaImage
-from .ranking import is_decorative_asset, is_image_relevant
+from .ranking import is_decorative_asset, is_image_relevant, is_title_match
 from .text_utils import clean_search_query, generate_search_candidates
 
 logger = logging.getLogger(__name__)
@@ -173,14 +173,13 @@ def make_description_snippet(description: str, query: str, max_chars: int = 70) 
 
 
 def _is_desc_only_match(images: Sequence[IrasutoyaImage], term: str) -> bool:
-    """Return True if all images match term in description only (not in title or post_title)."""
-    clean_t = term.strip().casefold()
+    """Return True if all images match term in description only (not in title or post_title with boundary safety)."""
+    clean_t = term.strip()
     if not clean_t or not images:
         return False
-    has_title = any(clean_t in img.title.casefold() or clean_t in img.post_title.casefold() for img in images)
-    if has_title:
+    if any(is_title_match(img, clean_t) for img in images):
         return False
-    return any(clean_t in img.description.casefold() for img in images)
+    return any(clean_t.casefold() in (img.description or "").casefold() for img in images)
 
 
 class ImageCardWidget(QFrame):
@@ -1463,10 +1462,10 @@ class IrasutoyaDialog(QDialog):
             is_desc_match = False
             snippet = None
             if query:
-                in_title = (query.casefold() in img.title.casefold()) or (query.casefold() in img.post_title.casefold())
-                if not in_title and (query.casefold() in img.description.casefold()):
+                in_title = is_title_match(img, query)
+                if not in_title and (query.casefold() in (img.description or "").casefold()):
                     is_desc_match = True
-                    snippet = make_description_snippet(img.description, query)
+                    snippet = make_description_snippet(img.description or "", query)
 
             card = ImageCardWidget(
                 image=img,
