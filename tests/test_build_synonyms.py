@@ -243,34 +243,72 @@ class TestBuildSynonyms(unittest.TestCase):
             self.assertIn("is larger than the fetched 512KB slice", str(cm.exception))
 
     def test_kaishi_concept_dataset_counts_and_validation(self) -> None:
-        """Verify synthesized catalog contains Kaishi dataset counts and passes synonym validation."""
+        """Verify synthesized catalog contains deterministic Kaishi dataset counts and passes synonym validation."""
         target_db = os.path.join(self.temp_dir.name, "synth_catalog.sqlite")
         conn = sqlite3.connect(target_db)
-        img = IrasutoyaImage("可愛い猫", "https://1.bp.blogspot.com/s800/cat.png", "t.png", "猫", post_id="1")
-        post = ParsedPost("1", "猫のイラスト", "desc", "pub", "upd", (), [img])
-        write_posts(conn, [post])
+        p1 = ParsedPost(
+            "1",
+            "可愛い猫のイラスト",
+            "desc",
+            "pub",
+            "upd",
+            (),
+            [IrasutoyaImage("可愛い猫のイラスト", "https://1.bp.blogspot.com/cat.png", "t", "可愛い猫", post_id="1")],
+        )
+        p2 = ParsedPost(
+            "2",
+            "走る人のイラスト",
+            "desc",
+            "pub",
+            "upd",
+            (),
+            [IrasutoyaImage("走る人のイラスト", "https://1.bp.blogspot.com/run.png", "t", "走る人", post_id="2")],
+        )
+        p3 = ParsedPost(
+            "3",
+            "先生のイラスト",
+            "desc",
+            "pub",
+            "upd",
+            (),
+            [IrasutoyaImage("先生のイラスト", "https://1.bp.blogspot.com/teacher.png", "t", "先生", post_id="3")],
+        )
+        write_posts(conn, [p1, p2, p3])
         conn.close()
 
         small_kaishi = os.path.join(self.temp_dir.name, "synth_kaishi.sqlite")
         k_conn = sqlite3.connect(small_kaishi)
         k_conn.execute("CREATE TABLE notes (id INTEGER PRIMARY KEY, flds TEXT NOT NULL)")
-        k_conn.execute("INSERT INTO notes (flds) VALUES (?)", ("キャット\x1fきゃっと\x1f<img src='cat.png'>",))
+        notes = [
+            ("キャット\x1fきゃっと\x1f<img src='cat.png'>",),
+            ("教える\x1fおしえる\x1f<img src='teacher.png'>",),
+            ("走る\x1fはしる\x1f<img src='run.png'>",),
+            ("未登録\x1fみとうろく\x1f<img src='missing.png'>",),
+        ]
+        k_conn.executemany("INSERT INTO notes (flds) VALUES (?)", notes)
         k_conn.commit()
         k_conn.close()
 
-        self.assertTrue(populate_kaishi_concepts(target_db, small_kaishi, min_matched=1))
+        # 4 notes total: 3 matched (75% match ratio >= 70% threshold, min_matched=3), 1 unmatched
+        self.assertTrue(populate_kaishi_concepts(target_db, small_kaishi, min_matched=3))
 
         conn = sqlite3.connect(target_db)
         cur = conn.cursor()
         cur.execute("SELECT count(*) FROM synonyms WHERE source = 'donkuri/kaishi'")
         synonyms_count = cur.fetchone()[0]
+        cur.execute("SELECT count(DISTINCT term) FROM synonyms WHERE source = 'donkuri/kaishi'")
+        unique_terms_count = cur.fetchone()[0]
         cur.execute("SELECT count(*) FROM image_keywords WHERE source = 'donkuri/kaishi'")
         keywords_count = cur.fetchone()[0]
         conn.close()
 
-        # Lower bounds guard against an empty or truncated Kaishi import
-        self.assertGreaterEqual(synonyms_count, 1)
-        self.assertGreaterEqual(keywords_count, 1)
+        # Verify exact deterministic counts:
+        # - 3 matched notes produce 3 image_keywords pins ('キャット', '教える', '走る')
+        # - '走る' directly matches '走る人のイラスト' so it is omitted from synonyms
+        # - 'キャット' and '教える' generate 2 concept synonyms across 2 unique headwords
+        self.assertEqual(synonyms_count, 2)
+        self.assertEqual(unique_terms_count, 2)
+        self.assertEqual(keywords_count, 3)
         self.assertTrue(validate_catalog_synonyms(target_db))
 
 
