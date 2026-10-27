@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Build and validate the offline SQLite metadata catalog for Irasutoya."""
 import argparse
+import collections
 import hashlib
 import json
 import logging
@@ -11,7 +12,7 @@ import tempfile
 import time
 import urllib.parse
 import urllib.request
-from typing import List, Optional, Sequence, Set, Tuple
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 # Ensure repository root is on sys.path
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -397,13 +398,101 @@ def compile_and_publish_catalog(
                             if meta_row:
                                 conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('synonym_sources', ?)", (meta_row[0],))
                             logger.info("Carried over %d synonyms from previous catalog at %s", len(old_syns), prev_catalog)
+
+                    # Preserve existing image_keywords from previous catalog if present
+                    old_cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='image_keywords'")
+                    if old_cur.fetchone() is not None:
+                        old_cur.execute(
+                            """
+                            SELECT p.blogger_id, i.key, i.url, ik.keyword, ik.source, ik.weight
+                            FROM image_keywords ik
+                            JOIN images i ON ik.image_id = i.id
+                            JOIN posts p ON p.id = i.post_id
+                            """
+                        )
+                        fresh_sources = {
+                            r[0] for r in conn.execute("SELECT DISTINCT source FROM image_keywords")
+                        }
+                        old_kws = [row for row in old_cur.fetchall() if row[4] not in fresh_sources]
+                        if old_kws:
+                            cur = conn.cursor()
+                            cur.execute(
+                                """
+                                SELECT p.blogger_id, i.key, i.url, i.id
+                                FROM images i
+                                JOIN posts p ON p.id = i.post_id
+                                """
+                            )
+                            new_images = cur.fetchall()
+
+                            new_by_url: Dict[Tuple[str, str], int] = {}
+                            new_by_key: Dict[str, int] = {}
+                            post_basename_counts: Dict[Tuple[str, str], int] = collections.Counter()
+
+                            for blogger_id, key, url, img_id in new_images:
+                                new_by_url[(blogger_id, url)] = img_id
+                                new_by_key[key] = img_id
+                                parsed_path = urllib.parse.urlparse(url).path
+                                bname = parsed_path.rstrip("/").split("/")[-1] if parsed_path else ""
+                                post_basename_counts[(blogger_id, bname)] += 1
+
+                            mapped_kws = []
+                            for blogger_id, old_key, old_url, kw, src, w in old_kws:
+                                target_id = None
+                                # Tier 1: Exact (blogger_id, url) match
+                                if (blogger_id, old_url) in new_by_url:
+                                    target_id = new_by_url[(blogger_id, old_url)]
+                                # Tier 2: Host-agnostic stable key match
+                                elif old_key in new_by_key:
+                                    old_path = urllib.parse.urlparse(old_url).path
+                                    old_bname = old_path.rstrip("/").split("/")[-1] if old_path else ""
+                                    if post_basename_counts.get((blogger_id, old_bname), 0) > 1:
+                                        logger.warning(
+                                            "Skipping ambiguous keyword carryover for post %s: "
+                                            "multiple images share basename '%s' and URL changed from '%s'",
+                                            blogger_id,
+                                            old_bname,
+                                            old_url,
+                                        )
+                                    else:
+                                        target_id = new_by_key[old_key]
+
+                                if target_id is not None:
+                                    mapped_kws.append((target_id, kw, src, w))
+
+                            if mapped_kws:
+                                conn.executemany(
+                                    """
+                                    INSERT OR IGNORE INTO image_keywords (image_id, keyword, source, weight)
+                                    VALUES (?, ?, ?, ?)
+                                    """,
+                                    mapped_kws,
+                                )
+                                logger.info(
+                                    "Carried over %d image keywords from previous catalog at %s",
+                                    len(mapped_kws),
+                                    prev_catalog,
+                                )
                     conn.commit()
                 except Exception as e:
                     conn.rollback()
-                    logger.error("Could not carry over synonyms from %s: %s", prev_catalog, e)
+                    logger.error("Could not carry over synonyms or keywords from %s: %s", prev_catalog, e)
                     raise
                 finally:
                     old_c.close()
+
+            kw_srcs = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT DISTINCT source FROM image_keywords ORDER BY source ASC"
+                )
+            ]
+            if kw_srcs:
+                conn.execute(
+                    "INSERT OR REPLACE INTO meta (key, value) VALUES ('keyword_sources', ?)",
+                    (",".join(kw_srcs),),
+                )
+                conn.commit()
 
             logger.info("Optimizing database with VACUUM and journal_mode=DELETE...")
             conn.execute("PRAGMA journal_mode = DELETE")

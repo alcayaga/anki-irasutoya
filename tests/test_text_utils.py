@@ -14,6 +14,9 @@ class TestTextUtils(unittest.TestCase):
         patcher = patch("addon.text_utils.lookup_concept_map", return_value=[])
         patcher.start()
         self.addCleanup(patcher.stop)
+        k_patcher = patch("addon.text_utils.lookup_kaishi_concept", return_value=[])
+        k_patcher.start()
+        self.addCleanup(k_patcher.stop)
 
     def test_empty_and_none(self):
         """Test handling of None and empty string inputs."""
@@ -766,6 +769,58 @@ class TestTextUtils(unittest.TestCase):
         self.assertEqual(len(concept_cands), 2)
         self.assertEqual(concept_cands[0], ("お葬式", "concept_map", 2))
         self.assertEqual(concept_cands[1], ("墓", "concept_map", 2))
+
+    def test_generate_search_candidates_emits_kaishi_concept(self) -> None:
+        """Verify generate_search_candidates emits Kaishi concept map targets in Tier 2."""
+        with patch("addon.text_utils.lookup_kaishi_concept", return_value=["「ダメ」のポーズをする人"]):
+            cands = generate_search_candidates("全然", allow_tier2=True)
+            kaishi_cands = [c for c in cands if c[1] == "kaishi_concept"]
+            self.assertEqual(len(kaishi_cands), 1)
+            self.assertEqual(kaishi_cands[0], ("「ダメ」のポーズをする人", "kaishi_concept", 2))
+
+    def test_generate_search_candidates_ordering_manual_then_kaishi_then_reading(self) -> None:
+        """Verify candidate ordering: concept_map (manual) -> kaishi_concept -> note_reading."""
+        class MockNote(dict):
+            pass
+
+        mock_note = MockNote({"Word": "走る", "Reading": "はしる"})
+        with patch("addon.text_utils.lookup_concept_map", return_value=["マニュアル走る"]):
+            with patch("addon.text_utils.lookup_kaishi_concept", return_value=["カイシ走る"]):
+                cands = generate_search_candidates("走る", note=mock_note, allow_tier2=True)
+                reasons = [c[1] for c in cands]
+                # concept_map must appear before kaishi_concept
+                # kaishi_concept must appear before note_reading
+                self.assertIn("concept_map", reasons)
+                self.assertIn("kaishi_concept", reasons)
+                self.assertIn("note_reading_Reading", reasons)
+                idx_manual = reasons.index("concept_map")
+                idx_kaishi = reasons.index("kaishi_concept")
+                idx_reading = reasons.index("note_reading_Reading")
+                self.assertLess(idx_manual, idx_kaishi)
+                self.assertLess(idx_kaishi, idx_reading)
+
+    def test_generate_search_candidates_deinflected_kaishi_concept(self) -> None:
+        """Verify generate_search_candidates deinflects surface term to match kaishi concept map."""
+        with patch(
+            "addon.text_utils.lookup_kaishi_concept",
+            side_effect=lambda term: ["スタートダッシュ"] if term == "始まる" else [],
+        ):
+            cands = generate_search_candidates("始まっている", allow_tier2=True, allow_deinflection=True)
+            kaishi_cands = [c for c in cands if c[1] == "kaishi_concept"]
+            self.assertEqual(len(kaishi_cands), 1)
+            self.assertEqual(kaishi_cands[0], ("スタートダッシュ", "kaishi_concept", 2))
+
+    def test_generate_search_candidates_injected_kaishi_lookup(self) -> None:
+        """Verify generate_search_candidates uses injected kaishi_lookup callable."""
+        cands = generate_search_candidates(
+            "全然",
+            allow_tier2=True,
+            kaishi_lookup=lambda term: ["「ダメ」のポーズをする人"] if term == "全然" else [],
+        )
+        kaishi_cands = [c for c in cands if c[1] == "kaishi_concept"]
+        self.assertEqual(len(kaishi_cands), 1)
+        self.assertEqual(kaishi_cands[0], ("「ダメ」のポーズをする人", "kaishi_concept", 2))
+
 
 
 if __name__ == "__main__":

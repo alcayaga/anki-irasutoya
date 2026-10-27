@@ -456,6 +456,7 @@ def write_synonyms(
     conn: sqlite3.Connection,
     source: str,
     mapping: Dict[str, Sequence[str]],
+    commit: bool = True,
 ) -> int:
     """Populate or replace synonyms for a given source and stamp meta table.
 
@@ -463,11 +464,14 @@ def write_synonyms(
         conn: Open SQLite database connection with write access.
         source: Source identifier (e.g. 'manual', 'donkuri/kaishi', 'sudachi').
         mapping: Dictionary mapping vocabulary headwords to sequences of target queries.
+        commit: Whether to commit transaction immediately. With commit=False,
+            the caller must have already called create_schema(conn).
 
     Returns:
         Number of synonym rows written.
     """
-    create_schema(conn)
+    if commit:
+        create_schema(conn)
     cursor = conn.cursor()
     cursor.execute("DELETE FROM synonyms WHERE source = ?", (source,))
 
@@ -497,5 +501,57 @@ def write_synonyms(
         "INSERT OR REPLACE INTO meta (key, value) VALUES ('synonym_sources', ?)",
         (",".join(sources),),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return len(rows)
+
+
+def write_image_keywords(
+    conn: sqlite3.Connection,
+    source: str,
+    keywords: Sequence[Tuple[int, str, float]],
+    commit: bool = True,
+) -> int:
+    """Populate or replace image keywords for a given source and stamp meta table.
+
+    Args:
+        conn: Open SQLite database connection with write access.
+        source: Source identifier (e.g. 'donkuri/kaishi', 'llm_caption').
+        keywords: Sequence of (image_id, keyword, weight) tuples.
+        commit: Whether to commit transaction immediately. With commit=False,
+            the caller must have already called create_schema(conn).
+
+    Returns:
+        Number of keyword rows written.
+    """
+    if commit:
+        create_schema(conn)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM image_keywords WHERE source = ?", (source,))
+
+    valid_rows: List[Tuple[int, str, str, float]] = []
+    for img_id, kw, weight in keywords:
+        clean_kw = kw.strip()
+        if clean_kw:
+            valid_rows.append((img_id, clean_kw, source, float(weight)))
+
+    if valid_rows:
+        cursor.executemany(
+            """
+            INSERT OR REPLACE INTO image_keywords (image_id, keyword, source, weight)
+            VALUES (?, ?, ?, ?)
+            """,
+            valid_rows,
+        )
+
+    # Update meta keyword_sources
+    cursor.execute("SELECT DISTINCT source FROM image_keywords ORDER BY source ASC")
+    sources = [r[0] for r in cursor.fetchall()]
+    cursor.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES ('keyword_sources', ?)",
+        (",".join(sources),),
+    )
+    if commit:
+        conn.commit()
+    return len(valid_rows)
+

@@ -7,7 +7,7 @@ import stat
 import tempfile
 import unittest
 
-from addon.catalog import write_posts, write_synonyms
+from addon.catalog import write_image_keywords, write_posts, write_synonyms
 from addon.feed import IrasutoyaImage, ParsedPost
 from scripts.build_catalog import (
     compare_with_old,
@@ -282,6 +282,152 @@ class TestBuildCatalog(unittest.TestCase):
         self.assertIsNotNone(meta_row)
         self.assertEqual(meta_row[0], "manual")
         conn.close()
+
+    def test_compile_and_publish_catalog_preserves_image_keywords(self) -> None:
+        """Verify rebuild preserves existing image_keywords mapped by image key without transaction conflicts."""
+        post1 = ParsedPost("1", "猫", "desc", "pub", "upd", (), [IrasutoyaImage("猫", "https://1.bp.blogspot.com/cat.png", "t", "猫")])
+        compile_and_publish_catalog(
+            out_path=self.db_path,
+            posts=[post1],
+            total_results=1,
+            require_probes=False,
+        )
+
+        # Inject image keyword into published catalog for image_id 1
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM images WHERE key = '1/cat.png'")
+        img_id = cur.fetchone()[0]
+        write_image_keywords(conn, "donkuri/kaishi", [(img_id, "ネコ", 1.0), (img_id, "旧キーワード", 1.0)])
+        write_image_keywords(conn, "post_build_source", [(img_id, "キャット", 3.0)])
+        conn.close()
+
+        # Create a fresh keywords directory with an updated weight for "ネコ", omitting "旧キーワード"
+        kw_dir = os.path.join(self.temp_dir.name, "fresh_kws")
+        os.makedirs(kw_dir, exist_ok=True)
+        with open(os.path.join(kw_dir, "test.jsonl"), "w", encoding="utf-8") as f:
+            f.write(json.dumps({"key": "1/cat.png", "keywords": ["ネコ"], "source": "donkuri/kaishi", "weight": 2.5}) + "\n")
+
+        # Rebuild catalog containing post1 and a new post2 with freshly merged keywords
+        post2 = ParsedPost("2", "犬", "desc", "pub", "upd", (), [IrasutoyaImage("犬", "https://1.bp.blogspot.com/dog.png", "t", "犬")])
+        compile_and_publish_catalog(
+            out_path=self.db_path,
+            posts=[post1, post2],
+            total_results=2,
+            keywords_dir=kw_dir,
+            require_probes=False,
+        )
+
+        # Confirm freshly merged source replaced old source (omitting "旧キーワード")
+        # and un-merged sources like "post_build_source" were carried over.
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT ik.keyword, ik.source, ik.weight, i.key FROM image_keywords ik JOIN images i ON ik.image_id = i.id ORDER BY ik.source, ik.keyword")
+        rows = cur.fetchall()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0], ("ネコ", "donkuri/kaishi", 2.5, "1/cat.png"))
+        self.assertEqual(rows[1], ("キャット", "post_build_source", 3.0, "1/cat.png"))
+
+        cur.execute("SELECT value FROM meta WHERE key = 'keyword_sources'")
+        meta_row = cur.fetchone()
+        self.assertIsNotNone(meta_row)
+        self.assertEqual(meta_row[0], "donkuri/kaishi,post_build_source")
+        conn.close()
+
+    def test_compile_and_publish_catalog_preserves_image_keywords_on_host_change(self) -> None:
+        """Verify rebuild preserves image_keywords across CDN host changes via unambiguous stable keys."""
+        post1 = ParsedPost("1", "猫", "desc", "pub", "upd", (), [IrasutoyaImage("猫", "https://1.bp.blogspot.com/cat.png", "t", "猫")])
+        compile_and_publish_catalog(
+            out_path=self.db_path,
+            posts=[post1],
+            total_results=1,
+            require_probes=False,
+        )
+
+        # Inject keyword into published catalog
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM images WHERE key = '1/cat.png'")
+        img_id = cur.fetchone()[0]
+        write_image_keywords(conn, "donkuri/kaishi", [(img_id, "ネコ", 1.0)])
+        conn.close()
+
+        # Rebuild with new CDN host URL (e.g. lh3.googleusercontent.com instead of 1.bp.blogspot.com)
+        post1_migrated = ParsedPost(
+            "1",
+            "猫",
+            "desc",
+            "pub",
+            "upd",
+            (),
+            [IrasutoyaImage("猫", "https://lh3.googleusercontent.com/cat.png", "t", "猫")],
+        )
+        compile_and_publish_catalog(
+            out_path=self.db_path,
+            posts=[post1_migrated],
+            total_results=1,
+            require_probes=False,
+        )
+
+        # Verify keyword was carried over via unambiguous stable key despite host change
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT ik.keyword, ik.source, ik.weight, i.key, i.url
+            FROM image_keywords ik
+            JOIN images i ON ik.image_id = i.id
+            """
+        )
+        rows = cur.fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][0], "ネコ")
+        self.assertEqual(rows[0][1], "donkuri/kaishi")
+        self.assertEqual(rows[0][2], 1.0)
+        self.assertEqual(rows[0][3], "1/cat.png")
+        self.assertEqual(rows[0][4], "https://lh3.googleusercontent.com/cat.png")
+        conn.close()
+
+    def test_compile_and_publish_catalog_skips_ambiguous_keyword_carryover(self) -> None:
+        """Verify rebuild skips ambiguous keyword carryover and publishes when multiple images share a basename and URL changed."""
+        img1 = IrasutoyaImage("猫1", "https://1.bp.blogspot.com/sub1/cat.png", "t1", "猫1")
+        img2 = IrasutoyaImage("猫2", "https://1.bp.blogspot.com/sub2/cat.png", "t2", "猫2")
+        post1 = ParsedPost("1", "猫", "desc", "pub", "upd", (), [img1, img2])
+        compile_and_publish_catalog(
+            out_path=self.db_path,
+            posts=[post1],
+            total_results=1,
+            require_probes=False,
+        )
+
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM images WHERE key = '1/cat.png'")
+        img_id = cur.fetchone()[0]
+        write_image_keywords(conn, "donkuri/kaishi", [(img_id, "ネコ", 1.0)])
+        conn.close()
+
+        # Rebuild with URLs changed so Tier 1 fails, while post 1 still has duplicate basenames ('cat.png')
+        img1_migrated = IrasutoyaImage("猫1", "https://lh3.googleusercontent.com/sub1/cat.png", "t1", "猫1")
+        img2_migrated = IrasutoyaImage("猫2", "https://lh3.googleusercontent.com/sub2/cat.png", "t2", "猫2")
+        post1_migrated = ParsedPost("1", "猫", "desc", "pub", "upd", (), [img1_migrated, img2_migrated])
+
+        # Must succeed and publish without raising ValueError
+        out = compile_and_publish_catalog(
+            out_path=self.db_path,
+            posts=[post1_migrated],
+            total_results=1,
+            require_probes=False,
+        )
+        self.assertEqual(out, self.db_path)
+
+        # Ambiguous keyword was skipped to avoid corrupting image associations
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT count(*) FROM image_keywords WHERE source = 'donkuri/kaishi'")
+        self.assertEqual(cur.fetchone()[0], 0)
+        conn.close()
+
 
     def test_compile_and_publish_catalog_raises_on_synonym_carryover_error(self) -> None:
         """Verify compile_and_publish_catalog raises when synonym carryover encounters an error."""

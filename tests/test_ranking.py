@@ -29,6 +29,9 @@ class TestRanking(unittest.TestCase):
         patcher = patch("addon.text_utils.lookup_concept_map", return_value=[])
         patcher.start()
         self.addCleanup(patcher.stop)
+        k_patcher = patch("addon.text_utils.lookup_kaishi_concept", return_value=[])
+        k_patcher.start()
+        self.addCleanup(k_patcher.stop)
 
     def test_score_candidate_image(self):
         """Test archetype scoring engine penalties and boosts."""
