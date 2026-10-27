@@ -12,6 +12,7 @@ from unittest.mock import patch
 from addon.catalog import create_schema, write_posts, write_synonyms
 from addon.feed import IrasutoyaImage, ParsedPost
 from scripts.build_synonyms import (
+    DEFAULT_CATALOG_PATH,
     fetch_kaishi_github_slice,
     main,
     populate_manual_concepts,
@@ -133,7 +134,7 @@ class TestBuildSynonyms(unittest.TestCase):
         with zipfile.ZipFile(apkg_path, "w") as z:
             z.writestr("collection.anki21", data)
 
-        # 3. Invoke main with --catalog, --kaishi-apkg, --cache-dir, --validate
+        # 3. Invoke main with --catalog, --kaishi-apkg, --cache-dir, --min-matched 1, --validate
         ret = main([
             "--catalog",
             self.db_path,
@@ -141,6 +142,8 @@ class TestBuildSynonyms(unittest.TestCase):
             apkg_path,
             "--cache-dir",
             self.temp_dir.name,
+            "--min-matched",
+            "1",
             "--validate",
         ])
         self.assertEqual(ret, 0)
@@ -168,6 +171,8 @@ class TestBuildSynonyms(unittest.TestCase):
                 "--kaishi-github",
                 "--cache-dir",
                 self.temp_dir.name,
+                "--min-matched",
+                "1",
                 "--validate",
             ])
             self.assertEqual(ret, 0)
@@ -177,6 +182,32 @@ class TestBuildSynonyms(unittest.TestCase):
         cur.execute("SELECT keyword, source FROM image_keywords WHERE keyword = '子猫'")
         self.assertEqual(len(cur.fetchall()), 1)
         v_conn.close()
+
+    def test_main_cli_kaishi_apkg_rejects_truncated_collection_by_default(self) -> None:
+        """Verify main() CLI rejects an incomplete collection by default when matched count < 1000."""
+        raw_db = os.path.join(self.temp_dir.name, "truncated_kaishi.sqlite")
+        conn = sqlite3.connect(raw_db)
+        conn.execute("CREATE TABLE notes (id INTEGER PRIMARY KEY, flds TEXT NOT NULL)")
+        conn.execute("INSERT INTO notes (flds) VALUES (?)", ("キャット\x1fきゃっと\x1f<img src='cat.png'>",))
+        conn.commit()
+        conn.close()
+
+        apkg_path = os.path.join(self.temp_dir.name, "truncated_test.apkg")
+        with open(raw_db, "rb") as f_in:
+            data = f_in.read()
+        with zipfile.ZipFile(apkg_path, "w") as z:
+            z.writestr("collection.anki21", data)
+
+        # Default min_matched is 1000, so a 1-note deck must return exit code 1
+        ret = main([
+            "--catalog",
+            self.db_path,
+            "--kaishi-apkg",
+            apkg_path,
+            "--cache-dir",
+            self.temp_dir.name,
+        ])
+        self.assertEqual(ret, 1)
 
     def test_fetch_kaishi_github_slice_validates_zip_header(self) -> None:
         """Verify fetch_kaishi_github_slice raises descriptive ValueError on malformed or truncated headers."""
@@ -211,7 +242,22 @@ class TestBuildSynonyms(unittest.TestCase):
                 fetch_kaishi_github_slice(cache_dir=self.temp_dir.name)
             self.assertIn("is larger than the fetched 512KB slice", str(cm.exception))
 
+    def test_bundled_catalog_kaishi_concept_dataset_counts(self) -> None:
+        """Verify bundled catalog deterministically contains the full reconciled Kaishi dataset counts."""
+        if not os.path.exists(DEFAULT_CATALOG_PATH):
+            self.skipTest("Bundled catalog not present")
+        conn = sqlite3.connect(DEFAULT_CATALOG_PATH)
+        cur = conn.cursor()
+        cur.execute("SELECT count(*) FROM synonyms WHERE source = 'donkuri/kaishi'")
+        synonyms_count = cur.fetchone()[0]
+        cur.execute("SELECT count(*) FROM image_keywords WHERE source = 'donkuri/kaishi'")
+        keywords_count = cur.fetchone()[0]
+        conn.close()
 
+        # Lower bounds guard against an empty or truncated Kaishi import without pinning one release.
+        self.assertGreaterEqual(synonyms_count, 500)
+        self.assertGreaterEqual(keywords_count, 1000)
+        self.assertTrue(validate_catalog_synonyms(DEFAULT_CATALOG_PATH))
 
 
 if __name__ == "__main__":

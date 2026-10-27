@@ -666,33 +666,27 @@ def generate_search_candidates(
                         break
 
         # Curated visual concept map targets (e.g. 亡くなる -> お葬式, 墓; 手に入れる -> 獲得, 宝箱)
-        def _resolve_concepts(term: str) -> List[str]:
-            """Resolve concept map targets using injected lookup, store, or default catalog."""
-            if concept_lookup is not None:
-                return concept_lookup(term)
-            if store is not None:
-                return lookup_concept_map(term, store=store)
-            return lookup_concept_map(term)
+        def _resolve_source_targets(
+            injected_lookup: Optional[Callable[[str], List[str]]],
+            default_lookup_fn: Callable[..., List[str]],
+        ) -> List[str]:
+            """Resolve concept map targets with surface-then-deinflection fallback."""
+            def _lookup(term: str) -> List[str]:
+                if injected_lookup is not None:
+                    return injected_lookup(term)
+                if store is not None:
+                    return default_lookup_fn(term, store=store)
+                return default_lookup_fn(term)
 
-        concept_targets = _resolve_concepts(surface)
-        if not concept_targets and deinflections:
-            concept_targets = _resolve_concepts(deinflections[0])
-        for c_target in concept_targets:
+            targets = _lookup(surface)
+            if not targets and deinflections:
+                targets = _lookup(deinflections[0])
+            return targets
+
+        for c_target in _resolve_source_targets(concept_lookup, lookup_concept_map):
             add(c_target, "concept_map", 2)
 
-        # Kaishi 1.5k ground-truth visual concept map targets (source='donkuri/kaishi')
-        def _resolve_kaishi_concepts(term: str) -> List[str]:
-            """Resolve Kaishi concept map targets using injected lookup, store, or default catalog."""
-            if kaishi_lookup is not None:
-                return kaishi_lookup(term)
-            if store is not None:
-                return lookup_kaishi_concept(term, store=store)
-            return lookup_kaishi_concept(term)
-
-        kaishi_targets = _resolve_kaishi_concepts(surface)
-        if not kaishi_targets and deinflections:
-            kaishi_targets = _resolve_kaishi_concepts(deinflections[0])
-        for k_target in kaishi_targets:
+        for k_target in _resolve_source_targets(kaishi_lookup, lookup_kaishi_concept):
             add(k_target, "kaishi_concept", 2)
 
         # Check dedicated reading and furigana fields on the note (authoritative dictionary readings)

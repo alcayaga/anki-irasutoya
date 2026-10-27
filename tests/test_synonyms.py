@@ -223,7 +223,7 @@ class TestSynonyms(unittest.TestCase):
         extracted_db = extract_collection_from_apkg(apkg_path, cache_dir=self.temp_dir.name)
         self.assertTrue(os.path.isfile(extracted_db))
 
-        success = populate_kaishi_concepts(catalog_path, extracted_db)
+        success = populate_kaishi_concepts(catalog_path, extracted_db, min_matched=2)
         self.assertTrue(success)
 
         # 5. Verify database contents
@@ -274,9 +274,10 @@ class TestSynonyms(unittest.TestCase):
         img = IrasutoyaImage("猫のイラスト", "https://bp.blogspot.com/s0/cat.png", "t", "猫")
         p = ParsedPost("101", "猫のイラスト", "desc", "pub", "upd", (), [img])
         write_posts(cat_conn, [p])
-        # Seed 10 existing keywords for donkuri/kaishi
+        # Seed 10 existing keywords and 10 existing synonyms for donkuri/kaishi
         seed_kws = [(1, f"kw_{i}", 1.0) for i in range(10)]
         write_image_keywords(cat_conn, source="donkuri/kaishi", keywords=seed_kws)
+        write_synonyms(cat_conn, source="donkuri/kaishi", mapping={f"term_{i}": [f"tgt_{i}"] for i in range(10)})
         cat_conn.close()
 
         # Create Kaishi DB with only 1 matching note
@@ -287,14 +288,16 @@ class TestSynonyms(unittest.TestCase):
         conn.commit()
         conn.close()
 
-        # Refuses replacement because 1 is significantly fewer than 10 (< 80%)
-        success = populate_kaishi_concepts(catalog_path, small_kaishi_db)
+        # Refuses replacement because 1 is significantly fewer than 10 (< 80%) even when min_matched=1
+        success = populate_kaishi_concepts(catalog_path, small_kaishi_db, min_matched=1)
         self.assertFalse(success)
 
-        # Confirm original 10 keywords are preserved
+        # Confirm original 10 keywords and synonyms are preserved
         v_conn = sqlite3.connect(catalog_path)
         cur = v_conn.cursor()
         cur.execute("SELECT count(*) FROM image_keywords WHERE source = 'donkuri/kaishi'")
+        self.assertEqual(cur.fetchone()[0], 10)
+        cur.execute("SELECT count(*) FROM synonyms WHERE source = 'donkuri/kaishi'")
         self.assertEqual(cur.fetchone()[0], 10)
         v_conn.close()
 
@@ -324,8 +327,10 @@ class TestSynonyms(unittest.TestCase):
         conn.commit()
         conn.close()
 
-        success = populate_kaishi_concepts(catalog_path, small_kaishi_db)
-        self.assertFalse(success)
+        with patch("scripts.build_synonyms.update_catalog_sha256") as mock_sha:
+            success = populate_kaishi_concepts(catalog_path, small_kaishi_db, min_matched=1)
+            self.assertFalse(success)
+            mock_sha.assert_not_called()
 
         # Confirm synonyms table was rolled back and is empty
         v_conn = sqlite3.connect(catalog_path)

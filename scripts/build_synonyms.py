@@ -178,6 +178,9 @@ def clean_alt_text(alt: str) -> str:
     return re.sub(r"\s*\|\s*かわいいフリー素材集.*$", "", alt).strip()
 
 
+MAX_COLLECTION_SIZE = 50 * 1024 * 1024
+
+
 def extract_collection_from_apkg(apkg_path: str, cache_dir: str = ".catalog_cache") -> str:
     """Extract SQLite database from local .apkg file, decompressing collection.anki21b if needed.
 
@@ -201,12 +204,15 @@ def extract_collection_from_apkg(apkg_path: str, cache_dir: str = ".catalog_cach
                     "Install with 'pip install zstandard'."
                 )
             payload = zstandard.ZstdDecompressor().decompress(
-                z.read("collection.anki21b"), max_output_size=50 * 1024 * 1024
+                z.read("collection.anki21b"), max_output_size=MAX_COLLECTION_SIZE
             )
-        elif "collection.anki21" in names:
-            payload = z.read("collection.anki21")
-        elif "collection.anki2" in names:
-            payload = z.read("collection.anki2")
+        elif "collection.anki21" in names or "collection.anki2" in names:
+            member = "collection.anki21" if "collection.anki21" in names else "collection.anki2"
+            if z.getinfo(member).file_size > MAX_COLLECTION_SIZE:
+                raise ValueError(
+                    f"{member} in {apkg_path} exceeds the {MAX_COLLECTION_SIZE // (1024 * 1024)} MB limit"
+                )
+            payload = z.read(member)
         else:
             raise ValueError(f"No collection database found in {apkg_path}")
 
@@ -342,17 +348,21 @@ def fetch_kaishi_github_slice(
         return extract_collection_from_apkg(apkg_dest, cache_dir=cache_dir)
 
 
+KAISHI_MIN_MATCH_RATIO = 0.5
+KAISHI_MIN_MATCHED = 1000
+
+
 def populate_kaishi_concepts(
     catalog_path: str,
     kaishi_db_path: str,
-    min_matched: int = 1,
+    min_matched: int = KAISHI_MIN_MATCHED,
 ) -> bool:
     """Compile ground-truth Kaishi 1.5k concepts into synonyms and image_keywords tables.
 
     Args:
         catalog_path: Path to destination catalog.sqlite database.
         kaishi_db_path: Path to extracted Kaishi collection SQLite database.
-        min_matched: Minimum required matched notes before writing (default 1).
+        min_matched: Minimum required matched notes before writing (default 1000).
 
     Returns:
         True if population succeeded, False otherwise.
@@ -493,37 +503,49 @@ def populate_kaishi_concepts(
         )
         return False
 
+    conn = sqlite3.connect(catalog_path)
     try:
-        conn = sqlite3.connect(catalog_path)
-        try:
-            cur = conn.cursor()
-            cur.execute("SELECT count(*) FROM image_keywords WHERE source = 'donkuri/kaishi'")
-            existing_kws_row = cur.fetchone()
-            existing_kws = existing_kws_row[0] if existing_kws_row else 0
-            if existing_kws > 0 and len(image_keywords) < existing_kws * 0.8:
-                logger.error(
-                    "Kaishi import produced %d keywords, which is significantly fewer than %d existing keywords; refusing replacement.",
-                    len(image_keywords),
-                    existing_kws,
-                )
-                return False
+        cur = conn.cursor()
+        cur.execute("SELECT count(*) FROM synonyms WHERE source = 'donkuri/kaishi'")
+        existing_syns_row = cur.fetchone()
+        existing_syns = existing_syns_row[0] if existing_syns_row else 0
+        cur.execute("SELECT count(*) FROM image_keywords WHERE source = 'donkuri/kaishi'")
+        existing_kws_row = cur.fetchone()
+        existing_kws = existing_kws_row[0] if existing_kws_row else 0
 
-            create_schema(conn)
-            conn.execute("BEGIN TRANSACTION")
-            write_synonyms(conn, source="donkuri/kaishi", mapping=synonyms_dict, commit=False)
-            write_image_keywords(conn, source="donkuri/kaishi", keywords=image_keywords, commit=False)
-            conn.commit()
-            conn.execute("PRAGMA journal_mode = DELETE")
-            conn.execute("VACUUM")
-            conn.commit()
-        except Exception as exc:
-            conn.rollback()
-            logger.error("Failed to write Kaishi tables: %s", exc)
+        new_syn_rows = sum(len(t) for t in synonyms_dict.values())
+        if existing_syns > 0 and new_syn_rows < existing_syns * 0.8:
+            logger.error(
+                "Kaishi import produced %d synonym rows, which is significantly fewer than %d existing rows; refusing replacement.",
+                new_syn_rows,
+                existing_syns,
+            )
             return False
-        finally:
-            conn.close()
+        if existing_kws > 0 and len(image_keywords) < existing_kws * 0.8:
+            logger.error(
+                "Kaishi import produced %d keywords, which is significantly fewer than %d existing keywords; refusing replacement.",
+                len(image_keywords),
+                existing_kws,
+            )
+            return False
+
+        create_schema(conn)
+        conn.execute("BEGIN TRANSACTION")
+        write_synonyms(conn, source="donkuri/kaishi", mapping=synonyms_dict, commit=False)
+        write_image_keywords(conn, source="donkuri/kaishi", keywords=image_keywords, commit=False)
+        conn.commit()
+        conn.execute("PRAGMA journal_mode = DELETE")
+        conn.execute("VACUUM")
+        conn.commit()
+    except Exception as exc:
+        conn.rollback()
+        logger.error("Failed to write Kaishi tables: %s", exc)
+        return False
     finally:
-        update_catalog_sha256(catalog_path)
+        conn.close()
+
+    # Refresh the checksum sidecar ONLY after the update transaction succeeds
+    update_catalog_sha256(catalog_path)
     return True
 
 
@@ -627,8 +649,8 @@ def main(argv: Sequence[str]) -> int:
     parser.add_argument(
         "--min-matched",
         type=int,
-        default=1,
-        help="Minimum required matched notes before populating into catalog (default: 1)",
+        default=KAISHI_MIN_MATCHED,
+        help=f"Minimum required matched notes before populating into catalog (default: {KAISHI_MIN_MATCHED})",
     )
     parser.add_argument(
         "--validate",
