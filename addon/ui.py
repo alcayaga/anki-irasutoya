@@ -172,6 +172,17 @@ def make_description_snippet(description: str, query: str, max_chars: int = 70) 
     return prefix + body + suffix
 
 
+def _is_desc_only_match(images: Sequence[IrasutoyaImage], term: str) -> bool:
+    """Return True if all images match term in description only (not in title or post_title)."""
+    clean_t = term.strip().casefold()
+    if not clean_t or not images:
+        return False
+    has_title = any(clean_t in img.title.casefold() or clean_t in img.post_title.casefold() for img in images)
+    if has_title:
+        return False
+    return any(clean_t in img.description.casefold() for img in images)
+
+
 class ImageCardWidget(QFrame):
     """Clickable thumbnail card displaying an Irasutoya illustration."""
 
@@ -359,6 +370,7 @@ class IrasutoyaDialog(QDialog):
         self.media_notice_label: Optional[QLabel] = None
         self.btn_cancel: Optional[QPushButton] = None
         self._catalog_count_cache: Dict[str, Dict[str, int]] = {}
+        self._catalog_desc_cache: Dict[str, Dict[str, bool]] = {}
 
         self._init_ui()
 
@@ -1133,6 +1145,7 @@ class IrasutoyaDialog(QDialog):
         def background_search() -> None:
             """Fetch search results on a background thread using fallback queries."""
             probed_counts: Optional[Dict[str, int]] = None
+            probed_desc_matches: Optional[Set[str]] = None
             try:
                 images, matched_cand, _best_img = self.client.search_with_fallbacks(
                     search_candidates,
@@ -1151,20 +1164,24 @@ class IrasutoyaDialog(QDialog):
                 catalog = self.store.get_index()
                 if catalog is not None:
                     count_cache = self._catalog_count_cache.setdefault(image_size, {})
+                    desc_cache = self._catalog_desc_cache.setdefault(image_size, {})
 
                     # Reuse already retrieved and filtered results for the matched candidate
                     if matched_cand and images:
                         count_cache[matched_cand[0]] = len(images)
+                        desc_cache[matched_cand[0]] = _is_desc_only_match(images, matched_cand[0])
 
                     def _count(term: str) -> int:
                         if current_gen != self._search_generation:
                             raise _StaleSearch()
                         if term not in count_cache:
                             raw_imgs = catalog.search(term, image_size=image_size)
-                            count_cache[term] = sum(
-                                1 for img in raw_imgs
+                            rel_imgs = [
+                                img for img in raw_imgs
                                 if not is_decorative_asset(img, term) and is_image_relevant(img, term)
-                            )
+                            ]
+                            count_cache[term] = len(rel_imgs)
+                            desc_cache[term] = _is_desc_only_match(rel_imgs, term)
                         return count_cache[term]
 
                     probe_terms = [c[0] for c in display_chips]
@@ -1174,6 +1191,7 @@ class IrasutoyaDialog(QDialog):
                     if restore_term:
                         counts[restore_term] = _count(restore_term)
                     probed_counts = counts
+                    probed_desc_matches = {t for t, is_desc in desc_cache.items() if is_desc}
             except _StaleSearch:
                 return
             except Exception:
@@ -1183,7 +1201,14 @@ class IrasutoyaDialog(QDialog):
                 return
 
             self._run_on_main(lambda: self._on_search_finished(
-                current_gen, query, display_chips, matched_cand, images, restore_term, probed_counts
+                current_gen,
+                query,
+                display_chips,
+                matched_cand,
+                images,
+                restore_term,
+                probed_counts,
+                probed_desc_matches,
             ))
 
         threading.Thread(target=background_search, daemon=True).start()
@@ -1197,6 +1222,7 @@ class IrasutoyaDialog(QDialog):
         images: List[IrasutoyaImage],
         restore_term: Optional[str] = None,
         probed_counts: Optional[Dict[str, int]] = None,
+        probed_desc_matches: Optional[Set[str]] = None,
     ) -> None:
         """Process completed search results on the main thread, display fallbacks, and populate gallery."""
         if gen != self._search_generation:
@@ -1210,7 +1236,11 @@ class IrasutoyaDialog(QDialog):
             self.status_label.setStyleSheet("color: #FF453A; font-size: 12px;")
             self.status_label.setText(f"No illustrations found for '{query}'.")
             self._update_suggestion_chips(
-                display_chips, active_term=active_term, restore_term=restore_term, probed_counts=probed_counts
+                display_chips,
+                active_term=active_term,
+                restore_term=restore_term,
+                probed_counts=probed_counts,
+                probed_desc_matches=probed_desc_matches,
             )
             if hasattr(self, "pagination_label") and self.pagination_label:
                 self.pagination_label.setText("")
@@ -1225,13 +1255,7 @@ class IrasutoyaDialog(QDialog):
             )
         else:
             self.status_label.setStyleSheet("color: #98989D; font-size: 12px;")
-            all_desc = bool(images) and all(
-                not (
-                    (query.casefold() in img.title.casefold())
-                    or (query.casefold() in img.post_title.casefold())
-                )
-                for img in images
-            )
+            all_desc = _is_desc_only_match(images, query)
             count_str = f"{len(images)} illustration" if len(images) == 1 else f"{len(images)} illustrations"
             if all_desc:
                 self.status_label.setText(f"Found {count_str} (description match). Click one to select.")
@@ -1239,7 +1263,11 @@ class IrasutoyaDialog(QDialog):
                 self.status_label.setText(f"Found {count_str}. Click one to select.")
 
         self._update_suggestion_chips(
-            display_chips, active_term=active_term, restore_term=restore_term, probed_counts=probed_counts
+            display_chips,
+            active_term=active_term,
+            restore_term=restore_term,
+            probed_counts=probed_counts,
+            probed_desc_matches=probed_desc_matches,
         )
         self._populate_gallery(images, gen)
 
@@ -1249,6 +1277,7 @@ class IrasutoyaDialog(QDialog):
         active_term: Optional[str] = None,
         restore_term: Optional[str] = None,
         probed_counts: Optional[Dict[str, int]] = None,
+        probed_desc_matches: Optional[Set[str]] = None,
     ) -> None:
         """Render one-click suggestion chips for query variations with instant count badges."""
         if not hasattr(self, "chips_layout"):
@@ -1288,6 +1317,7 @@ class IrasutoyaDialog(QDialog):
 
         # Prepend restore chip if searching an external custom query
         if restore_term:
+            is_res_desc = bool(probed_desc_matches and restore_term in probed_desc_matches)
             res_text = (
                 f"↩ {restore_term}  {restore_count}"
                 if (restore_count is not None and restore_count > 0)
@@ -1295,7 +1325,23 @@ class IrasutoyaDialog(QDialog):
             )
             btn_restore = QPushButton(res_text, self)
             btn_restore.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-            btn_restore.setToolTip(f"Reset search to card term '{restore_term}'")
+            if restore_count is not None and restore_count > 0:
+                if is_res_desc:
+                    match_str = (
+                        f"{restore_count} description match / 本文一致"
+                        if restore_count == 1
+                        else f"{restore_count} description matches / 本文一致"
+                    )
+                    btn_restore.setToolTip(f"Reset search to card term '{restore_term}' ({match_str})")
+                else:
+                    cnt_str = (
+                        f"{restore_count} illustration"
+                        if restore_count == 1
+                        else f"{restore_count} illustrations"
+                    )
+                    btn_restore.setToolTip(f"Reset search to card term '{restore_term}' ({cnt_str})")
+            else:
+                btn_restore.setToolTip(f"Reset search to card term '{restore_term}'")
             btn_restore.setStyleSheet(
                 "background-color: rgba(10, 132, 255, 0.12); "
                 "border: 1px dashed #0A84FF; border-radius: 10px; "
@@ -1318,9 +1364,18 @@ class IrasutoyaDialog(QDialog):
             btn_text = f"{cand_term}  {count}" if (count is not None and count > 0) else cand_term
             btn = QPushButton(btn_text, self)
             btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            is_desc = bool(probed_desc_matches and cand_term in probed_desc_matches)
             if count is not None and count > 0:
-                count_str = f"{count} illustration" if count == 1 else f"{count} illustrations"
-                btn.setToolTip(f"Search for '{cand_term}' ({count_str})")
+                if is_desc:
+                    match_str = (
+                        f"{count} description match / 本文一致"
+                        if count == 1
+                        else f"{count} description matches / 本文一致"
+                    )
+                    btn.setToolTip(f"Search for '{cand_term}' ({match_str})")
+                else:
+                    count_str = f"{count} illustration" if count == 1 else f"{count} illustrations"
+                    btn.setToolTip(f"Search for '{cand_term}' ({count_str})")
             else:
                 btn.setToolTip(f"Search for '{cand_term}'")
             if is_active:

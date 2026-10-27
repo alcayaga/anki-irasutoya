@@ -840,6 +840,69 @@ class TestUIMode(unittest.TestCase):
         self.assertTrue(dlg.chips_scroll.isHidden())
         self.assertTrue(dlg.chips_widget.isHidden())
 
+    def test_suggestion_chips_tooltip_description_match(self) -> None:
+        """Suggestion chip tooltip identifies description-only matches with 本文一致 annotation."""
+        dlg = IrasutoyaDialog(parent=None, browser=None, note_ids=[1001])
+        self.addCleanup(dlg.close)
+
+        dlg._update_suggestion_chips(
+            [("手に入れる", "primary", 1), ("手に入れた", "verb_inflection", 1)],
+            active_term="手に入れた",
+            restore_term="手に入れる",
+            probed_counts={"手に入れる": 1, "手に入れた": 5},
+            probed_desc_matches={"手に入れる"},
+        )
+
+        tooltips = [
+            dlg.chips_layout.itemAt(i).widget().toolTip()
+            for i in range(dlg.chips_layout.count())
+            if dlg.chips_layout.itemAt(i).widget()
+            and isinstance(dlg.chips_layout.itemAt(i).widget(), QPushButton)
+        ]
+
+        self.assertTrue(
+            any("Reset search to card term '手に入れる' (1 description match / 本文一致)" in t for t in tooltips)
+        )
+        self.assertTrue(
+            any("Search for '手に入れる' (1 description match / 本文一致)" in t for t in tooltips)
+        )
+        self.assertTrue(
+            any("Search for '手に入れた' (5 illustrations)" in t for t in tooltips)
+        )
+
+    def test_is_desc_only_match_classification(self) -> None:
+        """_is_desc_only_match correctly distinguishes description matches from title/callout matches."""
+        from addon.ui import _is_desc_only_match
+
+        img_desc_only = IrasutoyaImage(
+            title="ポイントに悲しむ人のイラスト",
+            image_url="https://example.com/a.png",
+            thumb_url="https://example.com/at.png",
+            post_title="悲しい人のイラスト",
+            description="手に入れることができなかったポイントのイラストです。",
+        )
+        img_title_match = IrasutoyaImage(
+            title="手に入れた人のイラスト",
+            image_url="https://example.com/b.png",
+            thumb_url="https://example.com/bt.png",
+            post_title="手に入れた人のイラスト",
+            description="手に入れた人のイラストです。",
+        )
+        img_callout_title = IrasutoyaImage(
+            title="手に入れるの文字イラスト",
+            image_url="https://example.com/c.png",
+            thumb_url="https://example.com/ct.png",
+            post_title="文字イラスト",
+            description="文字のイラストです。",
+            categories=("文字",),
+        )
+
+        self.assertTrue(_is_desc_only_match([img_desc_only], "手に入れる"))
+        self.assertFalse(_is_desc_only_match([img_title_match], "手に入れた"))
+        self.assertFalse(_is_desc_only_match([img_callout_title], "手に入れる"))
+        self.assertFalse(_is_desc_only_match([], "手に入れる"))
+        self.assertFalse(_is_desc_only_match([img_desc_only], ""))
+
 
 if __name__ == "__main__":
     unittest.main()
