@@ -408,7 +408,10 @@ def compile_and_publish_catalog(
                             JOIN images i ON ik.image_id = i.id
                             """
                         )
-                        old_kws = old_cur.fetchall()
+                        fresh_sources = {
+                            r[0] for r in conn.execute("SELECT DISTINCT source FROM image_keywords")
+                        }
+                        old_kws = [row for row in old_cur.fetchall() if row[2] not in fresh_sources]
                         if old_kws:
                             cur = conn.cursor()
                             cur.execute("SELECT key, id FROM images")

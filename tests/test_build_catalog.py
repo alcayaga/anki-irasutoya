@@ -298,10 +298,11 @@ class TestBuildCatalog(unittest.TestCase):
         cur = conn.cursor()
         cur.execute("SELECT id FROM images WHERE key = '1/cat.png'")
         img_id = cur.fetchone()[0]
-        write_image_keywords(conn, "donkuri/kaishi", [(img_id, "ネコ", 1.0)])
+        write_image_keywords(conn, "donkuri/kaishi", [(img_id, "ネコ", 1.0), (img_id, "旧キーワード", 1.0)])
+        write_image_keywords(conn, "post_build_source", [(img_id, "キャット", 3.0)])
         conn.close()
 
-        # Create a fresh keywords directory with an updated weight for the same keyword
+        # Create a fresh keywords directory with an updated weight for "ネコ", omitting "旧キーワード"
         kw_dir = os.path.join(self.temp_dir.name, "fresh_kws")
         os.makedirs(kw_dir, exist_ok=True)
         with open(os.path.join(kw_dir, "test.jsonl"), "w", encoding="utf-8") as f:
@@ -317,18 +318,20 @@ class TestBuildCatalog(unittest.TestCase):
             require_probes=False,
         )
 
-        # Confirm image keywords were preserved and freshly merged weight (2.5) took priority over old (1.0)
+        # Confirm freshly merged source replaced old source (omitting "旧キーワード")
+        # and un-merged sources like "post_build_source" were carried over.
         conn = sqlite3.connect(self.db_path)
         cur = conn.cursor()
-        cur.execute("SELECT ik.keyword, ik.source, ik.weight, i.key FROM image_keywords ik JOIN images i ON ik.image_id = i.id")
+        cur.execute("SELECT ik.keyword, ik.source, ik.weight, i.key FROM image_keywords ik JOIN images i ON ik.image_id = i.id ORDER BY ik.source, ik.keyword")
         rows = cur.fetchall()
-        self.assertEqual(len(rows), 1)
+        self.assertEqual(len(rows), 2)
         self.assertEqual(rows[0], ("ネコ", "donkuri/kaishi", 2.5, "1/cat.png"))
+        self.assertEqual(rows[1], ("キャット", "post_build_source", 3.0, "1/cat.png"))
 
         cur.execute("SELECT value FROM meta WHERE key = 'keyword_sources'")
         meta_row = cur.fetchone()
         self.assertIsNotNone(meta_row)
-        self.assertEqual(meta_row[0], "donkuri/kaishi")
+        self.assertEqual(meta_row[0], "donkuri/kaishi,post_build_source")
         conn.close()
 
 

@@ -57,11 +57,17 @@ jobs:
           python scripts/build_catalog.py --out addon/data/catalog.sqlite $COMPARE_FLAG
           python scripts/build_synonyms.py \
             --catalog addon/data/catalog.sqlite \
-            --manual scripts/sources/manual_concepts.json \
-            --validate
-          python scripts/build_synonyms.py \
-            --catalog addon/data/catalog.sqlite \
-            --kaishi-github || echo "::warning::Kaishi concept refresh failed; carried-over Kaishi data preserved."
+            --manual scripts/sources/manual_concepts.json
+          if ! python scripts/build_synonyms.py --catalog addon/data/catalog.sqlite --kaishi-github --min-matched 1000; then
+            KAISHI_SYNS=$(sqlite3 addon/data/catalog.sqlite "SELECT count(*) FROM synonyms WHERE source = 'donkuri/kaishi'")
+            KAISHI_KWS=$(sqlite3 addon/data/catalog.sqlite "SELECT count(*) FROM image_keywords WHERE source = 'donkuri/kaishi'")
+            if [ "$KAISHI_SYNS" -gt 0 ] && [ "$KAISHI_KWS" -gt 0 ]; then
+              echo "::warning::Kaishi refresh failed; preserving carried-over Kaishi data ($KAISHI_SYNS synonyms, $KAISHI_KWS keywords)."
+            else
+              echo "::error::Kaishi refresh failed and no carried-over data present; failing build."
+              exit 1
+            fi
+          fi
           python scripts/build_synonyms.py \
             --catalog addon/data/catalog.sqlite \
             --validate

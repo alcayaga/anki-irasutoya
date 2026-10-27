@@ -24,7 +24,13 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-from addon.catalog import CatalogStore, default_store, write_image_keywords, write_synonyms  # noqa: E402
+from addon.catalog import (  # noqa: E402
+    CatalogStore,
+    create_schema,
+    default_store,
+    write_image_keywords,
+    write_synonyms,
+)
 from addon.feed import IrasutoyaImage  # noqa: E402
 from addon.ranking import (  # noqa: E402
     classify_match_boundary,
@@ -187,35 +193,28 @@ def extract_collection_from_apkg(apkg_path: str, cache_dir: str = ".catalog_cach
     out_path = os.path.join(cache_dir, f"{basename}_collection.sqlite")
 
     with zipfile.ZipFile(apkg_path, "r") as z:
-        names = z.namelist()
+        names = set(z.namelist())
         if "collection.anki21b" in names:
             if zstandard is None:
                 raise ImportError(
                     "zstandard library is required to decompress collection.anki21b from .apkg. "
                     "Install with 'pip install zstandard'."
                 )
-            raw = z.read("collection.anki21b")
-            dctx = zstandard.ZstdDecompressor()
-            decomp = dctx.decompress(raw, max_output_size=50 * 1024 * 1024)
-            tmp_out = out_path + ".part"
-            with open(tmp_out, "wb") as f:
-                f.write(decomp)
-            os.replace(tmp_out, out_path)
-            return out_path
+            payload = zstandard.ZstdDecompressor().decompress(
+                z.read("collection.anki21b"), max_output_size=50 * 1024 * 1024
+            )
         elif "collection.anki21" in names:
-            tmp_out = out_path + ".part"
-            with open(tmp_out, "wb") as f:
-                f.write(z.read("collection.anki21"))
-            os.replace(tmp_out, out_path)
-            return out_path
+            payload = z.read("collection.anki21")
         elif "collection.anki2" in names:
-            tmp_out = out_path + ".part"
-            with open(tmp_out, "wb") as f:
-                f.write(z.read("collection.anki2"))
-            os.replace(tmp_out, out_path)
-            return out_path
+            payload = z.read("collection.anki2")
         else:
             raise ValueError(f"No collection database found in {apkg_path}")
+
+    tmp_out = out_path + ".part"
+    with open(tmp_out, "wb") as f:
+        f.write(payload)
+    os.replace(tmp_out, out_path)
+    return out_path
 
 
 def fetch_kaishi_github_slice(
@@ -343,12 +342,17 @@ def fetch_kaishi_github_slice(
         return extract_collection_from_apkg(apkg_dest, cache_dir=cache_dir)
 
 
-def populate_kaishi_concepts(catalog_path: str, kaishi_db_path: str) -> bool:
+def populate_kaishi_concepts(
+    catalog_path: str,
+    kaishi_db_path: str,
+    min_matched: int = 1,
+) -> bool:
     """Compile ground-truth Kaishi 1.5k concepts into synonyms and image_keywords tables.
 
     Args:
         catalog_path: Path to destination catalog.sqlite database.
         kaishi_db_path: Path to extracted Kaishi collection SQLite database.
+        min_matched: Minimum required matched notes before writing (default 1).
 
     Returns:
         True if population succeeded, False otherwise.
@@ -478,12 +482,13 @@ def populate_kaishi_concepts(catalog_path: str, kaishi_db_path: str) -> bool:
 
     eligible = matched_count + len(unmatched_words)
     match_ratio = matched_count / eligible if eligible else 0.0
-    if matched_count == 0 or match_ratio < KAISHI_MIN_MATCH_RATIO:
+    if matched_count == 0 or match_ratio < KAISHI_MIN_MATCH_RATIO or matched_count < min_matched:
         logger.error(
-            "Only %d of %d Kaishi notes matched catalog images (%.1f%%); refusing to overwrite existing '%s' data.",
+            "Only %d of %d Kaishi notes matched catalog images (%.1f%%, min required: %d); refusing to overwrite existing '%s' data.",
             matched_count,
             eligible,
             match_ratio * 100,
+            min_matched,
             "donkuri/kaishi",
         )
         return False
@@ -491,11 +496,30 @@ def populate_kaishi_concepts(catalog_path: str, kaishi_db_path: str) -> bool:
     try:
         conn = sqlite3.connect(catalog_path)
         try:
-            write_synonyms(conn, source="donkuri/kaishi", mapping=synonyms_dict)
-            write_image_keywords(conn, source="donkuri/kaishi", keywords=image_keywords)
+            cur = conn.cursor()
+            cur.execute("SELECT count(*) FROM image_keywords WHERE source = 'donkuri/kaishi'")
+            existing_kws_row = cur.fetchone()
+            existing_kws = existing_kws_row[0] if existing_kws_row else 0
+            if existing_kws > 0 and len(image_keywords) < existing_kws * 0.8:
+                logger.error(
+                    "Kaishi import produced %d keywords, which is significantly fewer than %d existing keywords; refusing replacement.",
+                    len(image_keywords),
+                    existing_kws,
+                )
+                return False
+
+            create_schema(conn)
+            conn.execute("BEGIN TRANSACTION")
+            write_synonyms(conn, source="donkuri/kaishi", mapping=synonyms_dict, commit=False)
+            write_image_keywords(conn, source="donkuri/kaishi", keywords=image_keywords, commit=False)
+            conn.commit()
             conn.execute("PRAGMA journal_mode = DELETE")
             conn.execute("VACUUM")
             conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            logger.error("Failed to write Kaishi tables: %s", exc)
+            return False
         finally:
             conn.close()
     finally:
@@ -601,6 +625,12 @@ def main(argv: Sequence[str]) -> int:
         help="Directory to cache fetched and extracted SQLite files",
     )
     parser.add_argument(
+        "--min-matched",
+        type=int,
+        default=1,
+        help="Minimum required matched notes before populating into catalog (default: 1)",
+    )
+    parser.add_argument(
         "--validate",
         action="store_true",
         help="Validate all synonyms in catalog.sqlite against illustration titles",
@@ -624,7 +654,9 @@ def main(argv: Sequence[str]) -> int:
         except kaishi_error_types as exc:
             logger.error("Failed to extract Kaishi database from apkg: %s", exc)
             return 1
-        ok = populate_kaishi_concepts(catalog_path=args.catalog, kaishi_db_path=kaishi_db)
+        ok = populate_kaishi_concepts(
+            catalog_path=args.catalog, kaishi_db_path=kaishi_db, min_matched=args.min_matched
+        )
         if not ok:
             return 1
 
@@ -634,7 +666,9 @@ def main(argv: Sequence[str]) -> int:
         except kaishi_error_types as exc:
             logger.error("Failed to fetch or extract Kaishi database from GitHub: %s", exc)
             return 1
-        ok = populate_kaishi_concepts(catalog_path=args.catalog, kaishi_db_path=kaishi_db)
+        ok = populate_kaishi_concepts(
+            catalog_path=args.catalog, kaishi_db_path=kaishi_db, min_matched=args.min_matched
+        )
         if not ok:
             return 1
 

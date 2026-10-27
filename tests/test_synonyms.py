@@ -267,3 +267,72 @@ class TestSynonyms(unittest.TestCase):
         success = populate_kaishi_concepts(catalog_path, empty_kaishi_db)
         self.assertFalse(success)
 
+    def test_populate_kaishi_concepts_incomplete_collection_refuses_replacement(self) -> None:
+        """Verify populate_kaishi_concepts refuses to replace an existing full collection with a partial one."""
+        catalog_path = os.path.join(self.temp_dir.name, "partial_replace_catalog.sqlite")
+        cat_conn = sqlite3.connect(catalog_path)
+        img = IrasutoyaImage("猫のイラスト", "https://bp.blogspot.com/s0/cat.png", "t", "猫")
+        p = ParsedPost("101", "猫のイラスト", "desc", "pub", "upd", (), [img])
+        write_posts(cat_conn, [p])
+        # Seed 10 existing keywords for donkuri/kaishi
+        seed_kws = [(1, f"kw_{i}", 1.0) for i in range(10)]
+        write_image_keywords(cat_conn, source="donkuri/kaishi", keywords=seed_kws)
+        cat_conn.close()
+
+        # Create Kaishi DB with only 1 matching note
+        small_kaishi_db = os.path.join(self.temp_dir.name, "small_kaishi.sqlite")
+        conn = sqlite3.connect(small_kaishi_db)
+        conn.execute("CREATE TABLE notes (id INTEGER PRIMARY KEY, flds TEXT NOT NULL)")
+        conn.execute("INSERT INTO notes (flds) VALUES (?)", ("猫\x1fねこ\x1f<img src='cat.png'>",))
+        conn.commit()
+        conn.close()
+
+        # Refuses replacement because 1 is significantly fewer than 10 (< 80%)
+        success = populate_kaishi_concepts(catalog_path, small_kaishi_db)
+        self.assertFalse(success)
+
+        # Confirm original 10 keywords are preserved
+        v_conn = sqlite3.connect(catalog_path)
+        cur = v_conn.cursor()
+        cur.execute("SELECT count(*) FROM image_keywords WHERE source = 'donkuri/kaishi'")
+        self.assertEqual(cur.fetchone()[0], 10)
+        v_conn.close()
+
+    def test_populate_kaishi_concepts_atomic_rollback_on_write_error(self) -> None:
+        """Verify transaction rolls back atomically if write_image_keywords fails."""
+        catalog_path = os.path.join(self.temp_dir.name, "rollback_catalog.sqlite")
+        cat_conn = sqlite3.connect(catalog_path)
+        img = IrasutoyaImage("猫のイラスト", "https://bp.blogspot.com/s0/cat.png", "t", "猫")
+        p = ParsedPost("101", "猫のイラスト", "desc", "pub", "upd", (), [img])
+        write_posts(cat_conn, [p])
+        # Add a trigger on image_keywords that aborts insertions after synonyms have succeeded
+        cat_conn.execute(
+            """
+            CREATE TRIGGER fail_keywords BEFORE INSERT ON image_keywords
+            BEGIN
+                SELECT RAISE(ABORT, 'Simulated failure during image keyword insert');
+            END;
+            """
+        )
+        cat_conn.commit()
+        cat_conn.close()
+
+        small_kaishi_db = os.path.join(self.temp_dir.name, "rollback_kaishi.sqlite")
+        conn = sqlite3.connect(small_kaishi_db)
+        conn.execute("CREATE TABLE notes (id INTEGER PRIMARY KEY, flds TEXT NOT NULL)")
+        conn.execute("INSERT INTO notes (flds) VALUES (?)", ("キャット\x1fきゃっと\x1f<img src='cat.png'>",))
+        conn.commit()
+        conn.close()
+
+        success = populate_kaishi_concepts(catalog_path, small_kaishi_db)
+        self.assertFalse(success)
+
+        # Confirm synonyms table was rolled back and is empty
+        v_conn = sqlite3.connect(catalog_path)
+        cur = v_conn.cursor()
+        cur.execute("SELECT count(*) FROM synonyms WHERE source = 'donkuri/kaishi'")
+        self.assertEqual(cur.fetchone()[0], 0)
+        cur.execute("SELECT count(*) FROM image_keywords WHERE source = 'donkuri/kaishi'")
+        self.assertEqual(cur.fetchone()[0], 0)
+        v_conn.close()
+
