@@ -33,12 +33,27 @@ class _SyncThread:
             self.target(*self.args)
 
 
-def _install_catalog_counts(dlg, counts_map):
+def _install_catalog_counts(dlg, counts_map, desc_terms=None):
     """Fixture helper to install mocked CatalogIndex counts on a dialog."""
+    desc_set = set(desc_terms or [])
     mock_index = MagicMock()
-    mock_index.search.side_effect = lambda q, **kw: [
-        MagicMock(title=f"{q}のイラスト", is_single_image_post=True, description="")
-    ] * counts_map.get(q, 0)
+
+    def _search(q, **kw):
+        count = counts_map.get(q, 0)
+        if q in desc_set:
+            return [
+                MagicMock(
+                    title="ポイントに悲しむ人のイラスト",
+                    post_title="悲しむ人",
+                    is_single_image_post=True,
+                    description=f"{q}のイラストです。",
+                )
+            ] * count
+        return [
+            MagicMock(title=f"{q}のイラスト", post_title=f"{q}のイラスト", is_single_image_post=True, description="")
+        ] * count
+
+    mock_index.search.side_effect = _search
     dlg.store.get_index = MagicMock(return_value=mock_index)
     return mock_index
 
@@ -702,7 +717,7 @@ class TestUIMode(unittest.TestCase):
                 "獲得": 9,
                 "宝箱": 4,
             }
-            _install_catalog_counts(dlg, counts_map)
+            _install_catalog_counts(dlg, counts_map, desc_terms={"手に入れる"})
             dlg._card_candidates = [
                 ("手に入れる", "primary", 1),
                 ("手に入れた", "verb_inflection", 1),
@@ -790,6 +805,11 @@ class TestUIMode(unittest.TestCase):
                 )
             )
 
+            # Clicking a verb_stem chip preserves its candidate reason in direct search
+            dlg._on_chip_clicked("手に入れ")
+            last_cands = dlg.client.search_with_fallbacks.call_args[0][0]
+            self.assertEqual(last_cands, [("手に入れ", "verb_stem", 2)])
+
     def test_status_banner_distinguishes_title_match_fallback(self) -> None:
         """Status banner distinguishes between lack of title match and zero results."""
         dlg = IrasutoyaDialog(parent=None, browser=None, note_ids=[1001])
@@ -824,6 +844,41 @@ class TestUIMode(unittest.TestCase):
             probed_counts={"走っている": 0},
         )
         self.assertIn("No direct results for '走っている'", dlg.status_label.text())
+
+        # 3. Fallback when query had positive catalog count but was not a description-only match
+        dlg._on_search_finished(
+            gen=dlg._search_generation,
+            query="文字",
+            display_chips=[("文字", "primary", 1)],
+            matched_cand=("文字イラスト", "concept_map", 2),
+            images=[mock_img],
+            probed_counts={"文字": 2},
+            probed_desc_matches=set(),
+        )
+        self.assertIn("No direct title illustration for '文字'", dlg.status_label.text())
+
+        # 4. Direct search where matched candidate term equals query with non-primary reason
+        dlg._on_search_finished(
+            gen=dlg._search_generation,
+            query="手に入れ",
+            display_chips=[("手に入れ", "verb_stem", 2)],
+            matched_cand=("手に入れ", "verb_stem", 2),
+            images=[mock_img],
+            probed_counts={"手に入れ": 1},
+        )
+        self.assertIn("Found 1 illustration", dlg.status_label.text())
+        self.assertNotIn("Showing results for", dlg.status_label.text())
+
+        # 5. Fallback when probed_counts is None defaults to neutral title match message
+        dlg._on_search_finished(
+            gen=dlg._search_generation,
+            query="猫",
+            display_chips=[("猫", "primary", 1)],
+            matched_cand=("ねこ", "reading", 2),
+            images=[mock_img],
+            probed_counts=None,
+        )
+        self.assertIn("No direct title match for '猫'", dlg.status_label.text())
 
     def test_suggestion_chips_horizontal_scroll_area(self) -> None:
         """Suggestion chips row is housed inside a frameless QScrollArea with synced visibility."""
@@ -926,10 +981,27 @@ class TestUIMode(unittest.TestCase):
             post_title="犬歯",
             description="犬の歯磨きのイラストです。",
         )
+        img_case = IrasutoyaImage(
+            title="CATのイラスト",
+            image_url="https://example.com/e.png",
+            thumb_url="https://example.com/et.png",
+            post_title="CAT",
+            description="かわいいcatのイラストです。",
+        )
+        img_multi_compound = IrasutoyaImage(
+            title="犬歯と猫背のイラスト",
+            image_url="https://example.com/f.png",
+            thumb_url="https://example.com/ft.png",
+            post_title="犬歯と猫背",
+            description="犬と猫のイラストです。",
+        )
 
         self.assertTrue(_is_desc_only_match([img_desc_only], "手に入れる"))
         self.assertTrue(_is_desc_only_match([img_boundary_compound], "犬"))
+        self.assertTrue(_is_desc_only_match([img_multi_compound], "犬 猫"))
+        self.assertFalse(_is_desc_only_match([img_case], "cat"))
         self.assertFalse(_is_desc_only_match([img_title_match], "手に入れた"))
+        self.assertFalse(_is_desc_only_match([img_title_match, img_desc_only], "手に入れる"))
         self.assertFalse(_is_desc_only_match([img_callout_title], "手に入れる"))
         self.assertFalse(_is_desc_only_match([], "手に入れる"))
         self.assertFalse(_is_desc_only_match([img_desc_only], ""))

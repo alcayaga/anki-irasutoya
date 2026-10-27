@@ -172,14 +172,24 @@ def make_description_snippet(description: str, query: str, max_chars: int = 70) 
     return prefix + body + suffix
 
 
+def _description_match_term(img: IrasutoyaImage, term: str) -> Optional[str]:
+    """Return the query term to highlight if img matches term in description only, else None."""
+    clean_t = term.strip()
+    if not clean_t or is_title_match(img, clean_t):
+        return None
+    desc = (img.description or "").casefold()
+    tokens = clean_t.split()
+    if tokens and all(t.casefold() in desc for t in tokens):
+        return tokens[0]
+    return None
+
+
 def _is_desc_only_match(images: Sequence[IrasutoyaImage], term: str) -> bool:
     """Return True if all images match term in description only (not in title or post_title with boundary safety)."""
     clean_t = term.strip()
     if not clean_t or not images:
         return False
-    if any(is_title_match(img, clean_t) for img in images):
-        return False
-    return any(clean_t.casefold() in (img.description or "").casefold() for img in images)
+    return all(_description_match_term(img, clean_t) is not None for img in images)
 
 
 class ImageCardWidget(QFrame):
@@ -1130,7 +1140,8 @@ class IrasutoyaDialog(QDialog):
             display_chips = self._card_candidates
             restore_term = None
             if direct:
-                search_candidates = [(query, "primary", 1)]
+                matching_cand = next((c for c in self._card_candidates if c[0] == query), (query, "primary", 1))
+                search_candidates = [matching_cand]
             elif query == self._card_source_term:
                 search_candidates = self._card_candidates
             else:
@@ -1138,7 +1149,8 @@ class IrasutoyaDialog(QDialog):
         else:
             candidates = generate_search_candidates(query, note=None, allow_tier2=True)
             display_chips = candidates
-            search_candidates = [(query, "primary", 1)] if direct else candidates
+            matching_cand = next((c for c in candidates if c[0] == query), (query, "primary", 1))
+            search_candidates = [matching_cand] if direct else candidates
             restore_term = self._card_source_term if (self._card_source_term and self._card_source_term != query) else None
 
         def background_search() -> None:
@@ -1190,7 +1202,7 @@ class IrasutoyaDialog(QDialog):
                     if restore_term:
                         counts[restore_term] = _count(restore_term)
                     probed_counts = counts
-                    probed_desc_matches = {t for t, is_desc in desc_cache.items() if is_desc}
+                    probed_desc_matches = {t for t in counts if desc_cache.get(t)}
             except _StaleSearch:
                 return
             except Exception:
@@ -1245,16 +1257,28 @@ class IrasutoyaDialog(QDialog):
                 self.pagination_label.setText("")
             return
 
-        if matched_cand and matched_cand[1] != "primary":
+        if matched_cand and matched_cand[0] != query:
             self.status_label.setStyleSheet("color: #0A84FF; font-size: 12px; font-weight: 500;")
-            has_weak_desc = bool(probed_counts and probed_counts.get(query, 0) > 0)
-            reason_text = f"No direct title match for '{query}'" if has_weak_desc else f"No direct results for '{query}'"
+            count = probed_counts.get(query) if probed_counts else None
+            if count is None:
+                reason_text = f"No direct title match for '{query}'"
+            elif count == 0:
+                reason_text = f"No direct results for '{query}'"
+            elif probed_desc_matches and query in probed_desc_matches:
+                reason_text = f"No direct title match for '{query}'"
+            elif probed_desc_matches is not None and count > 0:
+                reason_text = f"No direct title illustration for '{query}'"
+            else:
+                reason_text = f"No direct title match for '{query}'"
             self.status_label.setText(
                 f"ℹ️ {reason_text}. Showing results for '{matched_cand[0]}' ({matched_cand[1]})."
             )
         else:
             self.status_label.setStyleSheet("color: #98989D; font-size: 12px;")
-            all_desc = _is_desc_only_match(images, query)
+            if probed_desc_matches is not None:
+                all_desc = query in probed_desc_matches
+            else:
+                all_desc = _is_desc_only_match(images, query)
             count_str = f"{len(images)} illustration" if len(images) == 1 else f"{len(images)} illustrations"
             if all_desc:
                 self.status_label.setText(f"Found {count_str} (description match). Click one to select.")
@@ -1462,10 +1486,10 @@ class IrasutoyaDialog(QDialog):
             is_desc_match = False
             snippet = None
             if query:
-                in_title = is_title_match(img, query)
-                if not in_title and (query.casefold() in (img.description or "").casefold()):
+                match_term = _description_match_term(img, query)
+                if match_term:
                     is_desc_match = True
-                    snippet = make_description_snippet(img.description or "", query)
+                    snippet = make_description_snippet(img.description or "", match_term)
 
             card = ImageCardWidget(
                 image=img,

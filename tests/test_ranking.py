@@ -1034,6 +1034,23 @@ class TestRanking(unittest.TestCase):
         )
         self.assertFalse(is_title_match(img_desc, "料理"))
 
+        # Case-insensitive title matching (e.g. CAT matches cat)
+        img_case = IrasutoyaImage("CATのイラスト", "https://example.com/4.png", "https://example.com/t.png", "CAT")
+        self.assertTrue(is_title_match(img_case, "cat"))
+        self.assertTrue(is_title_match(img_case, "CAT"))
+
+        # Reject mid-word Latin collisions (e.g. BOBCAT does not match cat)
+        img_bobcat = IrasutoyaImage("BOBCATのイラスト", "https://example.com/4b.png", "https://example.com/tb.png", "BOBCAT")
+        self.assertFalse(is_title_match(img_bobcat, "cat"))
+
+        # Multi-token queries reject compound-only token matches
+        img_compound = IrasutoyaImage("犬歯と猫背のイラスト", "https://example.com/5.png", "https://example.com/t.png", "犬歯と猫背")
+        self.assertFalse(is_title_match(img_compound, "犬 猫"))
+
+        # Multi-token queries require all tokens to match the same field (not split across title and post_title)
+        img_split = IrasutoyaImage("犬のイラスト", "https://example.com/6.png", "https://example.com/t.png", "猫のイラスト")
+        self.assertFalse(is_title_match(img_split, "犬 猫"))
+
         # Empty/whitespace inputs
         self.assertFalse(is_title_match(img_title, ""))
         self.assertFalse(is_title_match(img_title, "   "))
