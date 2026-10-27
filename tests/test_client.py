@@ -1,11 +1,17 @@
 """Unit tests for the Irasutoya HTTP client and fallback search pipeline."""
+import http.client
 import json
 import unittest
 import urllib.error
-from typing import Any, List, Optional
-from unittest.mock import patch
+from typing import Any, Dict, List, Optional
+from unittest.mock import MagicMock, patch
 
-from addon.client import InsecureRedirectError, IrasutoyaClient, _HttpsOnlyRedirectHandler
+from addon.client import (
+    InsecureRedirectError,
+    IrasutoyaClient,
+    _HttpsOnlyRedirectHandler,
+    _KeepAliveHTTPSHandler,
+)
 from addon.feed import IrasutoyaImage
 
 
@@ -731,6 +737,123 @@ class TestIrasutoyaClient(unittest.TestCase):
             # "フレーム" is decorative and irrelevant to "走る", so it should be skipped
             self.assertEqual(images, [])
             self.assertIsNone(best)
+
+    def test_keep_alive_https_handler_reuses_connections(self) -> None:
+        """Verify _KeepAliveHTTPSHandler pools and reuses HTTPSConnection instances."""
+        handler = _KeepAliveHTTPSHandler()
+        conns_created: List[Any] = []
+
+        class MockHTTPSConnection:
+            """Mock HTTPS connection supporting keep-alive pooling."""
+
+            def __init__(self, host: str, port: int = 443, **kwargs: Any) -> None:
+                """Initialize mock connection."""
+                self.host = host
+                self.port = port
+                self.sock = MagicMock()
+                self.sock._closed = False
+                self.closed = False
+                conns_created.append(self)
+
+            def request(self, method: str, url: str, body: Any = None, headers: Optional[Dict[str, str]] = None) -> None:
+                """Mock HTTP request call."""
+                self.last_method = method
+                self.last_headers = headers or {}
+
+            def getresponse(self) -> Any:
+                """Mock HTTP response."""
+                resp = MagicMock()
+                resp.status = 200
+                resp.reason = "OK"
+                resp.headers = {"Content-Length": "10"}
+                resp.will_close = False
+                resp.read = MagicMock(return_value=b"0123456789")
+                resp.close = MagicMock()
+                return resp
+
+            def close(self) -> None:
+                """Close mock connection."""
+                self.closed = True
+                if self.sock:
+                    self.sock._closed = True
+
+        req1 = urllib.request.Request("https://bp.blogspot.com/img1.png")
+        req2 = urllib.request.Request("https://bp.blogspot.com/img2.png")
+
+        with patch("http.client.HTTPSConnection", MockHTTPSConnection):
+            resp1 = handler.https_open(req1)
+            self.assertEqual(resp1.read(), b"0123456789")
+            self.assertEqual(resp1.getcode(), 200)
+            resp1.close()
+
+            # Second request should reuse the connection
+            resp2 = handler.https_open(req2)
+            self.assertEqual(resp2.read(), b"0123456789")
+            resp2.close()
+
+        self.assertEqual(len(conns_created), 1)
+        self.assertEqual(len(handler._pool[("bp.blogspot.com", 443)]), 1)
+        handler.close()
+        self.assertEqual(len(handler._pool), 0)
+        self.assertTrue(conns_created[0].closed)
+
+    def test_keep_alive_https_handler_recovers_from_stale_socket(self) -> None:
+        """Verify _KeepAliveHTTPSHandler transparently retries when pooled socket is disconnected."""
+        handler = _KeepAliveHTTPSHandler()
+        conns_created: List[Any] = []
+        request_attempts = 0
+
+        class MockHTTPSConnection:
+            """Mock connection simulating a stale socket disconnect on reuse."""
+
+            def __init__(self, host: str, port: int = 443, **kwargs: Any) -> None:
+                """Initialize mock connection."""
+                self.host = host
+                self.port = port
+                self.sock = MagicMock()
+                self.sock._closed = False
+                self.closed = False
+                conns_created.append(self)
+
+            def request(self, method: str, url: str, body: Any = None, headers: Optional[Dict[str, str]] = None) -> None:
+                """Simulate disconnect on second request call."""
+                nonlocal request_attempts
+                request_attempts += 1
+                if request_attempts == 2:
+                    raise http.client.RemoteDisconnected("Remote end closed connection without response")
+
+            def getresponse(self) -> Any:
+                """Mock HTTP response."""
+                resp = MagicMock()
+                resp.status = 200
+                resp.reason = "OK"
+                resp.headers = {}
+                resp.will_close = False
+                resp.read = MagicMock(return_value=b"RETRY_OK")
+                resp.close = MagicMock()
+                return resp
+
+            def close(self) -> None:
+                """Close mock connection."""
+                self.closed = True
+                if self.sock:
+                    self.sock._closed = True
+
+        req1 = urllib.request.Request("https://bp.blogspot.com/img1.png")
+        req2 = urllib.request.Request("https://bp.blogspot.com/img2.png")
+
+        with patch("http.client.HTTPSConnection", MockHTTPSConnection):
+            resp1 = handler.https_open(req1)
+            resp1.close()
+
+            # Second request encounters RemoteDisconnected on reused conn, then retries with fresh conn
+            resp2 = handler.https_open(req2)
+            self.assertEqual(resp2.read(), b"RETRY_OK")
+            resp2.close()
+
+        self.assertEqual(len(conns_created), 2)
+        self.assertTrue(conns_created[0].closed)
+        handler.close()
 
 
 if __name__ == "__main__":

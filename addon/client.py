@@ -1,8 +1,10 @@
 """Client for searching and downloading illustrations from Irasutoya (いらすとや)."""
+import http.client
 import json
 import logging
 import re
 import socket
+import ssl
 import threading
 import time
 import urllib.error
@@ -42,6 +44,195 @@ class _HttpsOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+class _PooledResponse:
+    """Wrapper around http.client.HTTPResponse returning connection to pool on close."""
+
+    def __init__(
+        self,
+        response: http.client.HTTPResponse,
+        conn: http.client.HTTPSConnection,
+        return_conn_fn: Callable[[http.client.HTTPSConnection, http.client.HTTPResponse], None],
+    ) -> None:
+        """Initialize response wrapper."""
+        self._resp = response
+        self._conn = conn
+        self._return_conn_fn = return_conn_fn
+        self._returned = False
+        self.url = getattr(response, "url", "")
+        self.msg = getattr(response, "msg", getattr(response, "reason", ""))
+        self.status = response.status
+        self.code = response.status
+        self.reason = response.reason
+        self.headers = response.headers
+
+    def read(self, *args, **kwargs) -> bytes:
+        """Read response payload."""
+        return self._resp.read(*args, **kwargs)
+
+    def readline(self, *args, **kwargs) -> bytes:
+        """Read single response line."""
+        return self._resp.readline(*args, **kwargs)
+
+    def close(self) -> None:
+        """Close response stream and return active connection to pool."""
+        if not self._returned:
+            self._returned = True
+            self._return_conn_fn(self._conn, self._resp)
+        self._resp.close()
+
+    def __enter__(self) -> "_PooledResponse":
+        """Enter response context."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Exit response context and trigger connection return."""
+        self.close()
+
+    def info(self) -> http.client.HTTPMessage:
+        """Return HTTP headers."""
+        return self._resp.headers
+
+    def geturl(self) -> str:
+        """Return effective request URL."""
+        return self.url
+
+    def getcode(self) -> int:
+        """Return HTTP status code."""
+        return self.status
+
+
+class _KeepAliveHTTPSHandler(urllib.request.HTTPSHandler):
+    """HTTPS handler pooling persistent HTTP/1.1 keep-alive connections per host."""
+
+    MAX_IDLE_PER_HOST = 6
+
+    def __init__(self, context: Optional[ssl.SSLContext] = None) -> None:
+        """Initialize keep-alive handler with idle connection pool."""
+        super().__init__(context=context)
+        self._pool: Dict[Tuple[str, int], List[http.client.HTTPSConnection]] = {}
+        self._lock = threading.Lock()
+
+    def _return_connection(
+        self,
+        host_port: Tuple[str, int],
+        conn: http.client.HTTPSConnection,
+        resp: http.client.HTTPResponse,
+    ) -> None:
+        """Return connection to idle pool if response completed cleanly without will_close."""
+        with self._lock:
+            sock = getattr(conn, "sock", None)
+            is_sock_alive = sock is not None and not getattr(sock, "_closed", True)
+            if not getattr(resp, "will_close", True) and is_sock_alive:
+                conns = self._pool.setdefault(host_port, [])
+                if len(conns) < self.MAX_IDLE_PER_HOST:
+                    conns.append(conn)
+                    return
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def https_open(self, req: urllib.request.Request) -> _PooledResponse:
+        """Open HTTPS request reusing a pooled persistent connection if available."""
+        host = req.host
+        if not host:
+            raise urllib.error.URLError("no host given")
+
+        if ":" in host:
+            h_name, port_str = host.split(":", 1)
+            try:
+                port = int(port_str)
+            except ValueError:
+                port = 443
+        else:
+            h_name = host
+            port = 443
+
+        host_port = (h_name.lower(), port)
+        conn: Optional[http.client.HTTPSConnection] = None
+
+        with self._lock:
+            conns = self._pool.get(host_port, [])
+            while conns:
+                candidate = conns.pop()
+                c_sock = getattr(candidate, "sock", None)
+                if c_sock is not None and not getattr(c_sock, "_closed", True):
+                    conn = candidate
+                    break
+                try:
+                    candidate.close()
+                except Exception:
+                    pass
+
+        timeout = getattr(req, "timeout", None) or socket._GLOBAL_DEFAULT_TIMEOUT
+
+        is_reused = conn is not None
+        if conn is None:
+            conn = http.client.HTTPSConnection(
+                h_name,
+                port=port,
+                timeout=timeout,
+                context=self._context,
+            )
+
+        headers = dict(req.unredirected_hdrs)
+        headers.update(req.headers)
+        headers["Connection"] = "keep-alive"
+        headers = {name.title(): val for name, val in headers.items()}
+
+        try:
+            conn.request(req.get_method(), req.selector, req.data, headers)
+            r = conn.getresponse()
+        except (
+            http.client.RemoteDisconnected,
+            http.client.BadStatusLine,
+            ConnectionResetError,
+            BrokenPipeError,
+            ssl.SSLEOFError,
+        ):
+            try:
+                conn.close()
+            except Exception:
+                pass
+            if is_reused:
+                # Reused socket was closed by server while idle; retry once with a fresh connection
+                conn = http.client.HTTPSConnection(
+                    h_name,
+                    port=port,
+                    timeout=timeout,
+                    context=self._context,
+                )
+                conn.request(req.get_method(), req.selector, req.data, headers)
+                r = conn.getresponse()
+            else:
+                raise
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            raise
+
+        r.url = req.get_full_url()
+        r.msg = r.reason
+        return _PooledResponse(
+            r,
+            conn,
+            lambda c, resp: self._return_connection(host_port, c, resp),
+        )
+
+    def close(self) -> None:
+        """Close and discard all idle connections in the pool."""
+        with self._lock:
+            for conns in self._pool.values():
+                for c in conns:
+                    try:
+                        c.close()
+                    except Exception:
+                        pass
+            self._pool.clear()
+
+
 class IrasutoyaClient:
     """Queries Irasutoya's public Blogger JSON feeds to search and retrieve images."""
 
@@ -59,10 +250,18 @@ class IrasutoyaClient:
     ):
         """Initialize the Irasutoya client with custom or default User-Agent and catalog backend."""
         self.user_agent = user_agent or self.DEFAULT_USER_AGENT
-        self._opener = urllib.request.build_opener(_HttpsOnlyRedirectHandler)
+        self._keep_alive_handler = _KeepAliveHTTPSHandler()
+        self._opener = urllib.request.build_opener(
+            _HttpsOnlyRedirectHandler, self._keep_alive_handler
+        )
         self.catalog = catalog if catalog is not None else default_store()
         self._healed_posts_cache: Dict[Tuple[str, str], Optional[ParsedPost]] = {}
         self._healed_posts_lock = threading.Lock()
+
+    def close(self) -> None:
+        """Close any pooled keep-alive HTTP connections."""
+        if hasattr(self, "_keep_alive_handler") and self._keep_alive_handler is not None:
+            self._keep_alive_handler.close()
 
     def _make_request(self, url: str, timeout: int = 10, max_retries: int = 2) -> bytes:
         """Execute HTTP GET with User-Agent, handling rate-limit backoff."""
