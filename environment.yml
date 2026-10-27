@@ -9,4 +9,4 @@ dependencies:
   - pip
   - pip:
       - aqt>=23.10
-      - zstandard
+      - zstandard==0.23.0

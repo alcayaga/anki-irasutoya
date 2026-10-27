@@ -49,7 +49,7 @@ jobs:
 
       - name: Build and Validate Catalog
         run: |
-          pip install zstandard
+          pip install zstandard==0.23.0
           COMPARE_FLAG=""
           if [ -f "/tmp/old_catalog/catalog.sqlite" ]; then
             COMPARE_FLAG="--compare-with /tmp/old_catalog/catalog.sqlite"
@@ -58,7 +58,12 @@ jobs:
           python scripts/build_synonyms.py \
             --catalog addon/data/catalog.sqlite \
             --manual scripts/sources/manual_concepts.json \
-            --kaishi-github \
+            --validate
+          python scripts/build_synonyms.py \
+            --catalog addon/data/catalog.sqlite \
+            --kaishi-github || echo "::warning::Kaishi concept refresh failed; carried-over Kaishi data preserved."
+          python scripts/build_synonyms.py \
+            --catalog addon/data/catalog.sqlite \
             --validate
 
       - name: Extract Checksum Output

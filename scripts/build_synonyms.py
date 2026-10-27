@@ -139,23 +139,25 @@ def populate_manual_concepts(
 
     # Connect to catalog and write synonyms
     logger.info("Writing %d validated manual concept mappings into %s...", len(clean_mapping), catalog_path)
-    conn = sqlite3.connect(catalog_path)
     try:
-        inserted = write_synonyms(conn, source="manual", mapping=clean_mapping)
-        logger.info("Inserted %d synonym rows into catalog (source='manual')", inserted)
-        conn.execute("PRAGMA journal_mode = DELETE")
-        conn.execute("VACUUM")
-        conn.commit()
+        conn = sqlite3.connect(catalog_path)
+        try:
+            inserted = write_synonyms(conn, source="manual", mapping=clean_mapping)
+            logger.info("Inserted %d synonym rows into catalog (source='manual')", inserted)
+            conn.execute("PRAGMA journal_mode = DELETE")
+            conn.execute("VACUUM")
+            conn.commit()
+        finally:
+            conn.close()
     finally:
-        conn.close()
-
-    # Re-compute and refresh the SHA256 sidecar checksum after writing synonyms
-    update_catalog_sha256(catalog_path)
+        # Re-compute and refresh the SHA256 sidecar checksum after writing synonyms
+        update_catalog_sha256(catalog_path)
     return True
 
 
 KAISHI_RELEASES_API = "https://api.github.com/repos/donkuri/kaishi/releases/latest"
 KAISHI_FALLBACK_URL = "https://github.com/donkuri/kaishi/releases/download/v2.4.3/Kaishi.1.5k.v2.4.3.apkg"
+KAISHI_MIN_MATCH_RATIO = 0.5
 
 
 def normalize_stem(src: str) -> str:
@@ -237,7 +239,7 @@ def fetch_kaishi_github_slice(
         req = urllib.request.Request(KAISHI_RELEASES_API, headers={"User-Agent": "anki-irasutoya"})
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.load(resp)
-            tag = data.get("tag_name", "latest")
+            tag = re.sub(r"[^A-Za-z0-9._-]", "_", str(data.get("tag_name", "latest")))
             for a in data.get("assets", []):
                 if a.get("name", "").endswith(".apkg"):
                     asset_url = a.get("browser_download_url", asset_url)
@@ -248,7 +250,7 @@ def fetch_kaishi_github_slice(
     if tag == "latest":
         v_match = re.search(r"/download/([^/]+)/", asset_url)
         if v_match:
-            tag = v_match.group(1)
+            tag = re.sub(r"[^A-Za-z0-9._-]", "_", v_match.group(1))
 
     url_hash = hashlib.sha256(asset_url.encode("utf-8")).hexdigest()[:10]
     cached_sqlite = os.path.join(cache_dir, f"kaishi_{tag}_{url_hash}_collection.sqlite")
@@ -453,7 +455,7 @@ def populate_kaishi_concepts(catalog_path: str, kaishi_db_path: str) -> bool:
 
         target = re.sub(r"のイラスト.*$", "", title)
         target = re.sub(r"^(?:色々な|いろいろな)", "", target).strip()
-        if not target or target == word:
+        if not target or clean_search_query(target) != target or target == word:
             continue
 
         res = filter_relevant_illustrations(index.search(target), target)
@@ -474,24 +476,30 @@ def populate_kaishi_concepts(catalog_path: str, kaishi_db_path: str) -> bool:
         sum(len(t) for t in synonyms_dict.values()),
     )
 
-    if matched_count == 0:
+    eligible = matched_count + len(unmatched_words)
+    match_ratio = matched_count / eligible if eligible else 0.0
+    if matched_count == 0 or match_ratio < KAISHI_MIN_MATCH_RATIO:
         logger.error(
-            "No Kaishi notes matched catalog images; refusing to overwrite existing '%s' data.",
+            "Only %d of %d Kaishi notes matched catalog images (%.1f%%); refusing to overwrite existing '%s' data.",
+            matched_count,
+            eligible,
+            match_ratio * 100,
             "donkuri/kaishi",
         )
         return False
 
-    conn = sqlite3.connect(catalog_path)
     try:
-        write_synonyms(conn, source="donkuri/kaishi", mapping=synonyms_dict)
-        write_image_keywords(conn, source="donkuri/kaishi", keywords=image_keywords)
-        conn.execute("PRAGMA journal_mode = DELETE")
-        conn.execute("VACUUM")
-        conn.commit()
+        conn = sqlite3.connect(catalog_path)
+        try:
+            write_synonyms(conn, source="donkuri/kaishi", mapping=synonyms_dict)
+            write_image_keywords(conn, source="donkuri/kaishi", keywords=image_keywords)
+            conn.execute("PRAGMA journal_mode = DELETE")
+            conn.execute("VACUUM")
+            conn.commit()
+        finally:
+            conn.close()
     finally:
-        conn.close()
-
-    update_catalog_sha256(catalog_path)
+        update_catalog_sha256(catalog_path)
     return True
 
 
