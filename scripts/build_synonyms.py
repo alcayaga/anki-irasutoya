@@ -380,12 +380,6 @@ def populate_kaishi_concepts(
         logger.error("Kaishi database not found: %s", kaishi_db_path)
         return False
 
-    init_conn = sqlite3.connect(catalog_path)
-    try:
-        create_schema(init_conn)
-    finally:
-        init_conn.close()
-
     store = CatalogStore(catalog_path)
     index = store.get_index()
     if index is None:

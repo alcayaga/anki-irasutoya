@@ -258,7 +258,7 @@ class TestBuildSynonyms(unittest.TestCase):
         k_conn.commit()
         k_conn.close()
 
-        populate_kaishi_concepts(target_db, small_kaishi, min_matched=1)
+        self.assertTrue(populate_kaishi_concepts(target_db, small_kaishi, min_matched=1))
 
         conn = sqlite3.connect(target_db)
         cur = conn.cursor()

@@ -291,7 +291,6 @@ class TestSynonyms(unittest.TestCase):
         p = ParsedPost("101", "猫のイラスト", "desc", "pub", "upd", (), [img])
         write_posts(cat_conn, [p])
         cat_conn.execute("DROP TABLE IF EXISTS synonyms")
-        cat_conn.execute("DROP TABLE IF EXISTS image_keywords")
         cat_conn.commit()
         cat_conn.close()
 

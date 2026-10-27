@@ -403,23 +403,33 @@ def compile_and_publish_catalog(
                     if old_cur.fetchone() is not None:
                         old_cur.execute(
                             """
-                            SELECT i.key, ik.keyword, ik.source, ik.weight
+                            SELECT p.blogger_id, i.url, ik.keyword, ik.source, ik.weight
                             FROM image_keywords ik
                             JOIN images i ON ik.image_id = i.id
+                            JOIN posts p ON p.id = i.post_id
                             """
                         )
                         fresh_sources = {
                             r[0] for r in conn.execute("SELECT DISTINCT source FROM image_keywords")
                         }
-                        old_kws = [row for row in old_cur.fetchall() if row[2] not in fresh_sources]
+                        old_kws = [row for row in old_cur.fetchall() if row[3] not in fresh_sources]
                         if old_kws:
                             cur = conn.cursor()
-                            cur.execute("SELECT key, id FROM images")
-                            key_to_new_id = dict(cur.fetchall())
+                            cur.execute(
+                                """
+                                SELECT p.blogger_id, i.url, i.id
+                                FROM images i
+                                JOIN posts p ON p.id = i.post_id
+                                """
+                            )
+                            identity_to_new_id = {
+                                (blogger_id, url): image_id
+                                for blogger_id, url, image_id in cur.fetchall()
+                            }
                             mapped_kws = [
-                                (key_to_new_id[k], kw, src, w)
-                                for k, kw, src, w in old_kws
-                                if k in key_to_new_id
+                                (identity_to_new_id[(blogger_id, url)], kw, src, w)
+                                for blogger_id, url, kw, src, w in old_kws
+                                if (blogger_id, url) in identity_to_new_id
                             ]
                             if mapped_kws:
                                 conn.executemany(
