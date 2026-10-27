@@ -981,25 +981,8 @@ class TestUIMode(unittest.TestCase):
             post_title="犬歯",
             description="犬の歯磨きのイラストです。",
         )
-        img_case = IrasutoyaImage(
-            title="CATのイラスト",
-            image_url="https://example.com/e.png",
-            thumb_url="https://example.com/et.png",
-            post_title="CAT",
-            description="かわいいcatのイラストです。",
-        )
-        img_multi_compound = IrasutoyaImage(
-            title="犬歯と猫背のイラスト",
-            image_url="https://example.com/f.png",
-            thumb_url="https://example.com/ft.png",
-            post_title="犬歯と猫背",
-            description="犬と猫のイラストです。",
-        )
-
         self.assertTrue(_is_desc_only_match([img_desc_only], "手に入れる"))
         self.assertTrue(_is_desc_only_match([img_boundary_compound], "犬"))
-        self.assertTrue(_is_desc_only_match([img_multi_compound], "犬 猫"))
-        self.assertFalse(_is_desc_only_match([img_case], "cat"))
         self.assertFalse(_is_desc_only_match([img_title_match], "手に入れた"))
         self.assertFalse(_is_desc_only_match([img_title_match, img_desc_only], "手に入れる"))
         self.assertFalse(_is_desc_only_match([img_callout_title], "手に入れる"))

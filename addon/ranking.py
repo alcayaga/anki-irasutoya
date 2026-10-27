@@ -446,22 +446,15 @@ def classify_match_boundary(text: str, query: str) -> str:
     if not text or not query:
         return "none"
 
-    t_cf = text.casefold()
-    q_cf = query.casefold()
-
     if (
         f"「{query}」" in text
         or f"『{query}』" in text
         or f"（{query}）" in text
         or f"({query})" in text
-        or f"「{q_cf}」" in t_cf
-        or f"『{q_cf}』" in t_cf
-        or f"（{q_cf}）" in t_cf
-        or f"({q_cf})" in t_cf
-        or t_cf in (
-            q_cf,
-            f"{q_cf}のイラスト",
-            f"かわいい{q_cf}のイラスト",
+        or text in (
+            query,
+            f"{query}のイラスト",
+            f"かわいい{query}のイラスト",
         )
         or _is_canonical_mark_title(text, query)
     ):
@@ -470,19 +463,15 @@ def classify_match_boundary(text: str, query: str) -> str:
     is_pure_kana = bool(re.fullmatch(r"[\u3040-\u309F\u30A0-\u30FF]+", query))
     is_pure_kanji = bool(re.fullmatch(r"[\u4e00-\u9fff\u3400-\u4dbf々〆〇]+", query))
 
+    start = 0
     best_quality = "none"
-    for m in re.finditer(re.escape(query), text, re.IGNORECASE):
-        idx = m.start()
-        end_idx = m.end()
+    while True:
+        idx = text.find(query, start)
+        if idx == -1:
+            break
+        start = idx + 1
         prev_ch = text[idx - 1] if idx > 0 else ""
-        next_ch = text[end_idx] if end_idx < len(text) else ""
-
-        # Reject mid-word collisions for Latin letters (e.g. 'cat' in 'BOBCAT' or 'caterpillar')
-        if (
-            (prev_ch and "a" <= prev_ch.lower() <= "z" and "a" <= query[0].lower() <= "z")
-            or (next_ch and "a" <= next_ch.lower() <= "z" and "a" <= query[-1].lower() <= "z")
-        ):
-            continue
+        next_ch = text[idx + len(query)] if idx + len(query) < len(text) else ""
 
         # Case 1: Pure Kana queries (high collision risk!)
         if is_pure_kana:
@@ -802,11 +791,12 @@ def is_title_match(img: IrasutoyaImage, query: str) -> bool:
         return True
 
     tokens = clean_q.split()
-    if len(tokens) > 1:
-        if all(_is_valid_boundary_match(img, title, t) for t in tokens):
-            return True
-        if post_title and all(_is_valid_boundary_match(img, post_title, t) for t in tokens):
-            return True
+    if len(tokens) > 1 and all(
+        classify_match_boundary(title, t) != "none"
+        or (post_title and classify_match_boundary(post_title, t) != "none")
+        for t in tokens
+    ):
+        return True
 
     return False
 
