@@ -771,6 +771,7 @@ class TestUIMode(unittest.TestCase):
         """Status banner distinguishes between lack of title match and zero results."""
         dlg = IrasutoyaDialog(parent=None, browser=None, note_ids=[1001])
         self.addCleanup(dlg.close)
+        dlg._thumb_executor.submit = MagicMock()
 
         mock_img = IrasutoyaImage(
             title="結果イラスト",
@@ -816,6 +817,10 @@ class TestUIMode(unittest.TestCase):
             dlg.chips_scroll.verticalScrollBarPolicy(),
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff,
         )
+        self.assertEqual(dlg.chips_scroll.height(), 38)
+        self.assertEqual(dlg.chips_layout.contentsMargins().bottom(), 4)
+        self.assertIn("QScrollBar:horizontal", dlg.chips_scroll.styleSheet())
+        self.assertIn("height: 4px", dlg.chips_scroll.styleSheet())
 
         # Initially hidden
         self.assertTrue(dlg.chips_scroll.isHidden())

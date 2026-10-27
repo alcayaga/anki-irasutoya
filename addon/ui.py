@@ -913,14 +913,38 @@ class IrasutoyaDialog(QDialog):
         self.chips_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.chips_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.chips_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.chips_scroll.setFixedHeight(34)
-        self.chips_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        self.chips_scroll.setFixedHeight(38)
+        self.chips_scroll.setStyleSheet(
+            "QScrollArea { border: none; background: transparent; }"
+            "QScrollBar:horizontal {"
+            "    height: 4px;"
+            "    background: transparent;"
+            "    margin: 0px;"
+            "    border-radius: 2px;"
+            "}"
+            "QScrollBar::handle:horizontal {"
+            "    background: rgba(120, 120, 128, 0.35);"
+            "    min-width: 24px;"
+            "    border-radius: 2px;"
+            "}"
+            "QScrollBar::handle:horizontal:hover {"
+            "    background: rgba(120, 120, 128, 0.6);"
+            "}"
+            "QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {"
+            "    width: 0px;"
+            "    height: 0px;"
+            "    background: none;"
+            "}"
+            "QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {"
+            "    background: none;"
+            "}"
+        )
         self.chips_scroll.setVisible(False)
 
         self.chips_widget = QWidget()
         self.chips_widget.setStyleSheet("background: transparent;")
         self.chips_layout = QHBoxLayout(self.chips_widget)
-        self.chips_layout.setContentsMargins(0, 0, 0, 0)
+        self.chips_layout.setContentsMargins(0, 0, 0, 4)
         self.chips_layout.setSpacing(6)
         self.chips_scroll.setWidget(self.chips_widget)
         self.chips_widget.setVisible(False)
