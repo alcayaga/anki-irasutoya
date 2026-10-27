@@ -3,6 +3,8 @@ import os
 import sqlite3
 import tempfile
 import unittest
+import zipfile
+from typing import Any
 from unittest.mock import patch
 
 from addon.catalog import (
@@ -248,6 +250,20 @@ class TestSynonyms(unittest.TestCase):
         self.assertEqual(cur.fetchone()[0], "donkuri/kaishi")
         verify_conn.close()
 
+    def test_extract_collection_from_apkg_rejects_oversized_anki21b(self) -> None:
+        """Verify extract_collection_from_apkg rejects collection.anki21b exceeding MAX_COLLECTION_SIZE."""
+        apkg_path = os.path.join(self.temp_dir.name, "oversized.apkg")
+        with zipfile.ZipFile(apkg_path, "w") as z:
+            z.writestr("collection.anki21b", b"small_compressed_data")
+
+        class DummyInfo:
+            file_size: int = 60 * 1024 * 1024
+
+        with patch.object(zipfile.ZipFile, "getinfo", return_value=DummyInfo()):
+            with self.assertRaises(ValueError) as cm:
+                extract_collection_from_apkg(apkg_path, cache_dir=self.temp_dir.name)
+            self.assertIn("exceeds the 50 MB limit", str(cm.exception))
+
     def test_populate_kaishi_concepts_zero_matches_refuses_overwrite(self) -> None:
         """Verify populate_kaishi_concepts returns False and leaves catalog untouched when 0 notes match."""
         empty_kaishi_db = os.path.join(self.temp_dir.name, "empty_kaishi.sqlite")
@@ -340,4 +356,50 @@ class TestSynonyms(unittest.TestCase):
         cur.execute("SELECT count(*) FROM image_keywords WHERE source = 'donkuri/kaishi'")
         self.assertEqual(cur.fetchone()[0], 0)
         v_conn.close()
+
+    def test_populate_kaishi_concepts_refreshes_sha_if_commit_succeeds_but_vacuum_fails(self) -> None:
+        """Verify checksum is refreshed when Kaishi transaction commits but subsequent vacuum fails."""
+        catalog_path = os.path.join(self.temp_dir.name, "vacuum_fail_catalog.sqlite")
+        cat_conn = sqlite3.connect(catalog_path)
+        img = IrasutoyaImage("猫のイラスト", "https://bp.blogspot.com/s0/cat.png", "t", "猫")
+        p = ParsedPost("101", "猫のイラスト", "desc", "pub", "upd", (), [img])
+        write_posts(cat_conn, [p])
+        cat_conn.commit()
+        cat_conn.close()
+
+        kaishi_db = os.path.join(self.temp_dir.name, "vacuum_fail_kaishi.sqlite")
+        conn = sqlite3.connect(kaishi_db)
+        conn.execute("CREATE TABLE notes (id INTEGER PRIMARY KEY, flds TEXT NOT NULL)")
+        conn.execute("INSERT INTO notes (flds) VALUES (?)", ("キャット\x1fきゃっと\x1f<img src='cat.png'>",))
+        conn.commit()
+        conn.close()
+
+        real_connect = sqlite3.connect
+
+        class FailingVacuumConnection(sqlite3.Connection):
+            def execute(self, sql: str, *parameters: Any) -> sqlite3.Cursor:
+                if "VACUUM" in sql.upper():
+                    raise sqlite3.OperationalError("Simulated disk full during VACUUM")
+                return super().execute(sql, *parameters)
+
+        def fake_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+            if args and "vacuum_fail_catalog" in str(args[0]):
+                kwargs["factory"] = FailingVacuumConnection
+            return real_connect(*args, **kwargs)
+
+        with patch("sqlite3.connect", side_effect=fake_connect):
+            with patch("scripts.build_synonyms.update_catalog_sha256") as mock_sha:
+                success = populate_kaishi_concepts(catalog_path, kaishi_db, min_matched=1)
+                self.assertFalse(success)
+                mock_sha.assert_called_once_with(catalog_path)
+
+        # Confirm that rows were committed to disk despite the vacuum failure
+        v_conn = sqlite3.connect(catalog_path)
+        cur = v_conn.cursor()
+        cur.execute("SELECT count(*) FROM synonyms WHERE source = 'donkuri/kaishi'")
+        self.assertEqual(cur.fetchone()[0], 1)
+        cur.execute("SELECT count(*) FROM image_keywords WHERE source = 'donkuri/kaishi'")
+        self.assertEqual(cur.fetchone()[0], 1)
+        v_conn.close()
+
 

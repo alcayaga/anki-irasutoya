@@ -198,6 +198,10 @@ def extract_collection_from_apkg(apkg_path: str, cache_dir: str = ".catalog_cach
     with zipfile.ZipFile(apkg_path, "r") as z:
         names = set(z.namelist())
         if "collection.anki21b" in names:
+            if z.getinfo("collection.anki21b").file_size > MAX_COLLECTION_SIZE:
+                raise ValueError(
+                    f"collection.anki21b in {apkg_path} exceeds the {MAX_COLLECTION_SIZE // (1024 * 1024)} MB limit"
+                )
             if zstandard is None:
                 raise ImportError(
                     "zstandard library is required to decompress collection.anki21b from .apkg. "
@@ -348,7 +352,6 @@ def fetch_kaishi_github_slice(
         return extract_collection_from_apkg(apkg_dest, cache_dir=cache_dir)
 
 
-KAISHI_MIN_MATCH_RATIO = 0.5
 KAISHI_MIN_MATCHED = 1000
 
 
@@ -503,6 +506,7 @@ def populate_kaishi_concepts(
         )
         return False
 
+    committed = False
     conn = sqlite3.connect(catalog_path)
     try:
         cur = conn.cursor()
@@ -534,12 +538,15 @@ def populate_kaishi_concepts(
         write_synonyms(conn, source="donkuri/kaishi", mapping=synonyms_dict, commit=False)
         write_image_keywords(conn, source="donkuri/kaishi", keywords=image_keywords, commit=False)
         conn.commit()
+        committed = True
         conn.execute("PRAGMA journal_mode = DELETE")
         conn.execute("VACUUM")
         conn.commit()
     except Exception as exc:
         conn.rollback()
         logger.error("Failed to write Kaishi tables: %s", exc)
+        if committed:
+            update_catalog_sha256(catalog_path)
         return False
     finally:
         conn.close()
