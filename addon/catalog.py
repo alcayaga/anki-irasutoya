@@ -120,7 +120,7 @@ class CatalogIndex:
             "wordnet_synonym": 4,
             "wordnet_hypernym": 5,
         }
-        for src in sorted(src_map, key=lambda s: source_order.get(s, 99)):
+        for src in sorted(src_map, key=lambda s: (source_order.get(s, 99), s)):
             for t in src_map[src]:
                 if t not in seen:
                     seen.add(t)

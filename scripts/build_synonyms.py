@@ -779,7 +779,8 @@ def populate_sudachi_synonyms(
             cands: List[Tuple[str, bool, bool, float]] = []
             for t_row in valid_rows:
                 t_term = clean_sudachi_headword(t_row[8])
-                if not t_term or t_term == s_term:
+                t_canonical = unicodedata.normalize("NFKC", str(t_term)).strip().casefold()
+                if not t_term or t_term == s_term or t_canonical == s_canonical:
                     continue
                 t_is_noun = t_row[1].strip() if len(t_row) > 1 and t_row[1] else "1"
                 # Predicates (is_noun=2) must not cross-map to nouns (is_noun=1)
