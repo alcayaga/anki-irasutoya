@@ -7,6 +7,7 @@ from aqt.qt import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMouseEvent,
     QPixmap,
     QPushButton,
     QScrollArea,
@@ -129,13 +130,13 @@ class ImageCardWidget(QFrame):
         else:
             self.setStyleSheet(CARD_DEFAULT_STYLE)
 
-    def mousePressEvent(self, event) -> None:
+    def mousePressEvent(self, event: QMouseEvent) -> None:
         """Handle mouse click selection."""
         if event.button() == Qt.MouseButton.LeftButton:
             self.on_select(self)
         super().mousePressEvent(event)
 
-    def mouseDoubleClickEvent(self, event) -> None:
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
         """Handle double click to select and immediately apply."""
         if event.button() == Qt.MouseButton.LeftButton:
             self.on_double_click(self)

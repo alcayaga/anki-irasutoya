@@ -1,6 +1,6 @@
 """Main dialog shell for mapping card fields and executing batch or interactive image insertion."""
 import os
-from typing import Any, Dict, List, Optional, Sequence, Set
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set
 
 from aqt.qt import (
     QButtonGroup,
@@ -10,10 +10,13 @@ from aqt.qt import (
     QGridLayout,
     QHBoxLayout,
     QImage,
+    QKeyEvent,
     QLabel,
     QPixmap,
     QPushButton,
     QRadioButton,
+    QResizeEvent,
+    QShowEvent,
     Qt,
     QTimer,
     QVBoxLayout,
@@ -114,6 +117,7 @@ class IrasutoyaDialog(_SingleNoteModeMixin, _BatchModeMixin, QDialog):
     def _schedule_backend_status_refresh(self) -> None:
         """Poll until the background catalog finishes loading, then update the status label."""
         def tick() -> None:
+            """Single-shot timer tick to check catalog loading status."""
             if not hasattr(self, "backend_lbl") or self.backend_lbl is None:
                 return
             try:
@@ -138,7 +142,7 @@ class IrasutoyaDialog(_SingleNoteModeMixin, _BatchModeMixin, QDialog):
                 self._note_cache[nid] = None
         return self._note_cache[nid]
 
-    def _run_on_main(self, callback) -> None:
+    def _run_on_main(self, callback: Callable[[], None]) -> None:
         """Execute a callable safely on the Qt main GUI thread."""
         try:
             mw = _get_mw()
@@ -174,17 +178,17 @@ class IrasutoyaDialog(_SingleNoteModeMixin, _BatchModeMixin, QDialog):
             self.client.close()
         super().done(result)
 
-    def resizeEvent(self, event) -> None:
+    def resizeEvent(self, event: QResizeEvent) -> None:
         """Handle dialog resize and load more items if viewport expands without scrolling."""
         super().resizeEvent(event)
         self._check_viewport_pagination()
 
-    def showEvent(self, event) -> None:
+    def showEvent(self, event: QShowEvent) -> None:
         """Handle dialog show event and ensure viewport is filled."""
         super().showEvent(event)
         self._check_viewport_pagination()
 
-    def keyPressEvent(self, event) -> None:
+    def keyPressEvent(self, event: QKeyEvent) -> None:
         """Enable keyboard arrow navigation across the thumbnail gallery and Enter to apply."""
         if hasattr(self, "image_cards") and self.image_cards:
             key = event.key()

@@ -1,5 +1,5 @@
 """Batch mode view mixin and preview table controller."""
-from typing import TYPE_CHECKING, List, Tuple
+from typing import TYPE_CHECKING, Any, List, Tuple
 
 from aqt.qt import (
     QAbstractItemView,
@@ -119,14 +119,14 @@ class _BatchModeMixin:
         if hasattr(self, "radio_overwrite"):
             self.radio_overwrite.toggled.connect(self._schedule_batch_preview_update)
 
-    def _schedule_batch_preview_update(self, *args) -> None:
+    def _schedule_batch_preview_update(self, *args: Any) -> None:
         """Schedule a debounced preview table update."""
         if hasattr(self, "_preview_timer"):
             self._preview_timer.start()
         else:
             self._do_update_batch_preview_table()
 
-    def _update_batch_preview_table(self, *args) -> None:
+    def _update_batch_preview_table(self, *args: Any) -> None:
         """Immediately update batch preview table."""
         self._do_update_batch_preview_table()
 
@@ -142,6 +142,37 @@ class _BatchModeMixin:
         target_field = self.combo_target.currentText()
         is_overwrite = hasattr(self, "radio_overwrite") and self.radio_overwrite.isChecked()
 
+        # Cache candidate evaluations per (source_field, target_field) to avoid rescanning on policy toggle
+        cache_key = (source_field, target_field)
+        eval_cache = getattr(self, "_batch_eval_cache", None)
+        if eval_cache is None:
+            eval_cache = {}
+            self._batch_eval_cache = eval_cache
+
+        eval_rows = eval_cache.get(cache_key)
+        if eval_rows is None:
+            eval_rows = []
+            for nid in self.note_ids:
+                try:
+                    note = self._get_cached_note(nid)
+                    if not note:
+                        eval_rows.append((None, False, False, "Unavailable", " (Failed to load)"))
+                        continue
+
+                    if not target_field or target_field not in note or not source_field or source_field not in note:
+                        eval_rows.append((None, False, False, "Missing Field", " (Missing Field)"))
+                        continue
+
+                    raw_src = note[source_field]
+                    candidates = generate_search_candidates(raw_src, note=note, allow_tier2=True)
+                    has_target = bool(note[target_field].strip())
+                    query = candidates[0][0] if candidates else (clean_search_query(raw_src) or "(Empty)")
+                    target_status = "Has Content" if has_target else "Empty"
+                    eval_rows.append((query, bool(candidates), has_target, target_status, f" {query}"))
+                except Exception:
+                    eval_rows.append((None, False, False, "Unavailable", " (Error)"))
+            eval_cache[cache_key] = eval_rows
+
         # Calculate counts and precompute preview rows in a single pass
         count_fill = 0
         count_overwrite = 0
@@ -149,50 +180,26 @@ class _BatchModeMixin:
         max_preview = 30
         preview_rows: List[Tuple[str, str, str, str]] = []
 
-        for nid in self.note_ids:
-            try:
-                note = self._get_cached_note(nid)
-                if not note:
-                    count_skip += 1
-                    if len(preview_rows) < max_preview:
-                        preview_rows.append((" (Failed to load)", "Unavailable", "Will Skip", "#8E8E93"))
-                    continue
-
-                if not target_field or target_field not in note or not source_field or source_field not in note:
-                    count_skip += 1
-                    if len(preview_rows) < max_preview:
-                        preview_rows.append((" (Missing Field)", "Missing Field", "Will Skip", "#8E8E93"))
-                    continue
-
-                raw_src = note[source_field]
-                candidates = generate_search_candidates(raw_src, note=note, allow_tier2=True)
-                has_target = bool(note[target_field].strip())
-
-                if not candidates:
-                    count_skip += 1
-                    action_text = "Will Skip"
-                    color_hex = "#8E8E93"
-                elif not has_target:
-                    count_fill += 1
-                    action_text = "Will Fill"
-                    color_hex = "#30D158"
-                elif is_overwrite:
-                    count_overwrite += 1
-                    action_text = "Will Overwrite"
-                    color_hex = "#0A84FF"
-                else:
-                    count_skip += 1
-                    action_text = "Will Skip"
-                    color_hex = "#8E8E93"
-
-                if len(preview_rows) < max_preview:
-                    query = candidates[0][0] if candidates else (clean_search_query(raw_src) or "(Empty)")
-                    target_status = "Has Content" if has_target else "Empty"
-                    preview_rows.append((f" {query}", target_status, action_text, color_hex))
-            except Exception:
+        for query, has_candidates, has_target, target_status, display_title in eval_rows:
+            if not has_candidates:
                 count_skip += 1
-                if len(preview_rows) < max_preview:
-                    preview_rows.append((" (Error)", "Unavailable", "Will Skip", "#8E8E93"))
+                action_text = "Will Skip"
+                color_hex = "#8E8E93"
+            elif not has_target:
+                count_fill += 1
+                action_text = "Will Fill"
+                color_hex = "#30D158"
+            elif is_overwrite:
+                count_overwrite += 1
+                action_text = "Will Overwrite"
+                color_hex = "#0A84FF"
+            else:
+                count_skip += 1
+                action_text = "Will Skip"
+                color_hex = "#8E8E93"
+
+            if len(preview_rows) < max_preview:
+                preview_rows.append((display_title, target_status, action_text, color_hex))
 
         # Update Summary Chips
         if hasattr(self, "chip_fill") and hasattr(self, "chip_other"):

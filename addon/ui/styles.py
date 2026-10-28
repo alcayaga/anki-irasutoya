@@ -58,7 +58,9 @@ QPushButton#secondaryBtn:pressed {{
     background-color: rgba(120, 120, 128, 0.32);
 }}
 QPushButton#secondaryBtn:disabled {{
-    opacity: 0.5;
+    color: rgba(120, 120, 128, 0.6);
+    background-color: rgba(120, 120, 128, 0.08);
+    border: 1px solid rgba(120, 120, 128, 0.15);
 }}
 QLineEdit {{
     border: 1px solid rgba(120, 120, 128, 0.35);
