@@ -28,11 +28,11 @@ from ..text_utils import clean_search_query, generate_search_candidates
 from .helpers import (
     _description_match_term,
     _is_desc_only_match,
-    _StaleSearch,
+    execute_search_and_probe,
     format_fallback_reason,
     has_existing_media,
     make_description_snippet,
-    probe_catalog_candidates,
+    resolve_search_plan,
 )
 from .styles import (
     CHIPS_SCROLL_STYLE,
@@ -265,76 +265,31 @@ class _SingleNoteModeMixin:
         self._clear_gallery()
 
         image_size = self.config.get(CONFIG_KEY_IMAGE_SIZE, "s800")
-        card_terms = [c[0] for c in getattr(self, "_card_candidates", [])]
-        is_card_term = bool(self._card_source_term and (query == self._card_source_term or query in card_terms))
-
-        if is_card_term:
-            display_chips = self._card_candidates
-            restore_term = None
-            if direct:
-                matching_cand = next((c for c in self._card_candidates if c[0] == query), (query, "primary", 1))
-                search_candidates = [matching_cand]
-            elif query == self._card_source_term:
-                search_candidates = self._card_candidates
-            else:
-                search_candidates = generate_search_candidates(query, note=self.first_note, allow_tier2=True)
-        else:
-            candidates = generate_search_candidates(query, note=None, allow_tier2=True)
-            display_chips = candidates
-            matching_cand = next((c for c in candidates if c[0] == query), (query, "primary", 1))
-            search_candidates = [matching_cand] if direct else candidates
-            restore_term = (
-                self._card_source_term
-                if (self._card_source_term and self._card_source_term != query)
-                else None
-            )
+        card_candidates = getattr(self, "_card_candidates", [])
+        display_chips, search_candidates, restore_term = resolve_search_plan(
+            query=query,
+            card_source_term=self._card_source_term,
+            card_candidates=card_candidates,
+            first_note=self.first_note,
+            direct=direct,
+        )
 
         def background_search() -> None:
             """Fetch search results on a background thread using fallback queries."""
-            probed_counts: Optional[Dict[str, int]] = None
-            probed_desc_matches: Optional[Set[str]] = None
-            try:
-                images, matched_cand, _best_img = self.client.search_with_fallbacks(
-                    search_candidates,
-                    max_results=None,
-                    image_size=image_size,
-                    is_cancelled=lambda: current_gen != self._search_generation,
-                )
-            except Exception as e:
-                logger.exception("Search failed: %s", e)
-                images, matched_cand, _best_img = [], None, None
+            count_cache = self._catalog_count_cache.setdefault(image_size, {})
+            desc_cache = self._catalog_desc_cache.setdefault(image_size, {})
 
-            if current_gen != self._search_generation:
-                return
-
-            try:
-                catalog = self.store.get_index()
-                if catalog is not None:
-                    count_cache = self._catalog_count_cache.setdefault(image_size, {})
-                    desc_cache = self._catalog_desc_cache.setdefault(image_size, {})
-
-                    # Reuse already retrieved and filtered results for the matched candidate
-                    if matched_cand and images:
-                        count_cache[matched_cand[0]] = len(images)
-                        desc_cache[matched_cand[0]] = _is_desc_only_match(images, matched_cand[0])
-
-                    probe_terms = [c[0] for c in display_chips]
-                    if matched_cand and matched_cand[0] not in probe_terms:
-                        probe_terms.append(matched_cand[0])
-
-                    probed_counts, probed_desc_matches = probe_catalog_candidates(
-                        catalog,
-                        image_size,
-                        probe_terms,
-                        restore_term,
-                        count_cache,
-                        desc_cache,
-                        is_stale=lambda: current_gen != self._search_generation,
-                    )
-            except _StaleSearch:
-                return
-            except Exception:
-                logger.exception("Catalog count probe failed")
+            images, matched_cand, probed_counts, probed_desc_matches = execute_search_and_probe(
+                client=self.client,
+                store=self.store,
+                search_candidates=search_candidates,
+                display_chips=display_chips,
+                image_size=image_size,
+                restore_term=restore_term,
+                count_cache=count_cache,
+                desc_cache=desc_cache,
+                is_cancelled=lambda: current_gen != self._search_generation,
+            )
 
             if current_gen != self._search_generation:
                 return
@@ -581,6 +536,20 @@ class _SingleNoteModeMixin:
         self._on_card_selected(card)
         self._apply_single_selection()
 
+    def _handle_apply_failure(self, status_msg: str, warning_msg: str) -> None:
+        """Restore UI state and display error notification upon image apply failure.
+
+        Args:
+            status_msg: Short status message for the dialog status label.
+            warning_msg: Descriptive error message for showWarning modal.
+        """
+        self._applying = False
+        if self.isVisible():
+            self.btn_apply.setEnabled(True)
+            self.status_label.setStyleSheet(STATUS_ERROR_STYLE)
+            self.status_label.setText(status_msg)
+            showWarning(warning_msg, parent=self)
+
     def _apply_single_selection(self) -> None:
         """Download high-res image in background and assign to note without blocking on existing content."""
         if not self.selected_card_widget or not self.first_note or self._applying:
@@ -641,12 +610,7 @@ class _SingleNoteModeMixin:
 
                         def on_update_failure(err: Exception) -> None:
                             """Restore button state and display warning on update failure."""
-                            self._applying = False
-                            if self.isVisible():
-                                self.btn_apply.setEnabled(True)
-                                self.status_label.setStyleSheet(STATUS_ERROR_STYLE)
-                                self.status_label.setText(f"Error updating note: {err}")
-                                showWarning(f"Failed to update note: {err}", parent=self)
+                            self._handle_apply_failure(f"Error updating note: {err}", f"Failed to update note: {err}")
 
                         import aqt.operations.note
                         op = aqt.operations.note.update_notes(parent=self.browser, notes=[fresh_note])
@@ -656,12 +620,7 @@ class _SingleNoteModeMixin:
 
                     def on_commit_error(err: Exception) -> None:
                         """Handle commit failure and restore button state."""
-                        self._applying = False
-                        if self.isVisible():
-                            self.btn_apply.setEnabled(True)
-                            self.status_label.setStyleSheet(STATUS_ERROR_STYLE)
-                            self.status_label.setText(f"Error applying image: {err}")
-                            showWarning(f"Failed to write media or update note: {err}", parent=self)
+                        self._handle_apply_failure(f"Error applying image: {err}", f"Failed to write media or update note: {err}")
 
                     from aqt.operations import QueryOp
                     commit_op = QueryOp(
@@ -676,16 +635,11 @@ class _SingleNoteModeMixin:
             except Exception as e:
                 logger.exception("Failed to apply image: %s", e)
                 err_msg = str(e)
-
-                def on_error() -> None:
-                    """Handle download failure on main GUI thread and restore button state."""
-                    self._applying = False
-                    if self.isVisible():
-                        self.btn_apply.setEnabled(True)
-                        self.status_label.setStyleSheet(STATUS_ERROR_STYLE)
-                        self.status_label.setText(f"Error applying image: {err_msg}")
-                        showWarning(f"Failed to download or apply image: {err_msg}", parent=self)
-
-                self._run_on_main(on_error)
+                self._run_on_main(
+                    lambda: self._handle_apply_failure(
+                        f"Error applying image: {err_msg}",
+                        f"Failed to download or apply image: {err_msg}",
+                    )
+                )
 
         threading.Thread(target=background_apply, daemon=True).start()

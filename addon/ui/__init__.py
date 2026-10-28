@@ -6,11 +6,13 @@ from .helpers import (
     _description_match_term,
     _is_desc_only_match,
     _StaleSearch,
+    execute_search_and_probe,
     format_fallback_reason,
     has_existing_media,
     make_description_snippet,
     probe_catalog_candidates,
     probe_catalog_term,
+    resolve_search_plan,
 )
 from .styles import (
     CHEVRON_ICON_PATH,
@@ -50,6 +52,7 @@ __all__ = [
     "_description_match_term",
     "_is_desc_only_match",
     "clear_session_thumbnail_cache",
+    "execute_search_and_probe",
     "format_fallback_reason",
     "has_existing_media",
     "make_description_snippet",
@@ -57,4 +60,5 @@ __all__ = [
     "populate_suggestion_chips",
     "probe_catalog_candidates",
     "probe_catalog_term",
+    "resolve_search_plan",
 ]
