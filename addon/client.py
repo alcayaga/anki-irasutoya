@@ -10,7 +10,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 from .catalog import CatalogStore, default_store
 from .feed import IrasutoyaImage, ParsedPost, is_allowed_image_host, parse_entry, upgrade_image_url
@@ -51,7 +51,7 @@ class _PooledResponse:
         self,
         response: http.client.HTTPResponse,
         conn: http.client.HTTPSConnection,
-        return_conn_fn: Callable[[http.client.HTTPSConnection, http.client.HTTPResponse], None],
+        return_conn_fn: Callable[[http.client.HTTPSConnection, http.client.HTTPResponse, bool], None],
     ) -> None:
         """Initialize response wrapper."""
         self._resp = response
@@ -74,11 +74,12 @@ class _PooledResponse:
         return self._resp.readline(*args, **kwargs)
 
     def close(self) -> None:
-        """Close response stream and return active connection to pool."""
+        """Close response stream and return active connection to pool if fully drained."""
+        drained = getattr(self._resp, "isclosed", lambda: False)()
+        self._resp.close()
         if not self._returned:
             self._returned = True
-            self._return_conn_fn(self._conn, self._resp)
-        self._resp.close()
+            self._return_conn_fn(self._conn, self._resp, drained)
 
     def __enter__(self) -> "_PooledResponse":
         """Enter response context."""
@@ -111,18 +112,20 @@ class _KeepAliveHTTPSHandler(urllib.request.HTTPSHandler):
         super().__init__(context=context)
         self._pool: Dict[Tuple[str, int], List[http.client.HTTPSConnection]] = {}
         self._lock = threading.Lock()
+        self._closed = False
 
     def _return_connection(
         self,
         host_port: Tuple[str, int],
         conn: http.client.HTTPSConnection,
         resp: http.client.HTTPResponse,
+        drained: bool,
     ) -> None:
-        """Return connection to idle pool if response completed cleanly without will_close."""
+        """Return connection to idle pool if response was fully drained and healthy."""
         with self._lock:
             sock = getattr(conn, "sock", None)
             is_sock_alive = sock is not None and not getattr(sock, "_closed", True)
-            if not getattr(resp, "will_close", True) and is_sock_alive:
+            if not self._closed and drained and not getattr(resp, "will_close", True) and is_sock_alive:
                 conns = self._pool.setdefault(host_port, [])
                 if len(conns) < self.MAX_IDLE_PER_HOST:
                     conns.append(conn)
@@ -132,8 +135,12 @@ class _KeepAliveHTTPSHandler(urllib.request.HTTPSHandler):
             except Exception:
                 pass
 
-    def https_open(self, req: urllib.request.Request) -> _PooledResponse:
+    def https_open(self, req: urllib.request.Request) -> Union[_PooledResponse, Any]:
         """Open HTTPS request reusing a pooled persistent connection if available."""
+        if getattr(req, "_tunnel_host", None):
+            # Proxy tunnel (CONNECT) requested: delegate to stock urllib HTTPSHandler
+            return super().https_open(req)
+
         host = req.host
         if not host:
             raise urllib.error.URLError("no host given")
@@ -167,7 +174,13 @@ class _KeepAliveHTTPSHandler(urllib.request.HTTPSHandler):
         timeout = getattr(req, "timeout", None) or socket._GLOBAL_DEFAULT_TIMEOUT
 
         is_reused = conn is not None
-        if conn is None:
+        if conn is not None:
+            conn.timeout = timeout
+            if conn.sock is not None:
+                conn.sock.settimeout(
+                    socket.getdefaulttimeout() if timeout is socket._GLOBAL_DEFAULT_TIMEOUT else timeout
+                )
+        else:
             conn = http.client.HTTPSConnection(
                 h_name,
                 port=port,
@@ -180,32 +193,35 @@ class _KeepAliveHTTPSHandler(urllib.request.HTTPSHandler):
         headers["Connection"] = "keep-alive"
         headers = {name.title(): val for name, val in headers.items()}
 
+        def _send(c: http.client.HTTPSConnection) -> http.client.HTTPResponse:
+            c.request(req.get_method(), req.selector, req.data, headers)
+            return c.getresponse()
+
         try:
-            conn.request(req.get_method(), req.selector, req.data, headers)
-            r = conn.getresponse()
-        except (
-            http.client.RemoteDisconnected,
-            http.client.BadStatusLine,
-            ConnectionResetError,
-            BrokenPipeError,
-            ssl.SSLEOFError,
-        ):
             try:
+                r = _send(conn)
+            except (
+                http.client.RemoteDisconnected,
+                http.client.BadStatusLine,
+                ConnectionError,
+                ssl.SSLEOFError,
+            ):
                 conn.close()
-            except Exception:
-                pass
-            if is_reused:
-                # Reused socket was closed by server while idle; retry once with a fresh connection
+                if not is_reused:
+                    raise
                 conn = http.client.HTTPSConnection(
                     h_name,
                     port=port,
                     timeout=timeout,
                     context=self._context,
                 )
-                conn.request(req.get_method(), req.selector, req.data, headers)
-                r = conn.getresponse()
-            else:
-                raise
+                r = _send(conn)
+        except OSError as err:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            raise urllib.error.URLError(err) from err
         except Exception:
             try:
                 conn.close()
@@ -218,12 +234,13 @@ class _KeepAliveHTTPSHandler(urllib.request.HTTPSHandler):
         return _PooledResponse(
             r,
             conn,
-            lambda c, resp: self._return_connection(host_port, c, resp),
+            lambda c, resp, drained: self._return_connection(host_port, c, resp, drained),
         )
 
     def close(self) -> None:
         """Close and discard all idle connections in the pool."""
         with self._lock:
+            self._closed = True
             for conns in self._pool.values():
                 for c in conns:
                     try:

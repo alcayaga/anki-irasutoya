@@ -524,6 +524,20 @@ class IrasutoyaDialog(QDialog):
                 fut.cancel()
         self._pending_thumb_futures.clear()
 
+    def _decode_thumbnail(self, thumb_data: bytes) -> Optional[QImage]:
+        """Decode and scale thumbnail bytes into a smooth-transformed QImage, or None if invalid."""
+        if not thumb_data:
+            return None
+        qimg = QImage.fromData(QByteArray(thumb_data))
+        if qimg.isNull():
+            return None
+        return qimg.scaled(
+            120,
+            96,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+
     def _get_cached_pixmap(self, thumb_url: str) -> Optional[QPixmap]:
         """Lookup pre-scaled QPixmap from dialog cache or decode from session byte cache."""
         if not thumb_url:
@@ -535,14 +549,8 @@ class IrasutoyaDialog(QDialog):
 
         data = self._thumb_byte_cache.get(thumb_url)
         if data:
-            qimg = QImage.fromData(QByteArray(data))
-            if not qimg.isNull():
-                scaled_qimg = qimg.scaled(
-                    120,
-                    96,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
+            scaled_qimg = self._decode_thumbnail(data)
+            if scaled_qimg is not None:
                 pixmap = QPixmap.fromImage(scaled_qimg)
                 self._cache_dialog_pixmap(thumb_url, pixmap)
                 return pixmap
@@ -1670,31 +1678,25 @@ class IrasutoyaDialog(QDialog):
         delay_sec = max(0.0, delay_ms / 1000.0)
         thumb_url = card.image.thumb_url
 
-        # Check if already cached (e.g. from an in-flight download that just finished)
-        cached_data = self._thumb_byte_cache.get(thumb_url)
-        if cached_data:
-            self._process_and_apply_thumbnail(card, gen, cached_data)
-            return
-
-        # In-flight deduplication: coalesce duplicate requests for the same URL
-        event_to_wait = None
-        is_downloader = False
-        with self._thumb_inflight_lock:
-            if thumb_url in self._thumb_inflight:
-                event_to_wait = self._thumb_inflight[thumb_url]
-            else:
-                event = threading.Event()
-                self._thumb_inflight[thumb_url] = event
-                is_downloader = True
-
-        if not is_downloader and event_to_wait is not None:
-            # Wait for the active downloader to finish
-            event_to_wait.wait(timeout=8.5)
+        # In-flight deduplication: coalesce duplicate requests, but claim slot if previous downloader aborted
+        while True:
             if gen != self._search_generation:
                 return
-            data = self._thumb_byte_cache.get(thumb_url) or b""
-            self._process_and_apply_thumbnail(card, gen, data)
-            return
+
+            cached_data = self._thumb_byte_cache.get(thumb_url)
+            if cached_data:
+                scaled_qimg = self._decode_thumbnail(cached_data)
+                self._process_and_apply_thumbnail(card, gen, cached_data, scaled_qimg)
+                return
+
+            with self._thumb_inflight_lock:
+                event_to_wait = self._thumb_inflight.get(thumb_url)
+                if event_to_wait is None:
+                    self._thumb_inflight[thumb_url] = threading.Event()
+                    break
+
+            # Another worker is actively downloading; wait for completion or abort
+            event_to_wait.wait(timeout=8.5)
 
         # Active downloader: rate-limit slot reservation
         try:
@@ -1722,11 +1724,14 @@ class IrasutoyaDialog(QDialog):
             except Exception:
                 thumb_data = b""
 
-            # SAVE-BEFORE-GENERATION-CHECK: Cache valid bytes immediately
-            if thumb_data:
+            scaled_qimg = self._decode_thumbnail(thumb_data)
+            # SAVE-BEFORE-GENERATION-CHECK: Cache only bytes that decode to a valid image
+            if scaled_qimg is not None:
                 self._thumb_byte_cache.put(thumb_url, thumb_data)
+            else:
+                thumb_data = b""
 
-            self._process_and_apply_thumbnail(card, gen, thumb_data)
+            self._process_and_apply_thumbnail(card, gen, thumb_data, scaled_qimg)
         finally:
             with self._thumb_inflight_lock:
                 ev = self._thumb_inflight.pop(thumb_url, None)
@@ -1734,21 +1739,19 @@ class IrasutoyaDialog(QDialog):
                     ev.set()
 
     def _process_and_apply_thumbnail(
-        self, card: ImageCardWidget, gen: int, thumb_data: bytes
+        self,
+        card: ImageCardWidget,
+        gen: int,
+        thumb_data: bytes,
+        scaled_qimg: Optional[QImage] = None,
     ) -> None:
-        """Decode and scale thumbnail on background worker, then marshal to main thread."""
-        scaled_qimg: Optional[QImage] = None
-        if thumb_data:
-            qimg = QImage.fromData(QByteArray(thumb_data))
-            if not qimg.isNull():
-                scaled_qimg = qimg.scaled(
-                    120,
-                    96,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
+        """Decode and scale thumbnail on background worker if needed, then marshal to main thread."""
+        if scaled_qimg is None and thumb_data:
+            scaled_qimg = self._decode_thumbnail(thumb_data)
 
-        self._run_on_main(lambda: self._apply_thumbnail(card, gen, thumb_data, scaled_qimg))
+        self._run_on_main(
+            lambda td=thumb_data, sq=scaled_qimg: self._apply_thumbnail(card, gen, td, sq)
+        )
 
     def _apply_thumbnail(
         self,

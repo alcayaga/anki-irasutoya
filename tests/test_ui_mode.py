@@ -1,5 +1,6 @@
 import os
 import threading
+import time
 import unittest
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 from unittest.mock import MagicMock, patch
@@ -1134,7 +1135,8 @@ class TestUIMode(unittest.TestCase):
         with patch("addon.ui.mw", mock_mw):
             dlg = IrasutoyaDialog(parent=None, browser=None, note_ids=[1001])
             self.addCleanup(dlg.close)
-            dlg._run_on_main = lambda cb: cb()
+            applied_callbacks: List[Any] = []
+            dlg._run_on_main = applied_callbacks.append
 
             img1 = IrasutoyaImage("犬 1", "https://example.com/dog.png", "https://example.com/dog_t.png", "犬")
             img2 = IrasutoyaImage("犬 2", "https://example.com/dog.png", "https://example.com/dog_t.png", "犬")
@@ -1152,16 +1154,47 @@ class TestUIMode(unittest.TestCase):
 
             dlg.client.download_image = MagicMock(side_effect=mock_slow_download)
 
+            original_get = dlg._thumb_byte_cache.get
+            get_count = 0
+            get_lock = threading.Lock()
+            t2_reached_cache = threading.Event()
+
+            def tracking_get(url: str) -> Optional[bytes]:
+                """Count cache get calls and signal when Thread 2 reaches cache check."""
+                nonlocal get_count
+                res = original_get(url)
+                with get_lock:
+                    get_count += 1
+                    if get_count == 2:
+                        t2_reached_cache.set()
+                return res
+
+            get_patcher = patch.object(dlg._thumb_byte_cache, "get", side_effect=tracking_get)
+            get_patcher.start()
+            self.addCleanup(get_patcher.stop)
+
             # Thread 1 starts download
-            t1 = threading.Thread(target=lambda: dlg._fetch_thumbnail_task(card1, gen=dlg._search_generation, delay_ms=0))
+            t1 = threading.Thread(
+                target=lambda: dlg._fetch_thumbnail_task(
+                    card1, gen=dlg._search_generation, delay_ms=0
+                )
+            )
             t1.start()
 
             # Wait until thread 1 has entered download_image
-            download_started.wait(timeout=1.0)
+            self.assertTrue(download_started.wait(timeout=1.0))
 
             # Thread 2 starts for same URL while Thread 1 is downloading
-            t2 = threading.Thread(target=lambda: dlg._fetch_thumbnail_task(card2, gen=dlg._search_generation, delay_ms=0))
+            t2 = threading.Thread(
+                target=lambda: dlg._fetch_thumbnail_task(
+                    card2, gen=dlg._search_generation, delay_ms=0
+                )
+            )
             t2.start()
+
+            # Ensure thread 2 has checked cache and entered inflight wait
+            self.assertTrue(t2_reached_cache.wait(timeout=1.0))
+            time.sleep(0.05)
 
             # Let thread 1 finish
             can_finish_download.set()
@@ -1172,9 +1205,15 @@ class TestUIMode(unittest.TestCase):
             # download_image must be called only once
             self.assertEqual(dlg.client.download_image.call_count, 1)
             self.assertEqual(dlg._thumb_byte_cache.get(img1.thumb_url), valid_png)
+            # Both cards must receive a thumbnail callback
+            self.assertEqual(len(applied_callbacks), 2)
+            for cb in applied_callbacks:
+                cb()
+            self.assertFalse(card1.thumb_label.pixmap().isNull())
+            self.assertFalse(card2.thumb_label.pixmap().isNull())
 
     def test_failed_thumbnail_download_is_not_cached(self) -> None:
-        """Verify failed (b'') thumbnail download is not cached and shows 'No Preview'."""
+        """Verify failed (b'') or corrupted thumbnail download is not cached and shows 'No Preview'."""
         mock_mw = MagicMock()
         mock_note = {"Expression": "鳥", "Reading": "とり", "DefinitionPicture": ""}
         mock_mw.col.get_note.return_value = mock_note
@@ -1197,6 +1236,16 @@ class TestUIMode(unittest.TestCase):
             self.assertEqual(card.thumb_label.text(), "No Preview")
             self.assertIsNone(dlg._thumb_byte_cache.get(img.thumb_url))
             self.assertNotIn(img.thumb_url, dlg._thumb_pixmap_cache)
+
+            # Test corrupted non-image bytes (e.g. captive portal HTML) are not cached
+            corrupt_img = IrasutoyaImage("鳥2", "https://example.com/bird2.png", "https://example.com/bird2_t.png", "鳥")
+            corrupt_card = ImageCardWidget(corrupt_img, on_select=lambda c: None, on_double_click=lambda c: None)
+            dlg.client.download_image = MagicMock(return_value=b"<html>502 Bad Gateway</html>")
+            dlg._fetch_thumbnail_task(corrupt_card, gen=dlg._search_generation, delay_ms=0)
+
+            self.assertEqual(corrupt_card.thumb_label.text(), "No Preview")
+            self.assertIsNone(dlg._thumb_byte_cache.get(corrupt_img.thumb_url))
+            self.assertNotIn(corrupt_img.thumb_url, dlg._thumb_pixmap_cache)
 
     def test_clear_gallery_cancels_pending_futures_and_done_clears_caches(self) -> None:
         """Verify _clear_gallery cancels pending futures and done cleans up memory and client pool."""

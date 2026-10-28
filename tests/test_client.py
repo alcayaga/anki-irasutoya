@@ -767,6 +767,7 @@ class TestIrasutoyaClient(unittest.TestCase):
                 resp.reason = "OK"
                 resp.headers = {"Content-Length": "10"}
                 resp.will_close = False
+                resp.isclosed = MagicMock(return_value=True)
                 resp.read = MagicMock(return_value=b"0123456789")
                 resp.close = MagicMock()
                 return resp
@@ -829,6 +830,7 @@ class TestIrasutoyaClient(unittest.TestCase):
                 resp.reason = "OK"
                 resp.headers = {}
                 resp.will_close = False
+                resp.isclosed = MagicMock(return_value=True)
                 resp.read = MagicMock(return_value=b"RETRY_OK")
                 resp.close = MagicMock()
                 return resp
@@ -854,6 +856,168 @@ class TestIrasutoyaClient(unittest.TestCase):
         self.assertEqual(len(conns_created), 2)
         self.assertTrue(conns_created[0].closed)
         handler.close()
+
+    def test_keep_alive_https_handler_does_not_pool_undrained_response(self) -> None:
+        """Verify connections with undrained response bodies are closed and not returned to pool."""
+        handler = _KeepAliveHTTPSHandler()
+        conns_created: List[Any] = []
+
+        class MockHTTPSConnection:
+            """Mock connection tracking close state."""
+
+            def __init__(self, host: str, port: int = 443, **kwargs: Any) -> None:
+                """Initialize mock connection."""
+                self.host = host
+                self.port = port
+                self.sock = MagicMock()
+                self.sock._closed = False
+                self.closed = False
+                conns_created.append(self)
+
+            def request(self, method: str, url: str, body: Any = None, headers: Optional[Dict[str, str]] = None) -> None:
+                """Mock request call."""
+                pass
+
+            def getresponse(self) -> Any:
+                """Mock response with unread body."""
+                resp = MagicMock()
+                resp.status = 404
+                resp.reason = "Not Found"
+                resp.headers = {"Content-Length": "100"}
+                resp.will_close = False
+                resp.isclosed = MagicMock(return_value=False)
+                resp.close = MagicMock()
+                return resp
+
+            def close(self) -> None:
+                """Close mock connection."""
+                self.closed = True
+                if self.sock:
+                    self.sock._closed = True
+
+        req = urllib.request.Request("https://bp.blogspot.com/missing.png")
+        with patch("http.client.HTTPSConnection", MockHTTPSConnection):
+            resp = handler.https_open(req)
+            resp.close()
+
+        # Undrained response must close connection and NOT pool it
+        self.assertEqual(len(handler._pool), 0)
+        self.assertTrue(conns_created[0].closed)
+
+    def test_keep_alive_https_handler_updates_timeout_on_reused_connection(self) -> None:
+        """Verify reused connection updates connection and socket timeouts to match new request."""
+        handler = _KeepAliveHTTPSHandler()
+        conns_created: List[Any] = []
+
+        class MockHTTPSConnection:
+            """Mock connection tracking timeout and socket settimeout calls."""
+
+            def __init__(self, host: str, port: int = 443, timeout: Any = None, **kwargs: Any) -> None:
+                """Initialize mock connection."""
+                self.host = host
+                self.port = port
+                self.timeout = timeout
+                self.sock = MagicMock()
+                self.sock._closed = False
+                self.closed = False
+                conns_created.append(self)
+
+            def request(self, method: str, url: str, body: Any = None, headers: Optional[Dict[str, str]] = None) -> None:
+                """Mock request call."""
+                pass
+
+            def getresponse(self) -> Any:
+                """Mock response with drained body."""
+                resp = MagicMock()
+                resp.status = 200
+                resp.reason = "OK"
+                resp.headers = {"Content-Length": "2"}
+                resp.will_close = False
+                resp.isclosed = MagicMock(return_value=True)
+                resp.read = MagicMock(return_value=b"OK")
+                resp.close = MagicMock()
+                return resp
+
+            def close(self) -> None:
+                """Close mock connection."""
+                self.closed = True
+                if self.sock:
+                    self.sock._closed = True
+
+        req1 = urllib.request.Request("https://1.bp.blogspot.com/thumb.png")
+        req1.timeout = 8.0  # type: ignore[attr-defined]
+
+        req2 = urllib.request.Request("https://1.bp.blogspot.com/full.png")
+        req2.timeout = 15.0  # type: ignore[attr-defined]
+
+        with patch("http.client.HTTPSConnection", MockHTTPSConnection):
+            resp1 = handler.https_open(req1)
+            self.assertEqual(resp1.read(), b"OK")
+            resp1.close()
+
+            # Connection should be pooled
+            self.assertEqual(len(handler._pool), 1)
+
+            # Reused connection should update timeout to req2.timeout
+            resp2 = handler.https_open(req2)
+            self.assertEqual(conns_created[0].timeout, 15.0)
+            conns_created[0].sock.settimeout.assert_called_with(15.0)
+            resp2.close()
+
+        handler.close()
+
+    def test_keep_alive_https_handler_does_not_pool_after_close(self) -> None:
+        """Verify in-flight responses closed after handler.close() are closed and not re-pooled."""
+        handler = _KeepAliveHTTPSHandler()
+        conns_created: List[Any] = []
+
+        class MockHTTPSConnection:
+            """Mock connection tracking close state."""
+
+            def __init__(self, host: str, port: int = 443, **kwargs: Any) -> None:
+                """Initialize mock connection."""
+                self.host = host
+                self.port = port
+                self.sock = MagicMock()
+                self.sock._closed = False
+                self.closed = False
+                conns_created.append(self)
+
+            def request(self, method: str, url: str, body: Any = None, headers: Optional[Dict[str, str]] = None) -> None:
+                """Mock request call."""
+                pass
+
+            def getresponse(self) -> Any:
+                """Mock response with drained body."""
+                resp = MagicMock()
+                resp.status = 200
+                resp.reason = "OK"
+                resp.headers = {"Content-Length": "2"}
+                resp.will_close = False
+                resp.isclosed = MagicMock(return_value=True)
+                resp.read = MagicMock(return_value=b"OK")
+                resp.close = MagicMock()
+                return resp
+
+            def close(self) -> None:
+                """Close mock connection."""
+                self.closed = True
+                if self.sock:
+                    self.sock._closed = True
+
+        req = urllib.request.Request("https://1.bp.blogspot.com/thumb.png")
+        with patch("http.client.HTTPSConnection", MockHTTPSConnection):
+            resp = handler.https_open(req)
+            self.assertEqual(resp.read(), b"OK")
+
+            # Handler is closed while response is still open
+            handler.close()
+            self.assertEqual(len(handler._pool), 0)
+
+            # Closing response after handler.close() must close connection, not re-pool it
+            resp.close()
+            self.assertEqual(len(handler._pool), 0)
+            self.assertTrue(conns_created[0].closed)
 
 
 if __name__ == "__main__":
