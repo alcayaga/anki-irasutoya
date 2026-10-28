@@ -1,6 +1,6 @@
 """Main dialog shell for mapping card fields and executing batch or interactive image insertion."""
 import os
-from typing import Dict, List, Optional, Sequence, Set
+from typing import Any, Dict, List, Optional, Sequence, Set
 
 from aqt.qt import (
     QButtonGroup,
@@ -29,7 +29,8 @@ from ..config import (
     update_user_preferences,
 )
 from ..feed import IrasutoyaImage
-from .batch_view import _BatchModeMixin, _get_mw
+from .batch_view import _BatchModeMixin
+from .helpers import _get_mw
 from .single_view import _SingleNoteModeMixin
 from .styles import (
     DIALOG_STYLESHEET,
@@ -48,7 +49,7 @@ class IrasutoyaDialog(_SingleNoteModeMixin, _BatchModeMixin, QDialog):
         super().__init__(parent)
         self.browser = browser
         self.note_ids: List[int] = list(dict.fromkeys(note_ids))
-        self.config: Dict[str, any] = get_config()
+        self.config: Dict[str, Any] = get_config()
         self.store = default_store()
         self.store.warm_async()
         self.client = IrasutoyaClient(catalog=self.store)
@@ -57,7 +58,7 @@ class IrasutoyaDialog(_SingleNoteModeMixin, _BatchModeMixin, QDialog):
         self.image_cards: List[ImageCardWidget] = []
         self.first_note = None
         self._applying: bool = False
-        self._note_cache: Dict[int, any] = {}
+        self._note_cache: Dict[int, Any] = {}
 
         mw = _get_mw()
         if self.note_ids and mw and hasattr(mw, "col") and mw.col:
@@ -127,7 +128,7 @@ class IrasutoyaDialog(_SingleNoteModeMixin, _BatchModeMixin, QDialog):
         if not self.store.is_loaded() and not self.store.is_load_failed() and os.path.isfile(self.store.path):
             QTimer.singleShot(250, tick)
 
-    def _get_cached_note(self, nid: int) -> Optional[any]:
+    def _get_cached_note(self, nid: int) -> Optional[Any]:
         """Fetch a note with in-dialog memory caching to prevent redundant collection reads."""
         if nid not in self._note_cache:
             try:

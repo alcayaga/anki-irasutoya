@@ -1,10 +1,23 @@
 """Headless helper functions for snippet formatting, match classification, and catalog probing."""
 import html
 import re
-from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
+import sys
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from ..feed import IrasutoyaImage
 from ..ranking import is_decorative_asset, is_image_relevant, is_title_match
+
+
+def _get_mw() -> Any:
+    """Return the active Anki main window instance, respecting mock patches on addon.ui.mw."""
+    ui_mod = sys.modules.get("addon.ui")
+    if ui_mod is not None and hasattr(ui_mod, "mw"):
+        return ui_mod.mw
+    try:
+        from aqt import mw
+        return mw
+    except Exception:
+        return None
 
 
 class _StaleSearch(Exception):
@@ -80,7 +93,7 @@ def format_fallback_reason(
 
 
 def probe_catalog_term(
-    catalog: any,
+    catalog: Any,
     term: str,
     image_size: str,
     count_cache: Dict[str, int],
@@ -102,7 +115,7 @@ def probe_catalog_term(
 
 
 def probe_catalog_candidates(
-    catalog: any,
+    catalog: Any,
     image_size: str,
     candidate_terms: Sequence[str],
     restore_term: Optional[str],

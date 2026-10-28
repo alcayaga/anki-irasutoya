@@ -25,7 +25,6 @@ ADDON_DIR = os.path.join(REPO_ROOT, "addon")
 # Strict allowlist of file patterns relative to addon/
 ALLOWLIST_PATTERNS = [
     "*.py",
-    "ui/*.py",
     "manifest.json",
     "config.json",
     "config.md",

@@ -1,6 +1,5 @@
 """Batch mode view mixin and preview table controller."""
-import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, List, Tuple
 
 from aqt.qt import (
     QAbstractItemView,
@@ -19,6 +18,7 @@ from aqt.utils import showWarning
 
 from ..batch import run_batch_fill
 from ..text_utils import clean_search_query, generate_search_candidates
+from .helpers import _get_mw
 from .styles import (
     BATCH_TABLE_STYLE,
     CHIP_FILL_STYLE,
@@ -28,18 +28,6 @@ from .styles import (
 
 if TYPE_CHECKING:
     from .dialog import IrasutoyaDialog
-
-
-def _get_mw() -> any:
-    """Return the active Anki main window instance, respecting mock patches on addon.ui.mw."""
-    ui_mod = sys.modules.get("addon.ui")
-    if ui_mod is not None and hasattr(ui_mod, "mw"):
-        return ui_mod.mw
-    try:
-        from aqt import mw
-        return mw
-    except Exception:
-        return None
 
 
 class _BatchModeMixin:
@@ -154,30 +142,57 @@ class _BatchModeMixin:
         target_field = self.combo_target.currentText()
         is_overwrite = hasattr(self, "radio_overwrite") and self.radio_overwrite.isChecked()
 
-        # Calculate counts across all selected notes using cached notes
+        # Calculate counts and precompute preview rows in a single pass
         count_fill = 0
         count_overwrite = 0
         count_skip = 0
+        max_preview = 30
+        preview_rows: List[Tuple[str, str, str, str]] = []
 
         for nid in self.note_ids:
             try:
                 note = self._get_cached_note(nid)
-                if not note or not target_field or target_field not in note or not source_field or source_field not in note:
+                if not note:
                     count_skip += 1
+                    if len(preview_rows) < max_preview:
+                        preview_rows.append((" (Failed to load)", "Unavailable", "Will Skip", "#8E8E93"))
                     continue
+
+                if not target_field or target_field not in note or not source_field or source_field not in note:
+                    count_skip += 1
+                    if len(preview_rows) < max_preview:
+                        preview_rows.append((" (Missing Field)", "Missing Field", "Will Skip", "#8E8E93"))
+                    continue
+
                 raw_src = note[source_field]
                 candidates = generate_search_candidates(raw_src, note=note, allow_tier2=True)
                 has_target = bool(note[target_field].strip())
+
                 if not candidates:
                     count_skip += 1
+                    action_text = "Will Skip"
+                    color_hex = "#8E8E93"
                 elif not has_target:
                     count_fill += 1
+                    action_text = "Will Fill"
+                    color_hex = "#30D158"
                 elif is_overwrite:
                     count_overwrite += 1
+                    action_text = "Will Overwrite"
+                    color_hex = "#0A84FF"
                 else:
                     count_skip += 1
+                    action_text = "Will Skip"
+                    color_hex = "#8E8E93"
+
+                if len(preview_rows) < max_preview:
+                    query = candidates[0][0] if candidates else (clean_search_query(raw_src) or "(Empty)")
+                    target_status = "Has Content" if has_target else "Empty"
+                    preview_rows.append((f" {query}", target_status, action_text, color_hex))
             except Exception:
                 count_skip += 1
+                if len(preview_rows) < max_preview:
+                    preview_rows.append((" (Error)", "Unavailable", "Will Skip", "#8E8E93"))
 
         # Update Summary Chips
         if hasattr(self, "chip_fill") and hasattr(self, "chip_other"):
@@ -203,84 +218,21 @@ class _BatchModeMixin:
                 self.btn_batch.setText(f"Start Batch Fill ({active_total})")
                 self.btn_batch.setEnabled(True)
 
-        max_preview = 30
-        preview_notes = self.note_ids[:max_preview]
+        self.table_preview.setRowCount(len(preview_rows))
 
-        self.table_preview.setRowCount(len(preview_notes))
+        for row_idx, (src_text, tgt_text, act_text, color_hex) in enumerate(preview_rows):
+            item_src = QTableWidgetItem(src_text)
+            item_tgt = QTableWidgetItem(tgt_text)
+            item_act = QTableWidgetItem(act_text)
 
-        for row_idx, nid in enumerate(preview_notes):
-            try:
-                note = self._get_cached_note(nid)
-                if not note:
-                    item_src = QTableWidgetItem(" (Failed to load)")
-                    item_tgt = QTableWidgetItem("Unavailable")
-                    item_act = QTableWidgetItem("Will Skip")
-                    item_src.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
-                    item_tgt.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                    item_act.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                    item_act.setForeground(QColor("#8E8E93"))
-                    self.table_preview.setItem(row_idx, 0, item_src)
-                    self.table_preview.setItem(row_idx, 1, item_tgt)
-                    self.table_preview.setItem(row_idx, 2, item_act)
-                    continue
+            item_src.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+            item_tgt.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            item_act.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            item_act.setForeground(QColor(color_hex))
 
-                if not target_field or target_field not in note or not source_field or source_field not in note:
-                    item_src = QTableWidgetItem(" (Missing Field)")
-                    item_tgt = QTableWidgetItem("Missing Field")
-                    item_act = QTableWidgetItem("Will Skip")
-                    item_src.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
-                    item_tgt.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                    item_act.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                    item_act.setForeground(QColor("#8E8E93"))
-                    self.table_preview.setItem(row_idx, 0, item_src)
-                    self.table_preview.setItem(row_idx, 1, item_tgt)
-                    self.table_preview.setItem(row_idx, 2, item_act)
-                    continue
-
-                raw_src = note[source_field]
-                candidates = generate_search_candidates(raw_src, note=note, allow_tier2=True)
-                query = candidates[0][0] if candidates else (clean_search_query(raw_src) or "(Empty)")
-
-                has_target = bool(note[target_field].strip())
-                target_status = "Has Content" if has_target else "Empty"
-
-                if not candidates:
-                    action_text = "Will Skip"
-                    color_hex = "#8E8E93"  # Muted secondary gray
-                elif not has_target:
-                    action_text = "Will Fill"
-                    color_hex = "#30D158"  # Apple HIG vibrant green
-                elif is_overwrite:
-                    action_text = "Will Overwrite"
-                    color_hex = "#0A84FF"  # Apple HIG system blue
-                else:
-                    action_text = "Will Skip"
-                    color_hex = "#8E8E93"  # Muted secondary gray
-
-                item_src = QTableWidgetItem(f" {query}")
-                item_tgt = QTableWidgetItem(target_status)
-                item_act = QTableWidgetItem(action_text)
-
-                item_src.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
-                item_tgt.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                item_act.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-
-                item_act.setForeground(QColor(color_hex))
-
-                self.table_preview.setItem(row_idx, 0, item_src)
-                self.table_preview.setItem(row_idx, 1, item_tgt)
-                self.table_preview.setItem(row_idx, 2, item_act)
-            except Exception:
-                item_src = QTableWidgetItem(" (Error)")
-                item_tgt = QTableWidgetItem("Unavailable")
-                item_act = QTableWidgetItem("Will Skip")
-                item_src.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
-                item_tgt.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                item_act.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                item_act.setForeground(QColor("#8E8E93"))
-                self.table_preview.setItem(row_idx, 0, item_src)
-                self.table_preview.setItem(row_idx, 1, item_tgt)
-                self.table_preview.setItem(row_idx, 2, item_act)
+            self.table_preview.setItem(row_idx, 0, item_src)
+            self.table_preview.setItem(row_idx, 1, item_tgt)
+            self.table_preview.setItem(row_idx, 2, item_act)
 
         total = len(self.note_ids)
         if total > max_preview:

@@ -1,9 +1,8 @@
 """Single-card visual picker view mixin and gallery controller."""
 import logging
-import sys
 import threading
 import urllib.parse
-from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Set, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from aqt.qt import (
     QFrame,
@@ -50,18 +49,6 @@ if TYPE_CHECKING:
     from .dialog import IrasutoyaDialog
 
 logger = logging.getLogger(__name__)
-
-
-def _get_mw() -> any:
-    """Return the active Anki main window instance, respecting mock patches on addon.ui.mw."""
-    ui_mod = sys.modules.get("addon.ui")
-    if ui_mod is not None and hasattr(ui_mod, "mw"):
-        return ui_mod.mw
-    try:
-        from aqt import mw
-        return mw
-    except Exception:
-        return None
 
 
 class _SingleNoteModeMixin:
@@ -634,7 +621,7 @@ class _SingleNoteModeMixin:
 
                     filename = make_safe_media_filename(query, best_img.title)
 
-                    def commit_single(col: any) -> any:
+                    def commit_single(col: Any) -> Any:
                         """Write media and assign field to fresh note."""
                         fresh_note = col.get_note(self.first_note.id)
                         if target_field not in fresh_note:
@@ -644,9 +631,9 @@ class _SingleNoteModeMixin:
                         fresh_note[target_field] = f'<img src="{encoded_src}">'
                         return fresh_note
 
-                    def on_committed(fresh_note: any) -> None:
+                    def on_committed(fresh_note: Any) -> None:
                         """Update notes and close dialog upon successful commit."""
-                        def on_update_success(_: any) -> None:
+                        def on_update_success(_: Any) -> None:
                             """Notify success and close dialog."""
                             tooltip(f"Added '{best_img.title}' to {target_field}.", parent=self.browser)
                             if self.isVisible():

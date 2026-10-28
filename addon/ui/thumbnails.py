@@ -3,7 +3,7 @@ import threading
 import time
 from collections import OrderedDict
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from aqt.qt import QByteArray, QImage, QPixmap, Qt
 
@@ -96,7 +96,9 @@ class ThumbnailLoader:
         self._next_request_time: float = 0.0
         self._burst_remaining: int = initial_burst
         self.initial_burst: int = initial_burst
-        self.byte_cache: _ThumbnailByteCache = session_cache or _SESSION_THUMB_CACHE
+        self.byte_cache: _ThumbnailByteCache = (
+            session_cache if session_cache is not None else _SESSION_THUMB_CACHE
+        )
         self.pixmap_cache: OrderedDict[str, QPixmap] = OrderedDict()
         self._inflight: Dict[str, threading.Event] = {}
         self._inflight_lock: threading.Lock = threading.Lock()
@@ -162,9 +164,9 @@ class ThumbnailLoader:
 
     def fetch_thumbnail_task(
         self,
-        card: any,
+        card: Any,
         gen: int,
-        client: any,
+        client: Any,
         is_current_gen: Callable[[int], bool],
         run_on_main: Callable[[Callable[[], None]], None],
         delay_ms: int = 50,
@@ -241,7 +243,7 @@ class ThumbnailLoader:
 
     def _process_and_apply_thumbnail(
         self,
-        card: any,
+        card: Any,
         gen: int,
         thumb_data: bytes,
         scaled_qimg: Optional[QImage],
@@ -260,7 +262,7 @@ class ThumbnailLoader:
 
     def _apply_thumbnail(
         self,
-        card: any,
+        card: Any,
         gen: int,
         thumb_data: bytes,
         scaled_qimg: Optional[QImage],
