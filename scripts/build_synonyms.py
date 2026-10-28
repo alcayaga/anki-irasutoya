@@ -3,6 +3,7 @@
 import argparse
 import csv
 import hashlib
+import http.client
 import json
 import logging
 import os
@@ -571,19 +572,25 @@ CANONICAL_MATCH_BOUNDARIES = frozenset({"exact_quoted", "standalone", "polite_pr
 def fetch_sudachi_github(
     cache_dir: str = ".catalog_cache",
     url: str = SUDACHI_DICT_RAW_URL,
+    max_age_days: float = 7.0,
 ) -> str:
     """Fetch SudachiDict synonyms.txt from GitHub raw content into cache_dir.
 
     Args:
         cache_dir: Directory to cache fetched synonyms.txt file.
         url: Remote URL for SudachiDict synonyms.txt.
+        max_age_days: Maximum age of cached file in days before refreshing.
 
     Returns:
         Path to local cached synonyms.txt file.
     """
     os.makedirs(cache_dir, exist_ok=True)
     out_path = os.path.join(cache_dir, "sudachi_synonyms.txt")
-    if os.path.isfile(out_path) and os.path.getsize(out_path) > 1024 * 1024:
+    if (
+        os.path.isfile(out_path)
+        and os.path.getsize(out_path) > 1024 * 1024
+        and (time.time() - os.path.getmtime(out_path) < max_age_days * 86400)
+    ):
         logger.info("Reusing cached SudachiDict synonyms at %s", out_path)
         return out_path
 
@@ -784,10 +791,27 @@ def populate_sudachi_synonyms(
             if final_targets:
                 clean_mapping[s_term] = final_targets
 
+    new_rows = sum(len(t) for t in clean_mapping.values())
+    if new_rows == 0:
+        logger.error("Sudachi compilation produced 0 synonym rows; refusing to overwrite existing data.")
+        return False
+
     logger.info("Writing %d Sudachi synonym mappings into %s...", len(clean_mapping), catalog_path)
     conn = sqlite3.connect(catalog_path)
     committed = False
     try:
+        existing = (
+            conn.execute("SELECT count(*) FROM synonyms WHERE source = 'sudachi'").fetchone()[0]
+            if has_syns
+            else 0
+        )
+        if existing > 0 and new_rows < existing * 0.8:
+            logger.error(
+                "Sudachi import produced %d rows, significantly fewer than %d existing rows; refusing replacement.",
+                new_rows,
+                existing,
+            )
+            return False
         inserted = write_synonyms(conn, source="sudachi", mapping=clean_mapping, commit=False)
         conn.commit()
         committed = True
@@ -973,7 +997,7 @@ def main(argv: Sequence[str]) -> int:
     if args.sudachi_github:
         try:
             sudachi_path = fetch_sudachi_github(cache_dir=args.cache_dir)
-        except (OSError, ValueError, urllib.error.URLError) as exc:
+        except (OSError, ValueError, urllib.error.URLError, http.client.HTTPException) as exc:
             logger.error("Failed to fetch SudachiDict synonyms from GitHub: %s", exc)
             return 1
         ok = populate_sudachi_synonyms(catalog_path=args.catalog, sudachi_file_path=sudachi_path)

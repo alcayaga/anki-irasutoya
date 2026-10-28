@@ -446,6 +446,34 @@ class TestBuildSynonyms(unittest.TestCase):
 
         self.assertFalse(populate_sudachi_synonyms(self.db_path, csv_path_valid))
 
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT count(*) FROM synonyms WHERE source = 'sudachi'")
+        self.assertEqual(cur.fetchone()[0], 0)
+        conn.close()
+
+    def test_populate_sudachi_synonyms_incomplete_collection_refuses_replacement(self) -> None:
+        """Verify populate_sudachi_synonyms refuses to replace existing data if new count is below 80%."""
+        # Pre-seed 10 existing sudachi rows
+        conn = sqlite3.connect(self.db_path)
+        seed_mapping = {f"term_{i}": [f"tgt_{i}"] for i in range(10)}
+        write_synonyms(conn, source="sudachi", mapping=seed_mapping)
+        conn.close()
+
+        # CSV that compiles to only 1 row (< 80% of 10)
+        csv_path = os.path.join(self.temp_dir.name, "small_sudachi.txt")
+        with open(csv_path, "w", encoding="utf-8") as f:
+            f.write("000001,1,0,1,0,0,0,(),イヌ,,\n000001,1,0,2,0,0,0,(),猫,,\n")
+
+        self.assertFalse(populate_sudachi_synonyms(self.db_path, csv_path))
+
+        # Confirm original 10 rows are preserved
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT count(*) FROM synonyms WHERE source = 'sudachi'")
+        self.assertEqual(cur.fetchone()[0], 10)
+        conn.close()
+
     def test_main_cli_sudachi_and_validate(self) -> None:
         """Verify main CLI executes --sudachi and --validate flags."""
         csv_path = os.path.join(self.temp_dir.name, "cli_sudachi.txt")
