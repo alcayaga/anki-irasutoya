@@ -68,6 +68,15 @@ jobs:
               exit 1
             fi
           fi
+          if ! python scripts/build_synonyms.py --catalog addon/data/catalog.sqlite --sudachi-github; then
+            SUDACHI_SYNS=$(sqlite3 addon/data/catalog.sqlite "SELECT count(*) FROM synonyms WHERE source = 'sudachi'")
+            if [ "$SUDACHI_SYNS" -gt 0 ]; then
+              echo "::warning::Sudachi refresh failed; preserving carried-over Sudachi data ($SUDACHI_SYNS synonyms)."
+            else
+              echo "::error::Sudachi refresh failed and no carried-over data present; failing build."
+              exit 1
+            fi
+          fi
           python scripts/build_synonyms.py \
             --catalog addon/data/catalog.sqlite \
             --validate

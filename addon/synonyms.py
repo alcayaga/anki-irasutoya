@@ -67,3 +67,19 @@ def lookup_kaishi_concept(
     """
     return lookup_synonyms(term, source="donkuri/kaishi", store=store)
 
+
+def lookup_sudachi_synonyms(
+    term: str,
+    store: Optional[CatalogStore] = None,
+) -> List[str]:
+    """Look up prioritized Sudachi synonym target queries for a given term.
+
+    Args:
+        term: Japanese vocabulary headword or phrase to look up.
+        store: Optional CatalogStore instance (defaults to global default_store()).
+
+    Returns:
+        List of catalog-verified search queries from the 'sudachi' synonym dictionary source.
+    """
+    return lookup_synonyms(term, source="sudachi", store=store)
+

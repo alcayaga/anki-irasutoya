@@ -4,7 +4,11 @@ import re
 import unicodedata
 from typing import Any, Callable, List, Optional, Tuple
 
-from .synonyms import lookup_concept_map, lookup_kaishi_concept
+from .synonyms import (
+    lookup_concept_map,
+    lookup_kaishi_concept,
+    lookup_sudachi_synonyms,
+)
 from .yomitan_parser import (
     extract_yomitan_metadata_from_note,
 )
@@ -518,6 +522,7 @@ def generate_search_candidates(
     store: Optional[Any] = None,
     concept_lookup: Optional[Callable[[str], List[str]]] = None,
     kaishi_lookup: Optional[Callable[[str], List[str]]] = None,
+    sudachi_lookup: Optional[Callable[[str], List[str]]] = None,
 ) -> List[Tuple[str, str, int]]:
     """Generate prioritized search candidate queries with confidence tiers.
     
@@ -528,7 +533,7 @@ def generate_search_candidates(
         Tier 2 (Phonetic & Reading Fallbacks): Readings from separate note fields,
                        same-field furigana, verb masu-stems, Katakana chōonpu expansion, heuristic compound deinflection,
                        Yomitan sense-specific kanji (esp.), Yomitan cross-references (see:),
-                       curated visual concept maps, Kaishi 1.5k concept bridges.
+                       curated visual concept maps, Kaishi 1.5k concept bridges, SudachiDict synonym bridges.
     
     Args:
         raw_source: Raw text or HTML from the source field.
@@ -538,6 +543,7 @@ def generate_search_candidates(
         store: Optional CatalogStore instance to resolve concept maps from.
         concept_lookup: Optional callable mapping a headword to a list of target concept strings.
         kaishi_lookup: Optional callable mapping a headword to a list of Kaishi 1.5k target strings.
+        sudachi_lookup: Optional callable mapping a headword to a list of Sudachi synonym target strings.
 
     Returns:
         List of (candidate_query, reason_label, confidence_tier).
@@ -702,6 +708,10 @@ def generate_search_candidates(
             add(same_field_reading, "same_field_reading", 2)
             if not _should_suppress_katakana_conversion(same_field_reading, yomitan_meta):
                 add(to_katakana(same_field_reading), "same_field_reading_katakana", 2)
+
+        # Sudachi synonym dictionary lookup (e.g. 就寝 -> 寝る, 購入 -> 買う, 飲料 -> 飲み物)
+        for s_target in _resolve_source_targets(sudachi_lookup, lookup_sudachi_synonyms):
+            add(s_target, "sudachi_synonym", 2)
 
         # Katakana elongation mark expansion (メンバ -> メンバー, サーバ -> サーバー)
         for chouon_variant in expand_katakana_chouon(surface):
