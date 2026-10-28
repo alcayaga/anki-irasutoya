@@ -6,6 +6,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+import urllib.error
 import zipfile
 from unittest.mock import patch
 
@@ -434,6 +435,10 @@ class TestBuildSynonyms(unittest.TestCase):
             f.write("000001,1,0,1,0,0,0,(),犬,,\n000001,1,0,2,0,0,0,(),猫,,\n")
 
         conn = sqlite3.connect(self.db_path)
+        write_synonyms(conn, source="sudachi", mapping={"旧語": ["猫"]})
+        conn.close()
+
+        conn = sqlite3.connect(self.db_path)
         conn.execute(
             """
             CREATE TRIGGER fail_sudachi BEFORE INSERT ON synonyms
@@ -449,8 +454,8 @@ class TestBuildSynonyms(unittest.TestCase):
 
         conn = sqlite3.connect(self.db_path)
         cur = conn.cursor()
-        cur.execute("SELECT count(*) FROM synonyms WHERE source = 'sudachi'")
-        self.assertEqual(cur.fetchone()[0], 0)
+        cur.execute("SELECT term, target FROM synonyms WHERE source = 'sudachi'")
+        self.assertEqual(cur.fetchall(), [("旧語", "猫")])
         conn.close()
 
     def test_populate_sudachi_synonyms_incomplete_collection_refuses_replacement(self) -> None:
@@ -490,6 +495,21 @@ class TestBuildSynonyms(unittest.TestCase):
         rows = cur.fetchall()
         conn.close()
         self.assertEqual(rows, [("イヌ", "猫")])
+
+    def test_main_cli_sudachi_github_mocked(self) -> None:
+        """Verify main() handles --sudachi-github success and fetch failure."""
+        csv_path = os.path.join(self.temp_dir.name, "gh_sudachi.txt")
+        with open(csv_path, "w", encoding="utf-8") as f:
+            f.write("000001,1,0,1,0,0,0,(),イヌ,,\n000001,1,0,2,0,0,0,(),猫,,\n")
+
+        with patch("scripts.build_synonyms.fetch_sudachi_github", return_value=csv_path):
+            self.assertEqual(main(["--catalog", self.db_path, "--sudachi-github"]), 0)
+
+        with patch(
+            "scripts.build_synonyms.fetch_sudachi_github",
+            side_effect=urllib.error.URLError("Simulated network failure"),
+        ):
+            self.assertEqual(main(["--catalog", self.db_path, "--sudachi-github"]), 1)
 
     def test_fetch_sudachi_github_mocked(self) -> None:
         """Verify fetch_sudachi_github downloads, validates minimum size, and caches synonyms.txt."""
