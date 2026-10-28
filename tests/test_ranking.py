@@ -5,6 +5,7 @@ from unittest.mock import patch
 from addon.feed import IrasutoyaImage
 from addon.ranking import (
     PRONOUNS_DESCRIPTION_BLOCKLIST,
+    _is_byproduct_modifier_title,
     calculate_category_score,
     classify_match_boundary,
     has_title_illustration_match,
@@ -139,6 +140,16 @@ class TestRanking(unittest.TestCase):
         yasumi_img = IrasutoyaImage("夏休みのイラスト", "https://example.com/y.png", "https://example.com/t.png", "夏休み")
         self.assertTrue(is_image_relevant(yasumi_img, "休み"))
 
+        # Case-insensitive Latin queries
+        cupid_img = IrasutoyaImage("Cupidのイラスト", "https://example.com/cupid.png", "https://example.com/thumb.png", "Cupidのイラスト")
+        self.assertTrue(is_image_relevant(cupid_img, "cupid"))
+        self.assertTrue(is_image_relevant(cupid_img, "Cupid"))
+        self.assertFalse(is_image_relevant(cupid_img, "cup"))
+        smr_img = IrasutoyaImage("SMRのキャラクター", "https://example.com/smr.png", "https://example.com/thumb.png", "SMRのイラスト")
+        self.assertTrue(is_image_relevant(smr_img, "smr"))
+        e_img = IrasutoyaImage("Éのイラスト", "https://example.com/e.png", "https://example.com/t.png", "Éのイラスト")
+        self.assertTrue(is_image_relevant(e_img, "é"))
+
     def test_classify_match_boundary(self):
         """Test fine-grained morphological boundary classification."""
         # Quoted concepts
@@ -234,6 +245,26 @@ class TestRanking(unittest.TestCase):
         # Canonical mark titles matching query
         self.assertEqual(classify_match_boundary("禁止マークのイラスト", "禁止"), "exact_quoted")
         self.assertEqual(classify_match_boundary("初心者マークのイラスト", "初心者"), "exact_quoted")
+
+        # Case-insensitive Latin queries
+        self.assertEqual(classify_match_boundary("Cupidのイラスト", "cupid"), "exact_quoted")
+        self.assertEqual(classify_match_boundary("cupidのイラスト", "Cupid"), "exact_quoted")
+        self.assertEqual(classify_match_boundary("SMRのイラスト", "smr"), "exact_quoted")
+        self.assertEqual(classify_match_boundary("AIに取り込まれた人のイラスト", "ai"), "standalone")
+        self.assertEqual(classify_match_boundary("リアルタイムPCRのイラスト", "pcr"), "compound")
+        # Embedded Latin word collision should be rejected
+        self.assertEqual(classify_match_boundary("Cupidのイラスト", "cup"), "none")
+        self.assertEqual(classify_match_boundary("Catching upのイラスト", "cat"), "none")
+
+        # Expanding characters in casefold (e.g. ß -> ss) must preserve adjacent offsets
+        self.assertEqual(classify_match_boundary("Straße Catのイラスト", "cat"), "standalone")
+
+        # Untrimmed leading whitespace must not shift prefix evaluation
+        self.assertEqual(classify_match_boundary("  はくちょうのイラスト", "くちょう"), "none")
+
+        # Accented Latin characters (e.g. É -> é, Café -> café)
+        self.assertEqual(classify_match_boundary("Éのイラスト", "é"), "exact_quoted")
+        self.assertEqual(classify_match_boundary("Caféのイラスト", "café"), "exact_quoted")
 
     def test_score_callout_text_heavy_penalty(self):
         """Test that illustrated text callouts receive heavy penalty instead of hard rejection."""
@@ -412,6 +443,22 @@ class TestRanking(unittest.TestCase):
 
         best = select_best_image([img_action, img_obj], "車", pos_type="noun")
         self.assertEqual(best, img_obj)
+
+        # Latin query case-insensitive category boost eligibility
+        img_cat = IrasutoyaImage(
+            title="CATのイラスト",
+            image_url="https://example.com/cat.png",
+            thumb_url="https://example.com/t.png",
+            post_title="CATのイラスト",
+            categories=("動物", "ペット"),
+        )
+        score_cat = score_candidate_image(img_cat, "cat", pos_type="noun")
+        score_cat_nocat = score_candidate_image(
+            IrasutoyaImage("CATのイラスト", "https://example.com/cat.png", "https://example.com/t.png", "CATのイラスト"),
+            "cat",
+            pos_type="noun",
+        )
+        self.assertGreater(score_cat, score_cat_nocat)
 
     def test_anti_archetype_category_penalties(self):
         """Verify anti-archetype categories (文字, マーク, フレーム) receive negative adjustments."""
@@ -975,6 +1022,18 @@ class TestRanking(unittest.TestCase):
         self.assertAlmostEqual(score_rice, 3.8, delta=0.1)
         self.assertGreater(score_bundle, score_brush)
         self.assertGreater(score_bundle, score_rice)
+
+        # Case-insensitive byproduct modifier detection
+        self.assertTrue(_is_byproduct_modifier_title("Cupidのついた箱のイラスト", "cupid"))
+        self.assertTrue(_is_byproduct_modifier_title("cupidのついた箱のイラスト", "Cupid"))
+        img_cupid_box = IrasutoyaImage(
+            title="Cupidのついた箱のイラスト",
+            image_url="https://example.com/box.png",
+            thumb_url="https://example.com/t.png",
+            post_title="Cupidのついた箱のイラスト",
+        )
+        score_cupid_box = score_candidate_image(img_cupid_box, "cupid", pos_type="noun")
+        self.assertLess(score_cupid_box, 30.0)
 
     def test_compound_prefix_synonym_headword_tolerance(self) -> None:
         """Verify compound headwords with standalone synonyms receive positive adjustment."""

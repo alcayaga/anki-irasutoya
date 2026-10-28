@@ -220,10 +220,17 @@ def _is_byproduct_modifier_title(text: Optional[str], query: str) -> bool:
     """Return True if title describes a byproduct modifier (e.g. 髪の毛のついたブラシ, 髪の毛の入ったご飯)."""
     if not text or not query:
         return False
+    t = text.strip()
     q = query.strip()
+    t_cf = t.casefold()
+    q_cf = q.casefold()
     return any(
-        text.startswith(f"{prefix}{sep}")
-        for prefix in (q, f"お{q}", f"ご{q}")
+        t.startswith(f"{prefix}{sep}") or t_cf.startswith(f"{cf_prefix}{sep}")
+        for prefix, cf_prefix in (
+            (q, q_cf),
+            (f"お{q}", f"お{q_cf}"),
+            (f"ご{q}", f"ご{q_cf}"),
+        )
         for sep in BYPRODUCT_MODIFIER_SEPARATORS
     )
 
@@ -446,52 +453,105 @@ def classify_match_boundary(text: str, query: str) -> str:
     if not text or not query:
         return "none"
 
+    clean_text = text.strip()
+    clean_query = query.strip()
+    if not clean_text or not clean_query:
+        return "none"
+
+    has_latin = any(ch.casefold() != ch.upper() for ch in clean_query)
+    t_cf = clean_text.casefold() if has_latin else ""
+    q_cf = clean_query.casefold() if has_latin else ""
+
     if (
-        f"「{query}」" in text
-        or f"『{query}』" in text
-        or f"（{query}）" in text
-        or f"({query})" in text
-        or text in (
-            query,
-            f"{query}のイラスト",
-            f"かわいい{query}のイラスト",
+        f"「{clean_query}」" in clean_text
+        or f"『{clean_query}』" in clean_text
+        or f"（{clean_query}）" in clean_text
+        or f"({clean_query})" in clean_text
+        or (
+            has_latin
+            and (
+                f"「{q_cf}」" in t_cf
+                or f"『{q_cf}』" in t_cf
+                or f"（{q_cf}）" in t_cf
+                or f"({q_cf})" in t_cf
+            )
         )
-        or _is_canonical_mark_title(text, query)
+        or clean_text in (
+            clean_query,
+            f"{clean_query}のイラスト",
+            f"かわいい{clean_query}のイラスト",
+        )
+        or (
+            has_latin
+            and t_cf in (
+                q_cf,
+                f"{q_cf}のイラスト",
+                f"かわいい{q_cf}のイラスト",
+            )
+        )
+        or _is_canonical_mark_title(clean_text, clean_query)
+        or (has_latin and _is_canonical_mark_title(t_cf, q_cf))
     ):
         return "exact_quoted"
 
-    is_pure_kana = bool(re.fullmatch(r"[\u3040-\u309F\u30A0-\u30FF]+", query))
-    is_pure_kanji = bool(re.fullmatch(r"[\u4e00-\u9fff\u3400-\u4dbf々〆〇]+", query))
+    is_pure_kana = bool(re.fullmatch(r"[\u3040-\u309F\u30A0-\u30FF]+", clean_query))
+    is_pure_kanji = bool(re.fullmatch(r"[\u4e00-\u9fff\u3400-\u4dbf々〆〇]+", clean_query))
 
     start = 0
     best_quality = "none"
     while True:
-        idx = text.find(query, start)
-        if idx == -1:
-            break
-        start = idx + 1
-        prev_ch = text[idx - 1] if idx > 0 else ""
-        next_ch = text[idx + len(query)] if idx + len(query) < len(text) else ""
+        if has_latin:
+            idx = t_cf.find(q_cf, start)
+            if idx == -1:
+                break
+            start = idx + 1
+            prev_ch = t_cf[idx - 1] if idx > 0 else ""
+            next_ch = (
+                t_cf[idx + len(q_cf)]
+                if idx + len(q_cf) < len(t_cf)
+                else ""
+            )
+            prev_is_alnum = bool(
+                prev_ch and prev_ch.isalnum() and (prev_ch.isascii() or prev_ch.casefold() != prev_ch.upper())
+            )
+            next_is_alnum = bool(
+                next_ch and next_ch.isalnum() and (next_ch.isascii() or next_ch.casefold() != next_ch.upper())
+            )
+            if prev_is_alnum or next_is_alnum:
+                continue
+        else:
+            idx = clean_text.find(clean_query, start)
+            if idx == -1:
+                break
+            start = idx + 1
+            prev_ch = clean_text[idx - 1] if idx > 0 else ""
+            next_ch = (
+                clean_text[idx + len(clean_query)]
+                if idx + len(clean_query) < len(clean_text)
+                else ""
+            )
 
         # Case 1: Pure Kana queries (high collision risk!)
         if is_pure_kana:
-            is_katakana_q = bool(re.fullmatch(r"[\u30A0-\u30FF]+", query))
+            is_katakana_q = bool(re.fullmatch(r"[\u30A0-\u30FF]+", clean_query))
             if is_katakana_q:
                 # Must not be embedded mid-Katakana (e.g. オレ in カフェオレ, モン in モンスター)
                 prev_is_kata = bool(prev_ch and KATAKANA_CHAR_RE.match(prev_ch))
                 next_is_kata = bool(next_ch and KATAKANA_CHAR_RE.match(next_ch))
                 if prev_is_kata or next_is_kata:
                     continue
-                if is_grammar_function_word(query) or len(query) < 2:
+                if is_grammar_function_word(clean_query) or len(clean_query) < 2:
                     continue
                 return "standalone"
             else:
                 # Hiragana:
                 # Grammar stop words and unlisted 2-mora words: only exact quoted matches allowed
-                if is_grammar_function_word(query) or (len(query) <= 2 and query not in SAFE_2MORA_LOANWORDS):
+                if is_grammar_function_word(clean_query) or (
+                    len(clean_query) <= 2 and clean_query not in SAFE_2MORA_LOANWORDS
+                ):
                     continue
                 # Reject if preceded by Hiragana other than polite お/ご, verbal te-form, particle, or attributive ending
-                prev_is_hira = _is_non_particle_hiragana_prefix(text, idx)
+                prev_is_hira = _is_non_particle_hiragana_prefix(clean_text, idx)
                 # Reject if followed by Hiragana other than a particle
                 next_is_hira = bool(
                     next_ch
@@ -502,7 +562,7 @@ def classify_match_boundary(text: str, query: str) -> str:
                 next_is_kanji_compound = bool(
                     next_ch
                     and KANJI_CHAR_RE.match(next_ch)
-                    and not _is_attributive_kana_form(query)
+                    and not _is_attributive_kana_form(clean_query)
                 )
                 if prev_is_hira or next_is_hira or next_is_kanji_compound:
                     if not prev_is_hira and not next_is_hira and next_is_kanji_compound and best_quality == "none":
@@ -516,7 +576,7 @@ def classify_match_boundary(text: str, query: str) -> str:
             next_is_kanji = bool(next_ch and KANJI_CHAR_RE.match(next_ch))
             prev_is_kata = bool(prev_ch and KATAKANA_CHAR_RE.match(prev_ch))
             next_is_kata = bool(next_ch and KATAKANA_CHAR_RE.match(next_ch))
-            prev_is_non_particle_hira = _is_non_particle_hiragana_prefix(text, idx)
+            prev_is_non_particle_hira = _is_non_particle_hiragana_prefix(clean_text, idx)
             if prev_is_kanji or next_is_kanji or prev_is_kata or next_is_kata or prev_is_non_particle_hira:
                 if best_quality == "none":
                     best_quality = "compound"
@@ -533,10 +593,10 @@ def classify_match_boundary(text: str, query: str) -> str:
         prev_is_kata = bool(prev_ch and KATAKANA_CHAR_RE.match(prev_ch))
         # Bare stems (食べ, 売り, 勝ち, 買い) fused with a following Kanji form nouns (食べ物, 売り場, 勝ち組, 買い物)
         # Nouns ending in okurigana (e.g. 祭り) fused with a following Kanji form compound nouns (祭り会場)
-        is_noun_compound = query in COMMON_OKURIGANA_NOUNS and next_is_kanji
-        ends_in_stem_okurigana = _is_bare_verb_stem(query)
-        if prev_is_kata or (prev_is_kanji and KANJI_CHAR_RE.match(query[0])) or (
-            next_is_kanji and (KANJI_CHAR_RE.match(query[-1]) or ends_in_stem_okurigana or is_noun_compound)
+        is_noun_compound = clean_query in COMMON_OKURIGANA_NOUNS and next_is_kanji
+        ends_in_stem_okurigana = _is_bare_verb_stem(clean_query)
+        if prev_is_kata or (prev_is_kanji and KANJI_CHAR_RE.match(clean_query[0])) or (
+            next_is_kanji and (KANJI_CHAR_RE.match(clean_query[-1]) or ends_in_stem_okurigana or is_noun_compound)
         ):
             if best_quality == "none":
                 best_quality = "compound"
@@ -544,19 +604,19 @@ def classify_match_boundary(text: str, query: str) -> str:
         return "standalone"
 
     # Check verb inflections (e.g. 疲れた人のイラスト for 疲れる, 勝った人のイラスト for 勝つ)
-    for inflected in conjugate_japanese_verb(query):
+    for inflected in conjugate_japanese_verb(clean_query):
         is_stem = not inflected.endswith(("た", "だ", "う"))
-        pos = text.find(inflected)
+        pos = clean_text.find(inflected)
         while pos != -1:
-            p_ch = text[pos - 1] if pos > 0 else ""
+            p_ch = clean_text[pos - 1] if pos > 0 else ""
             end = pos + len(inflected)
-            n_ch = text[end] if end < len(text) else ""
+            n_ch = clean_text[end] if end < len(clean_text) else ""
             prev_kanji = bool(p_ch and KANJI_CHAR_RE.match(p_ch))
             next_kanji = bool(n_ch and KANJI_CHAR_RE.match(n_ch))
             # Must not be preceded by Kanji, and bare stems (食べ, 売り) must not form Kanji compounds (食べ物, 売り場)
             if not prev_kanji and not (is_stem and next_kanji):
                 return "inflected"
-            pos = text.find(inflected, pos + 1)
+            pos = clean_text.find(inflected, pos + 1)
 
     return best_quality
 
@@ -663,26 +723,44 @@ def score_candidate_image(
     title = img.title.strip()
     post_title = img.post_title.strip()
 
+    has_latin = any(ch.casefold() != ch.upper() for ch in clean_q)
+    t_cf = title.casefold() if has_latin else ""
+    q_cf = clean_q.casefold() if has_latin else ""
+    pt_cf = post_title.casefold() if has_latin else ""
+
     qual_title = classify_match_boundary(title, clean_q)
     relevant = is_image_relevant(img, clean_q)
 
     # 1. Exact canonical matches
     if relevant:
-        if title == f"{clean_q}のイラスト":
+        if title == f"{clean_q}のイラスト" or (has_latin and t_cf == f"{q_cf}のイラスト"):
             score += 100.0
-        elif _is_canonical_mark_title(title, clean_q):
+        elif _is_canonical_mark_title(title, clean_q) or (has_latin and _is_canonical_mark_title(t_cf, q_cf)):
             score += 95.0
-        elif title in (f"お{clean_q}のイラスト", f"ご{clean_q}のイラスト"):
+        elif title in (f"お{clean_q}のイラスト", f"ご{clean_q}のイラスト") or (
+            has_latin and t_cf in (f"お{q_cf}のイラスト", f"ご{q_cf}のイラスト")
+        ):
             score += 95.0
-        elif title == f"かわいい{clean_q}のイラスト":
+        elif title == f"かわいい{clean_q}のイラスト" or (has_latin and t_cf == f"かわいい{q_cf}のイラスト"):
             score += 90.0
-        elif title == clean_q:
+        elif title == clean_q or (has_latin and t_cf == q_cf):
             score += 85.0
-        elif title.startswith(f"{clean_q}の") and not _is_byproduct_modifier_title(title, clean_q):
+        elif (
+            title.startswith(f"{clean_q}の")
+            or (has_latin and t_cf.startswith(f"{q_cf}の"))
+        ) and not _is_byproduct_modifier_title(title, clean_q):
             score += 60.0
-        elif post_title == f"{clean_q}のイラスト" or _is_canonical_mark_title(post_title, clean_q):
+        elif (
+            post_title == f"{clean_q}のイラスト"
+            or (has_latin and pt_cf == f"{q_cf}のイラスト")
+            or _is_canonical_mark_title(post_title, clean_q)
+            or (has_latin and _is_canonical_mark_title(pt_cf, q_cf))
+        ):
             score += 50.0
-        elif post_title.startswith(f"{clean_q}の") and not _is_byproduct_modifier_title(post_title, clean_q):
+        elif (
+            post_title.startswith(f"{clean_q}の")
+            or (has_latin and pt_cf.startswith(f"{q_cf}の"))
+        ) and not _is_byproduct_modifier_title(post_title, clean_q):
             score += 30.0
 
     # Archetype collection boost (e.g. いろいろなネジのイラスト)
@@ -692,12 +770,25 @@ def score_candidate_image(
             f"{prefix}お{clean_q}のイラスト",
             f"{prefix}ご{clean_q}のイラスト",
         )
+        or (
+            has_latin
+            and t_cf in (
+                f"{prefix}{q_cf}のイラスト",
+                f"{prefix}お{q_cf}のイラスト",
+                f"{prefix}ご{q_cf}のイラスト",
+            )
+        )
         for prefix in COLLECTION_PREFIXES
     ):
         score += 15.0
 
     # 2. Boundary, politeness, and focus bonuses
-    if qual_title == "exact_quoted" or f"「{clean_q}」" in title or f"（{clean_q}）" in title:
+    if (
+        qual_title == "exact_quoted"
+        or f"「{clean_q}」" in title
+        or f"（{clean_q}）" in title
+        or (has_latin and (f"「{q_cf}」" in t_cf or f"（{q_cf}）" in t_cf))
+    ):
         score += 55.0
     elif qual_title == "polite_prefix":
         score += 45.0
@@ -752,6 +843,7 @@ def score_candidate_image(
             qual_title == "inflected"
             or clean_q in title
             or clean_q in post_title
+            or (has_latin and (q_cf in t_cf or (pt_cf and q_cf in pt_cf)))
             or (post_title and classify_match_boundary(post_title, clean_q) == "inflected")
         )
         score += calculate_category_score(
