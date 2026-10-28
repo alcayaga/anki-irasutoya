@@ -17,6 +17,9 @@ class TestTextUtils(unittest.TestCase):
         k_patcher = patch("addon.text_utils.lookup_kaishi_concept", return_value=[])
         k_patcher.start()
         self.addCleanup(k_patcher.stop)
+        s_patcher = patch("addon.text_utils.lookup_sudachi_synonyms", return_value=[])
+        s_patcher.start()
+        self.addCleanup(s_patcher.stop)
 
     def test_empty_and_none(self):
         """Test handling of None and empty string inputs."""
@@ -820,6 +823,70 @@ class TestTextUtils(unittest.TestCase):
         kaishi_cands = [c for c in cands if c[1] == "kaishi_concept"]
         self.assertEqual(len(kaishi_cands), 1)
         self.assertEqual(kaishi_cands[0], ("「ダメ」のポーズをする人", "kaishi_concept", 2))
+
+    def test_generate_search_candidates_emits_sudachi_synonym(self) -> None:
+        """Verify generate_search_candidates emits Sudachi synonym targets in Tier 2."""
+        with patch("addon.text_utils.lookup_sudachi_synonyms", return_value=["寝る", "睡眠"]):
+            cands = generate_search_candidates("就寝", allow_tier2=True)
+            sudachi_cands = [c for c in cands if c[1] == "sudachi_synonym"]
+            self.assertEqual(len(sudachi_cands), 2)
+            self.assertEqual(sudachi_cands[0], ("寝る", "sudachi_synonym", 2))
+            self.assertEqual(sudachi_cands[1], ("睡眠", "sudachi_synonym", 2))
+
+    def test_generate_search_candidates_deinflected_sudachi_synonym(self) -> None:
+        """Verify generate_search_candidates deinflects surface term to match Sudachi synonym."""
+        with patch(
+            "addon.text_utils.lookup_sudachi_synonyms",
+            side_effect=lambda term: ["駆ける"] if term == "走る" else [],
+        ):
+            cands = generate_search_candidates("走っている", allow_tier2=True, allow_deinflection=True)
+            sudachi_cands = [c for c in cands if c[1] == "sudachi_synonym"]
+            self.assertEqual(len(sudachi_cands), 1)
+            self.assertEqual(sudachi_cands[0], ("駆ける", "sudachi_synonym", 2))
+
+    def test_generate_search_candidates_sudachi_suppressed_when_tier2_false(self) -> None:
+        """Verify Sudachi synonym targets are suppressed when allow_tier2 is False."""
+        with patch("addon.text_utils.lookup_sudachi_synonyms", return_value=["寝る"]):
+            cands = generate_search_candidates("就寝", allow_tier2=False)
+            sudachi_cands = [c for c in cands if c[1] == "sudachi_synonym"]
+            self.assertEqual(len(sudachi_cands), 0)
+
+    def test_generate_search_candidates_injected_sudachi_lookup(self) -> None:
+        """Verify generate_search_candidates uses injected sudachi_lookup callable."""
+        cands = generate_search_candidates(
+            "就寝",
+            allow_tier2=True,
+            sudachi_lookup=lambda term: ["寝る"] if term == "就寝" else [],
+        )
+        sudachi_cands = [c for c in cands if c[1] == "sudachi_synonym"]
+        self.assertEqual(len(sudachi_cands), 1)
+        self.assertEqual(sudachi_cands[0], ("寝る", "sudachi_synonym", 2))
+
+    def test_candidate_ordering_tier2_hierarchy_with_sudachi(self) -> None:
+        """Verify candidate ordering: concept_map -> kaishi_concept -> note_reading -> same_field -> sudachi_synonym."""
+        mock_note = {"Reading": "そうこう"}
+        with patch("addon.text_utils.lookup_concept_map", return_value=["マニュアル走る"]):
+            with patch("addon.text_utils.lookup_kaishi_concept", return_value=["カイシ走る"]):
+                with patch("addon.text_utils.lookup_sudachi_synonyms", return_value=["スダチ走る"]):
+                    cands = generate_search_candidates("走る[はしる]", note=mock_note, allow_tier2=True)
+                    reasons = [c[1] for c in cands]
+                    self.assertIn("concept_map", reasons)
+                    self.assertIn("kaishi_concept", reasons)
+                    self.assertIn("note_reading_Reading", reasons)
+                    self.assertIn("same_field_reading_katakana", reasons)
+                    self.assertIn("sudachi_synonym", reasons)
+
+                    idx_manual = reasons.index("concept_map")
+                    idx_kaishi = reasons.index("kaishi_concept")
+                    idx_reading = reasons.index("note_reading_Reading")
+                    idx_same_kana = reasons.index("same_field_reading_katakana")
+                    idx_sudachi = reasons.index("sudachi_synonym")
+
+                    self.assertLess(idx_manual, idx_kaishi)
+                    self.assertLess(idx_kaishi, idx_reading)
+                    self.assertLess(idx_reading, idx_same_kana)
+                    self.assertLess(idx_same_kana, idx_sudachi)
+
 
 
 

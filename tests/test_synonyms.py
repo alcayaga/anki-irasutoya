@@ -18,6 +18,7 @@ from addon.feed import IrasutoyaImage, ParsedPost
 from addon.synonyms import (
     lookup_concept_map,
     lookup_kaishi_concept,
+    lookup_sudachi_synonyms,
     lookup_synonyms,
 )
 from scripts.build_synonyms import (
@@ -135,6 +136,23 @@ class TestSynonyms(unittest.TestCase):
             self.assertEqual(lookup_kaishi_concept("私"), ["自己紹介"])
             self.assertEqual(lookup_kaishi_concept("今"), ["時計"])
             self.assertEqual(lookup_kaishi_concept("亡くなる"), [])
+
+    def test_lookup_sudachi_synonyms_source_filtering(self) -> None:
+        """Verify lookup_sudachi_synonyms specifically filters for sudachi source mappings."""
+        conn = sqlite3.connect(self.db_path)
+        write_synonyms(
+            conn,
+            source="sudachi",
+            mapping={"就寝": ["寝る"], "購入": ["買う"]},
+        )
+        conn.close()
+
+        with patch("addon.synonyms.default_store", return_value=self.test_store):
+            self.assertEqual(lookup_sudachi_synonyms("就寝"), ["寝る"])
+            self.assertEqual(lookup_sudachi_synonyms("購入"), ["買う"])
+            self.assertEqual(lookup_sudachi_synonyms("亡くなる"), [])
+            self.assertEqual(lookup_sudachi_synonyms(""), [])
+            self.assertEqual(lookup_sudachi_synonyms("   "), [])
 
     def test_write_image_keywords_and_meta_stamp(self) -> None:
         """Verify write_image_keywords stores image keywords and stamps keyword_sources in meta."""

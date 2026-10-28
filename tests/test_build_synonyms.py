@@ -13,9 +13,11 @@ from addon.catalog import create_schema, write_posts, write_synonyms
 from addon.feed import IrasutoyaImage, ParsedPost
 from scripts.build_synonyms import (
     fetch_kaishi_github_slice,
+    fetch_sudachi_github,
     main,
     populate_kaishi_concepts,
     populate_manual_concepts,
+    populate_sudachi_synonyms,
     validate_catalog_synonyms,
 )
 
@@ -310,6 +312,177 @@ class TestBuildSynonyms(unittest.TestCase):
         self.assertEqual(unique_terms_count, 2)
         self.assertEqual(keywords_count, 3)
         self.assertTrue(validate_catalog_synonyms(target_db))
+
+    def test_populate_sudachi_synonyms_compiles_valid_mapping(self) -> None:
+        """Verify populate_sudachi_synonyms compiles valid Sudachi CSV records into catalog.sqlite."""
+        # Add posts with illustrations for targets '寝る' and '買う'
+        conn = sqlite3.connect(self.db_path)
+        img1 = IrasutoyaImage("寝る人のイラスト", "https://1.bp.blogspot.com/s800/sleep.png", "t1.png", "寝る", post_id="2")
+        post1 = ParsedPost("2", "睡眠のイラスト", "desc", "pub", "upd", (), [img1])
+        img2 = IrasutoyaImage("買う人のイラスト", "https://1.bp.blogspot.com/s800/buy.png", "t2.png", "買う", post_id="3")
+        post2 = ParsedPost("3", "買う人のイラスト", "desc", "pub", "upd", (), [img2])
+        write_posts(conn, [post1, post2])
+        conn.close()
+
+        csv_content = (
+            "000016,1,0,1,0,0,0,(),購入,,\n"
+            "000016,2,0,3,0,0,0,(),買う,,\n"
+            "023242,1,0,1,0,0,0,(),就寝,,\n"
+            "023242,2,0,4,0,0,0,(),寝る,,\n"
+        )
+        csv_path = os.path.join(self.temp_dir.name, "test_sudachi.txt")
+        with open(csv_path, "w", encoding="utf-8") as f:
+            f.write(csv_content)
+
+        success = populate_sudachi_synonyms(self.db_path, csv_path)
+        self.assertTrue(success)
+
+        # Verify rows in SQLite
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT term, target, source, ord FROM synonyms WHERE source = 'sudachi' ORDER BY term")
+        rows = cur.fetchall()
+        cur.execute("SELECT value FROM meta WHERE key = 'synonym_sources'")
+        meta_sources = cur.fetchone()[0]
+        conn.close()
+
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0], ("就寝", "寝る", "sudachi", 0))
+        self.assertEqual(rows[1], ("購入", "買う", "sudachi", 0))
+        self.assertIn("sudachi", meta_sources)
+
+        # Validate with catalog validator
+        self.assertTrue(validate_catalog_synonyms(self.db_path))
+
+    def test_populate_sudachi_synonyms_filtering_and_guards(self) -> None:
+        """Verify compiler precision guards: archaic, misuse, misspelling, derogatory, and predicate partitioning."""
+        conn = sqlite3.connect(self.db_path)
+        img1 = IrasutoyaImage("走る人のイラスト", "https://1.bp.blogspot.com/s800/run1.png", "t1.png", "走る", post_id="2")
+        post1 = ParsedPost("2", "走る人のイラスト", "desc", "pub", "upd", (), [img1])
+        img2 = IrasutoyaImage("猫のイラスト2", "https://1.bp.blogspot.com/s800/cat2.png", "t2.png", "猫", post_id="3")
+        img3 = IrasutoyaImage("猫のイラスト3", "https://1.bp.blogspot.com/s800/cat3.png", "t3.png", "猫", post_id="4")
+        img_run2 = IrasutoyaImage("走る人のイラスト2", "https://1.bp.blogspot.com/s800/run2.png", "t2.png", "走る", post_id="5")
+        img_run3 = IrasutoyaImage("走る人のイラスト3", "https://1.bp.blogspot.com/s800/run3.png", "t3.png", "走る", post_id="6")
+        post5 = ParsedPost("5", "走る人のイラスト2", "desc", "pub", "upd", (), [img_run2])
+        post6 = ParsedPost("6", "走る人のイラスト3", "desc", "pub", "upd", (), [img_run3])
+        write_posts(
+            conn,
+            [
+                post1,
+                ParsedPost("3", "猫2", "desc", "pub", "upd", (), [img2]),
+                ParsedPost("4", "猫3", "desc", "pub", "upd", (), [img3]),
+                post5,
+                post6,
+            ],
+        )
+        # '猫' and '走る' have >= 3 canonical title matches in catalog -> skipped as sources by delta gate
+        # Seed an existing manual concept for '既出' -> should be skipped by delta gate
+        write_synonyms(conn, source="manual", mapping={"既出": ["猫"]})
+        conn.close()
+
+        csv_content = (
+            # Group with archaic (reg=3), misuse (reg=4), misspelling (orth=3), derogatory (不快), disabled (exp=2)
+            "000001,1,0,1,0,0,0,(),テスト源,,\n"
+            "000001,1,0,2,3,0,0,(),古語標的,,\n"
+            "000001,1,0,3,4,0,0,(),誤用標的,,\n"
+            "000001,1,0,4,0,0,3,(),誤表記標的,,\n"
+            "000001,1,0,5,0,0,0,(不快),不快語,,\n"
+            "000001,1,2,6,0,0,0,(),展開不可,,\n"
+            "000001,1,0,7,0,0,0,(),走る,,\n"
+            # Predicate partitioning: predicate (is_noun=2) must not cross-map to noun (is_noun=1)
+            "000002,2,0,1,0,0,0,(),動詞源,,\n"
+            "000002,1,0,2,0,0,0,(),走る,,\n"
+            # Delta gate: source '猫' has >= 3 canonical matches -> skipped
+            "000003,1,0,1,0,0,0,(),猫,,\n"
+            "000003,1,0,2,0,0,0,(),走る,,\n"
+            # Delta gate: source '既出' already in manual synonyms -> skipped
+            "000004,1,0,1,0,0,0,(),既出,,\n"
+            "000004,1,0,2,0,0,0,(),走る,,\n"
+        )
+        csv_path = os.path.join(self.temp_dir.name, "guards_sudachi.txt")
+        with open(csv_path, "w", encoding="utf-8") as f:
+            f.write(csv_content)
+
+        success = populate_sudachi_synonyms(self.db_path, csv_path)
+        self.assertTrue(success)
+
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT term, target FROM synonyms WHERE source = 'sudachi'")
+        rows = cur.fetchall()
+        conn.close()
+
+        # Only 'テスト源' -> '走る' should be emitted!
+        self.assertEqual(rows, [("テスト源", "走る")])
+
+    def test_populate_sudachi_synonyms_missing_files_and_atomic_rollback(self) -> None:
+        """Verify populate_sudachi_synonyms handles missing files and rolls back atomically on error."""
+        missing_db = os.path.join(self.temp_dir.name, "missing.sqlite")
+        missing_csv = os.path.join(self.temp_dir.name, "missing.txt")
+        csv_path = os.path.join(self.temp_dir.name, "empty.txt")
+        with open(csv_path, "w", encoding="utf-8") as f:
+            f.write("")
+
+        self.assertFalse(populate_sudachi_synonyms(missing_db, csv_path))
+        self.assertFalse(populate_sudachi_synonyms(self.db_path, missing_csv))
+        self.assertFalse(populate_sudachi_synonyms(self.db_path, csv_path))
+
+        # Test rollback on write failure
+        csv_path_valid = os.path.join(self.temp_dir.name, "rollback.txt")
+        with open(csv_path_valid, "w", encoding="utf-8") as f:
+            f.write("000001,1,0,1,0,0,0,(),犬,,\n000001,1,0,2,0,0,0,(),猫,,\n")
+
+        conn = sqlite3.connect(self.db_path)
+        conn.execute(
+            """
+            CREATE TRIGGER fail_sudachi BEFORE INSERT ON synonyms
+            BEGIN
+                SELECT RAISE(ABORT, 'Simulated failure during sudachi insert');
+            END;
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        self.assertFalse(populate_sudachi_synonyms(self.db_path, csv_path_valid))
+
+    def test_main_cli_sudachi_and_validate(self) -> None:
+        """Verify main CLI executes --sudachi and --validate flags."""
+        csv_path = os.path.join(self.temp_dir.name, "cli_sudachi.txt")
+        with open(csv_path, "w", encoding="utf-8") as f:
+            f.write("000001,1,0,1,0,0,0,(),イヌ,,\n000001,1,0,2,0,0,0,(),猫,,\n")
+
+        ret = main(["--catalog", self.db_path, "--sudachi", csv_path, "--validate"])
+        self.assertEqual(ret, 0)
+
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT term, target FROM synonyms WHERE source = 'sudachi'")
+        rows = cur.fetchall()
+        conn.close()
+        self.assertEqual(rows, [("イヌ", "猫")])
+
+    def test_fetch_sudachi_github_mocked(self) -> None:
+        """Verify fetch_sudachi_github downloads and caches synonyms.txt."""
+        mock_csv = b"000001,1,0,1,0,0,0,(),sample,,\n" * 100
+        mock_resp = io.BytesIO(mock_csv)
+
+        class MockUrlOpen:
+            def __enter__(self) -> io.BytesIO:
+                return mock_resp
+
+            def __exit__(self, *args: object) -> None:
+                pass
+
+        def fake_urlopen(*args: object, **kwargs: object) -> MockUrlOpen:
+            return MockUrlOpen()
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            cache_dir = os.path.join(self.temp_dir.name, "cache")
+            path = fetch_sudachi_github(cache_dir=cache_dir, url="https://example.com/mock_synonyms.txt")
+            self.assertTrue(os.path.isfile(path))
+            with open(path, "rb") as f:
+                self.assertEqual(f.read(), mock_csv)
 
 
 if __name__ == "__main__":
