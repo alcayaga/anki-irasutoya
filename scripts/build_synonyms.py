@@ -789,7 +789,11 @@ def populate_sudachi_synonyms(
                         break
 
             if final_targets:
-                clean_mapping[s_term] = final_targets
+                merged = clean_mapping.get(s_term, [])
+                for tgt in final_targets:
+                    if tgt not in merged and len(merged) < 3:
+                        merged.append(tgt)
+                clean_mapping[s_term] = merged
 
     new_rows = sum(len(t) for t in clean_mapping.values())
     if new_rows == 0:
@@ -800,6 +804,7 @@ def populate_sudachi_synonyms(
     conn = sqlite3.connect(catalog_path)
     committed = False
     try:
+        create_schema(conn)
         existing = (
             conn.execute("SELECT count(*) FROM synonyms WHERE source = 'sudachi'").fetchone()[0]
             if has_syns

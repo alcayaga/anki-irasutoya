@@ -512,6 +512,61 @@ class TestBuildSynonyms(unittest.TestCase):
             with open(path, "rb") as f:
                 self.assertEqual(f.read(), mock_csv)
 
+    def test_populate_sudachi_synonyms_merges_multiple_groups_for_same_term(self) -> None:
+        """Verify populate_sudachi_synonyms merges targets across multiple groups up to 3 targets."""
+        conn = sqlite3.connect(self.db_path)
+        img1 = IrasutoyaImage("寝る人のイラスト", "https://1.bp.blogspot.com/s800/sleep.png", "t.png", "寝る", post_id="2")
+        img2 = IrasutoyaImage("休む人のイラスト", "https://1.bp.blogspot.com/s800/rest.png", "t2.png", "休む", post_id="3")
+        write_posts(
+            conn,
+            [
+                ParsedPost("2", "寝る人のイラスト", "desc", "pub", "upd", (), [img1]),
+                ParsedPost("3", "休む人のイラスト", "desc", "pub", "upd", (), [img2]),
+            ],
+        )
+        conn.close()
+
+        csv_content = (
+            # Group 1: 就寝 -> 寝る
+            "000001,1,0,1,0,0,0,(),就寝,,\n"
+            "000001,1,0,2,0,0,0,(),寝る,,\n"
+            # Group 2: 就寝 -> 休む
+            "000002,1,0,1,0,0,0,(),就寝,,\n"
+            "000002,1,0,2,0,0,0,(),休む,,\n"
+        )
+        csv_path = os.path.join(self.temp_dir.name, "multi_group.txt")
+        with open(csv_path, "w", encoding="utf-8") as f:
+            f.write(csv_content)
+
+        self.assertTrue(populate_sudachi_synonyms(self.db_path, csv_path))
+
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT target FROM synonyms WHERE source = 'sudachi' AND term = '就寝' ORDER BY ord")
+        targets = [r[0] for r in cur.fetchall()]
+        conn.close()
+        self.assertEqual(targets, ["寝る", "休む"])
+
+    def test_populate_sudachi_synonyms_creates_schema_if_missing(self) -> None:
+        """Verify populate_sudachi_synonyms succeeds when synonyms table is missing initially."""
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("DROP TABLE IF EXISTS synonyms")
+        conn.commit()
+        conn.close()
+
+        csv_path = os.path.join(self.temp_dir.name, "recreate_schema.txt")
+        with open(csv_path, "w", encoding="utf-8") as f:
+            f.write("000001,1,0,1,0,0,0,(),イヌ,,\n000001,1,0,2,0,0,0,(),猫,,\n")
+
+        self.assertTrue(populate_sudachi_synonyms(self.db_path, csv_path))
+
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT term, target FROM synonyms WHERE source = 'sudachi'")
+        rows = cur.fetchall()
+        conn.close()
+        self.assertEqual(rows, [("イヌ", "猫")])
+
 
 if __name__ == "__main__":
     unittest.main()
