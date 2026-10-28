@@ -28,6 +28,20 @@ class TestPackageAddon(unittest.TestCase):
         # Create mock payload files
         with open(os.path.join(self.mock_addon, "__init__.py"), "w") as f:
             f.write("# init\n")
+        os.makedirs(os.path.join(self.mock_addon, "ui"), exist_ok=True)
+        self.ui_module_names = [
+            "__init__.py",
+            "dialog.py",
+            "batch_view.py",
+            "single_view.py",
+            "widgets.py",
+            "thumbnails.py",
+            "helpers.py",
+            "styles.py",
+        ]
+        for mod_name in self.ui_module_names:
+            with open(os.path.join(self.mock_addon, "ui", mod_name), "w") as f:
+                f.write(f"# {mod_name}\n")
         with open(os.path.join(self.mock_addon, "manifest.json"), "w") as f:
             json.dump({"name": "Anki Irasutoya", "package": "anki_irasutoya"}, f)
         with open(os.path.join(self.mock_addon, "config.json"), "w") as f:
@@ -53,6 +67,8 @@ class TestPackageAddon(unittest.TestCase):
         """Verify is_allowlisted permits only valid distribution assets and rejects forbidden files."""
         self.assertTrue(is_allowlisted("__init__.py"))
         self.assertTrue(is_allowlisted("client.py"))
+        for mod_name in self.ui_module_names:
+            self.assertTrue(is_allowlisted(f"ui/{mod_name}"))
         self.assertTrue(is_allowlisted("manifest.json"))
         self.assertTrue(is_allowlisted("config.json"))
         self.assertTrue(is_allowlisted("config.md"))
@@ -83,6 +99,8 @@ class TestPackageAddon(unittest.TestCase):
             names = set(zf.namelist())
             self.assertIn("manifest.json", names)
             self.assertIn("__init__.py", names)
+            for mod_name in self.ui_module_names:
+                self.assertIn(f"ui/{mod_name}", names)
             self.assertIn("data/catalog.sqlite", names)
             self.assertIn("icons/chevron.svg", names)
 

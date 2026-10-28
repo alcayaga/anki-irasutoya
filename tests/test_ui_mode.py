@@ -5,10 +5,21 @@ import unittest
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 from unittest.mock import MagicMock, patch
 
+from addon.feed import IrasutoyaImage
+from addon.ui.helpers import (
+    _is_desc_only_match,
+    _StaleSearch,
+    execute_search_and_probe,
+    format_fallback_reason,
+    has_existing_media,
+    make_description_snippet,
+    probe_catalog_candidates,
+    resolve_search_plan,
+)
+
 try:
     from aqt.qt import QApplication, QHeaderView, QKeyEvent, QPushButton, QResizeEvent, QSize, Qt
     app = QApplication.instance() or QApplication(["test", "-platform", "offscreen"])
-    from addon.feed import IrasutoyaImage
     from addon.ui import (
         CHEVRON_ICON_PATH,
         DIALOG_STYLESHEET,
@@ -18,7 +29,6 @@ try:
         IrasutoyaDialog,
         _ThumbnailByteCache,
         clear_session_thumbnail_cache,
-        make_description_snippet,
     )
     HAS_QT = True
 except Exception:
@@ -69,6 +79,279 @@ def _chip_texts(dlg):
         for i in range(dlg.chips_layout.count())
         if isinstance(dlg.chips_layout.itemAt(i).widget(), QPushButton)
     ]
+
+
+class TestUIHelpers(unittest.TestCase):
+    """Headless unit tests for UI helper routines, formatting, and catalog probing."""
+
+    def test_make_description_snippet(self) -> None:
+        """Verify snippet extraction extracts keyword context and adds bold markup."""
+        desc = "肩までの高さが147cm以下の小さな馬、ポニーのイラストです。"
+        snippet = make_description_snippet(desc, "以下")
+        self.assertIn("<b>以下</b>", snippet)
+        self.assertIn("147cm", snippet)
+
+        # Test that queries matching HTML entity names do not corrupt markup
+        html_desc = "Adult < 100 & quality is high."
+        html_snippet = make_description_snippet(html_desc, "lt")
+        self.assertIn("Adu<b>lt</b>", html_snippet)
+        self.assertIn("&lt;", html_snippet)
+        self.assertNotIn("&<b>lt</b>;", html_snippet)
+
+        empty = make_description_snippet("", "猫")
+        self.assertEqual(empty, "")
+
+    def test_is_desc_only_match_classification(self) -> None:
+        """_is_desc_only_match correctly distinguishes description matches from title/callout matches."""
+        img_desc_only = IrasutoyaImage(
+            title="ポイントに悲しむ人のイラスト",
+            image_url="https://example.com/a.png",
+            thumb_url="https://example.com/at.png",
+            post_title="悲しい人のイラスト",
+            description="手に入れることができなかったポイントのイラストです。",
+        )
+        img_title_match = IrasutoyaImage(
+            title="手に入れた人のイラスト",
+            image_url="https://example.com/b.png",
+            thumb_url="https://example.com/bt.png",
+            post_title="手に入れた人のイラスト",
+            description="手に入れた人のイラストです。",
+        )
+        img_callout_title = IrasutoyaImage(
+            title="手に入れるの文字イラスト",
+            image_url="https://example.com/c.png",
+            thumb_url="https://example.com/ct.png",
+            post_title="文字イラスト",
+            description="文字のイラストです。",
+            categories=("文字",),
+        )
+        img_boundary_compound = IrasutoyaImage(
+            title="犬歯のイラスト",
+            image_url="https://example.com/d.png",
+            thumb_url="https://example.com/dt.png",
+            post_title="犬歯",
+            description="犬の歯磨きのイラストです。",
+        )
+        self.assertTrue(_is_desc_only_match([img_desc_only], "手に入れる"))
+        self.assertTrue(_is_desc_only_match([img_boundary_compound], "犬"))
+        self.assertFalse(_is_desc_only_match([img_title_match], "手に入れた"))
+        self.assertFalse(_is_desc_only_match([img_title_match, img_desc_only], "手に入れる"))
+        self.assertFalse(_is_desc_only_match([img_callout_title], "手に入れる"))
+        self.assertFalse(_is_desc_only_match([], "手に入れる"))
+        self.assertFalse(_is_desc_only_match([img_desc_only], ""))
+
+    def test_has_existing_media_detection(self) -> None:
+        """Verify has_existing_media correctly recognizes image tags and filename extensions."""
+        self.assertTrue(has_existing_media('<img src="cat.png">'))
+        self.assertTrue(has_existing_media('<IMG SRC="DOG.JPG">'))
+        self.assertTrue(has_existing_media("photo.webp"))
+        self.assertTrue(has_existing_media("illustration.png"))
+        self.assertTrue(has_existing_media("banner.jpeg"))
+        self.assertTrue(has_existing_media("anim.gif"))
+        self.assertFalse(has_existing_media(""))
+        self.assertFalse(has_existing_media("just plain text"))
+        self.assertFalse(has_existing_media("<b>cat</b>"))
+
+    def test_format_fallback_reason_variations(self) -> None:
+        """Verify format_fallback_reason covers all reason message combinations."""
+        # 1. Unknown / unprobed counts defaults to direct title match message
+        self.assertEqual(
+            format_fallback_reason("犬", probed_counts=None),
+            "No direct title match for '犬'",
+        )
+
+        # 2. Zero results
+        self.assertEqual(
+            format_fallback_reason("犬", probed_counts={"犬": 0}),
+            "No direct results for '犬'",
+        )
+
+        # 3. Description match only
+        self.assertEqual(
+            format_fallback_reason(
+                "犬", probed_counts={"犬": 2}, probed_desc_matches={"犬"}
+            ),
+            "No direct title match for '犬'",
+        )
+
+        # 4. Non-description positive count (e.g. decorative or keyword-only)
+        self.assertEqual(
+            format_fallback_reason(
+                "犬", probed_counts={"犬": 2}, probed_desc_matches=set()
+            ),
+            "No direct title illustration for '犬'",
+        )
+
+    def test_probe_catalog_candidates_caching_and_stale_guards(self) -> None:
+        """Verify probe_catalog_candidates caches counts and raises _StaleSearch when stale."""
+        mock_catalog = MagicMock()
+        mock_catalog.search.side_effect = lambda q, **kw: [
+            IrasutoyaImage(f"{q}のイラスト", f"https://example.com/{q}.png", "t", q)
+        ]
+
+        count_cache: Dict[str, int] = {}
+        desc_cache: Dict[str, bool] = {}
+
+        counts, desc_matches = probe_catalog_candidates(
+            catalog=mock_catalog,
+            image_size="s800",
+            candidate_terms=["猫"],
+            restore_term="犬",
+            count_cache=count_cache,
+            desc_cache=desc_cache,
+            is_stale=lambda: False,
+        )
+
+        self.assertEqual(counts["猫"], 1)
+        self.assertEqual(counts["犬"], 1)
+        self.assertIn("猫", count_cache)
+        self.assertIn("犬", count_cache)
+
+        # Calling again with filled cache makes 0 search calls
+        mock_catalog.search.reset_mock()
+        counts2, _ = probe_catalog_candidates(
+            catalog=mock_catalog,
+            image_size="s800",
+            candidate_terms=["猫"],
+            restore_term=None,
+            count_cache=count_cache,
+            desc_cache=desc_cache,
+            is_stale=lambda: False,
+        )
+        self.assertEqual(counts2["猫"], 1)
+        mock_catalog.search.assert_not_called()
+
+        # Stale check raises _StaleSearch
+        with self.assertRaises(_StaleSearch):
+            probe_catalog_candidates(
+                catalog=mock_catalog,
+                image_size="s800",
+                candidate_terms=["鳥"],
+                restore_term=None,
+                count_cache=count_cache,
+                desc_cache=desc_cache,
+                is_stale=lambda: True,
+            )
+
+    def test_resolve_search_plan(self) -> None:
+        """Verify resolve_search_plan branches correctly for card terms, custom queries, and direct clicks."""
+        card_candidates: List[Tuple[str, str, int]] = [
+            ("食べる", "primary", 1),
+            ("たべる", "reading", 2),
+            ("食", "kanji", 2),
+        ]
+
+        # Case 1: Primary card query without direct flag
+        chips, cands, restore = resolve_search_plan(
+            query="食べる",
+            card_source_term="食べる",
+            card_candidates=card_candidates,
+            first_note=None,
+            direct=False,
+        )
+        self.assertEqual(chips, card_candidates)
+        self.assertEqual(cands, card_candidates)
+        self.assertIsNone(restore)
+
+        # Case 2: Card candidate with direct flag (e.g. chip click)
+        chips_dir, cands_dir, restore_dir = resolve_search_plan(
+            query="たべる",
+            card_source_term="食べる",
+            card_candidates=card_candidates,
+            first_note=None,
+            direct=True,
+        )
+        self.assertEqual(chips_dir, card_candidates)
+        self.assertEqual(cands_dir, [("たべる", "reading", 2)])
+        self.assertIsNone(restore_dir)
+
+        # Case 3: Secondary candidate without direct flag (deinflects/generates)
+        chips_sec, cands_sec, restore_sec = resolve_search_plan(
+            query="たべる",
+            card_source_term="食べる",
+            card_candidates=card_candidates,
+            first_note=None,
+            direct=False,
+        )
+        self.assertEqual(chips_sec, card_candidates)
+        self.assertTrue(len(cands_sec) > 0)
+        self.assertEqual(cands_sec[0][0], "たべる")
+        self.assertIsNone(restore_sec)
+
+        # Case 4: External / custom query with restore term
+        chips_ext, cands_ext, restore_ext = resolve_search_plan(
+            query="りんご",
+            card_source_term="食べる",
+            card_candidates=card_candidates,
+            first_note=None,
+            direct=False,
+        )
+        self.assertEqual(restore_ext, "食べる")
+        self.assertTrue(any(c[0] == "りんご" for c in chips_ext))
+        self.assertTrue(any(c[0] == "りんご" for c in cands_ext))
+
+        # Case 5: External query with direct flag
+        chips_ext_dir, cands_ext_dir, restore_ext_dir = resolve_search_plan(
+            query="りんご",
+            card_source_term="食べる",
+            card_candidates=card_candidates,
+            first_note=None,
+            direct=True,
+        )
+        self.assertEqual(restore_ext_dir, "食べる")
+        self.assertEqual(len(cands_ext_dir), 1)
+        self.assertEqual(cands_ext_dir[0][0], "りんご")
+
+    def test_execute_search_and_probe(self) -> None:
+        """Verify execute_search_and_probe runs client searches, updates caches, and respects cancellation."""
+        mock_client = MagicMock()
+        mock_img = IrasutoyaImage("猫のイラスト", "https://example.com/cat.png", "t", "猫")
+        mock_client.search_with_fallbacks.return_value = ([mock_img], ("猫", "primary", 1), mock_img)
+
+        mock_store = MagicMock()
+        mock_index = MagicMock()
+        mock_index.search.side_effect = lambda q, **kw: [
+            IrasutoyaImage(f"{q}のイラスト", f"https://example.com/{q}.png", "t", q)
+        ]
+        mock_store.get_index.return_value = mock_index
+
+        count_cache: Dict[str, int] = {}
+        desc_cache: Dict[str, bool] = {}
+
+        # Normal run
+        images, matched_cand, probed_counts, probed_desc = execute_search_and_probe(
+            client=mock_client,
+            store=mock_store,
+            search_candidates=[("猫", "primary", 1)],
+            display_chips=[("猫", "primary", 1), ("子猫", "variant", 2)],
+            image_size="s800",
+            restore_term=None,
+            count_cache=count_cache,
+            desc_cache=desc_cache,
+            is_cancelled=lambda: False,
+        )
+        self.assertEqual(len(images), 1)
+        self.assertEqual(matched_cand, ("猫", "primary", 1))
+        self.assertIsNotNone(probed_counts)
+        self.assertIn("猫", count_cache)
+        self.assertIn("子猫", count_cache)
+
+        # Cancelled run returns early
+        imgs_stale, cand_stale, counts_stale, desc_stale = execute_search_and_probe(
+            client=mock_client,
+            store=mock_store,
+            search_candidates=[("猫", "primary", 1)],
+            display_chips=[("猫", "primary", 1)],
+            image_size="s800",
+            restore_term=None,
+            count_cache=count_cache,
+            desc_cache=desc_cache,
+            is_cancelled=lambda: True,
+        )
+        self.assertEqual(imgs_stale, [])
+        self.assertIsNone(cand_stale)
+        self.assertIsNone(counts_stale)
+        self.assertIsNone(desc_stale)
 
 
 @unittest.skipUnless(HAS_QT, "Qt/aqt environment not available in default python runner")
@@ -301,23 +584,6 @@ class TestUIMode(unittest.TestCase):
             self.assertTrue(dlg.btn_search.isEnabled())
             self.assertEqual(dlg.btn_search.text(), "Search")
             self.assertEqual(dlg.status_label.text(), "Source field is empty.")
-
-    def test_make_description_snippet(self):
-        """Verify snippet extraction extracts keyword context and adds bold markup."""
-        desc = "肩までの高さが147cm以下の小さな馬、ポニーのイラストです。"
-        snippet = make_description_snippet(desc, "以下")
-        self.assertIn("<b>以下</b>", snippet)
-        self.assertIn("147cm", snippet)
-
-        # Test that queries matching HTML entity names do not corrupt markup
-        html_desc = "Adult < 100 & quality is high."
-        html_snippet = make_description_snippet(html_desc, "lt")
-        self.assertIn("Adu<b>lt</b>", html_snippet)
-        self.assertIn("&lt;", html_snippet)
-        self.assertNotIn("&<b>lt</b>;", html_snippet)
-
-        empty = make_description_snippet("", "猫")
-        self.assertEqual(empty, "")
 
     def test_image_card_description_match_badge_and_tooltip(self):
         """Card widget should display '📝 本文一致' badge and snippet tooltip when matching description."""
@@ -952,47 +1218,6 @@ class TestUIMode(unittest.TestCase):
             any("Search for '手に入れた' (5 illustrations)" in t for t in tooltips)
         )
 
-    def test_is_desc_only_match_classification(self) -> None:
-        """_is_desc_only_match correctly distinguishes description matches from title/callout matches."""
-        from addon.ui import _is_desc_only_match
-
-        img_desc_only = IrasutoyaImage(
-            title="ポイントに悲しむ人のイラスト",
-            image_url="https://example.com/a.png",
-            thumb_url="https://example.com/at.png",
-            post_title="悲しい人のイラスト",
-            description="手に入れることができなかったポイントのイラストです。",
-        )
-        img_title_match = IrasutoyaImage(
-            title="手に入れた人のイラスト",
-            image_url="https://example.com/b.png",
-            thumb_url="https://example.com/bt.png",
-            post_title="手に入れた人のイラスト",
-            description="手に入れた人のイラストです。",
-        )
-        img_callout_title = IrasutoyaImage(
-            title="手に入れるの文字イラスト",
-            image_url="https://example.com/c.png",
-            thumb_url="https://example.com/ct.png",
-            post_title="文字イラスト",
-            description="文字のイラストです。",
-            categories=("文字",),
-        )
-        img_boundary_compound = IrasutoyaImage(
-            title="犬歯のイラスト",
-            image_url="https://example.com/d.png",
-            thumb_url="https://example.com/dt.png",
-            post_title="犬歯",
-            description="犬の歯磨きのイラストです。",
-        )
-        self.assertTrue(_is_desc_only_match([img_desc_only], "手に入れる"))
-        self.assertTrue(_is_desc_only_match([img_boundary_compound], "犬"))
-        self.assertFalse(_is_desc_only_match([img_title_match], "手に入れた"))
-        self.assertFalse(_is_desc_only_match([img_title_match, img_desc_only], "手に入れる"))
-        self.assertFalse(_is_desc_only_match([img_callout_title], "手に入れる"))
-        self.assertFalse(_is_desc_only_match([], "手に入れる"))
-        self.assertFalse(_is_desc_only_match([img_desc_only], ""))
-
     def test_thumbnail_byte_cache_lru_and_byte_cap(self) -> None:
         """Verify _ThumbnailByteCache enforces entry limit, byte limit, and LRU eviction."""
         cache = _ThumbnailByteCache(max_entries=3, max_bytes=30)
@@ -1274,6 +1499,34 @@ class TestUIMode(unittest.TestCase):
                 dlg.done(0)
                 self.assertEqual(len(dlg._thumb_pixmap_cache), 0)
                 mock_close.assert_called_once()
+
+    def test_thumbnail_loader_standalone_lifecycle(self) -> None:
+        """Verify ThumbnailLoader manages burst token resets, cache operations, and shutdown."""
+        from addon.ui import ThumbnailLoader
+
+        loader = ThumbnailLoader(worker_count=2, initial_burst=3)
+        self.assertEqual(loader._burst_remaining, 3)
+
+        # Decrement burst
+        loader._burst_remaining = 0
+        loader.reset_burst()
+        self.assertEqual(loader._burst_remaining, 3)
+
+        # Pixmap caching
+        pixmap = MagicMock()
+        pixmap.isNull.return_value = False
+        loader.cache_dialog_pixmap("https://example.com/test.png", pixmap)
+        self.assertEqual(len(loader.pixmap_cache), 1)
+
+        # Shutdown cleans up
+        mock_fut = MagicMock()
+        mock_fut.done.return_value = False
+        loader.pending_futures.append(mock_fut)
+
+        loader.shutdown()
+        mock_fut.cancel.assert_called_once()
+        self.assertEqual(len(loader.pending_futures), 0)
+        self.assertEqual(len(loader.pixmap_cache), 0)
 
 
 if __name__ == "__main__":
