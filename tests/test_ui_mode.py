@@ -1,4 +1,6 @@
 import os
+import threading
+import time
 import unittest
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 from unittest.mock import MagicMock, patch
@@ -14,6 +16,8 @@ try:
         PAGE_SIZE,
         ImageCardWidget,
         IrasutoyaDialog,
+        _ThumbnailByteCache,
+        clear_session_thumbnail_cache,
         make_description_snippet,
     )
     HAS_QT = True
@@ -988,6 +992,288 @@ class TestUIMode(unittest.TestCase):
         self.assertFalse(_is_desc_only_match([img_callout_title], "手に入れる"))
         self.assertFalse(_is_desc_only_match([], "手に入れる"))
         self.assertFalse(_is_desc_only_match([img_desc_only], ""))
+
+    def test_thumbnail_byte_cache_lru_and_byte_cap(self) -> None:
+        """Verify _ThumbnailByteCache enforces entry limit, byte limit, and LRU eviction."""
+        cache = _ThumbnailByteCache(max_entries=3, max_bytes=30)
+        self.assertEqual(len(cache), 0)
+
+        # Basic put and get
+        cache.put("https://example.com/1.png", b"12345")
+        cache.put("https://example.com/2.png", b"12345")
+        cache.put("https://example.com/3.png", b"12345")
+        self.assertEqual(len(cache), 3)
+        self.assertEqual(cache.get("https://example.com/1.png"), b"12345")
+
+        # Adding 4th entry evicts oldest non-MRU (2.png)
+        cache.put("https://example.com/4.png", b"12345")
+        self.assertEqual(len(cache), 3)
+        self.assertIsNone(cache.get("https://example.com/2.png"))
+        self.assertIsNotNone(cache.get("https://example.com/1.png"))
+        self.assertIsNotNone(cache.get("https://example.com/3.png"))
+        self.assertIsNotNone(cache.get("https://example.com/4.png"))
+
+        # Large entry evicts items to stay under max_bytes (30 bytes)
+        cache.put("https://example.com/big.png", b"x" * 25)
+        self.assertLessEqual(cache._current_bytes, 30)
+        self.assertIsNotNone(cache.get("https://example.com/big.png"))
+        self.assertEqual(len(cache), 2)
+
+        # Empty data or URL is ignored
+        cache.put("", b"data")
+        cache.put("https://example.com/empty.png", b"")
+        self.assertIsNone(cache.get("https://example.com/empty.png"))
+
+        # Clear
+        cache.clear()
+        self.assertEqual(len(cache), 0)
+        self.assertEqual(cache._current_bytes, 0)
+
+    def test_thumbnail_cache_reuses_thumbnails_across_suggestion_chips(self) -> None:
+        """Verify suggestion chip switch renders cached thumbnails in 0ms without executor submission."""
+        valid_png = bytes.fromhex(
+            "89504e470d0a1a0a0000000d4948445200000001000000010802000000907753de00000009"
+            "7048597300000f6100000f6101a83fa7690000000c49444154089963f8cfc0000003010100"
+            "9ce3bf590000000049454e44ae426082"
+        )
+        mock_mw = MagicMock()
+        mock_note = {"Expression": "本", "Reading": "ほん", "DefinitionPicture": ""}
+        mock_mw.col.get_note.return_value = mock_note
+
+        clear_session_thumbnail_cache()
+        self.addCleanup(clear_session_thumbnail_cache)
+
+        with patch("addon.ui.mw", mock_mw), patch("threading.Thread", _SyncThread):
+            dlg = IrasutoyaDialog(parent=None, browser=None, note_ids=[1001])
+            self.addCleanup(dlg.close)
+            dlg._thumb_executor.submit = MagicMock()
+            dlg._run_on_main = lambda cb: cb()
+
+            img1 = IrasutoyaImage("本", "https://example.com/hon.png", "https://example.com/hon_t.png", "本")
+            dlg.client.download_image = MagicMock(return_value=valid_png)
+
+            # Cold render: card requires background download task
+            dlg._populate_gallery([img1], gen=dlg._search_generation)
+            self.assertEqual(len(dlg.image_cards), 1)
+
+            # Run worker task synchronously to populate cache
+            dlg._fetch_thumbnail_task(dlg.image_cards[0], gen=dlg._search_generation, delay_ms=0)
+            self.assertEqual(dlg.client.download_image.call_count, 1)
+            self.assertFalse(dlg.image_cards[0].thumb_label.pixmap().isNull())
+
+            # Verify bytes were stored in session cache and pixmap in dialog cache
+            self.assertIsNotNone(dlg._thumb_byte_cache.get(img1.thumb_url))
+            self.assertIsNotNone(dlg._thumb_pixmap_cache.get(img1.thumb_url))
+
+            # Simulate switching to another chip sharing the same thumbnail
+            with patch.object(dlg._thumb_executor, "submit") as mock_submit:
+                dlg._clear_gallery()
+
+                # Populate with the same image in new search generation
+                dlg._search_generation += 1
+                dlg._all_images = [img1]
+                dlg._load_next_page(gen=dlg._search_generation)
+
+                self.assertEqual(len(dlg.image_cards), 1)
+                # Synchronous cache hit: pixmap is set immediately upon creation!
+                self.assertFalse(dlg.image_cards[0].thumb_label.pixmap().isNull())
+                # No executor task submitted for cached thumbnail!
+                mock_submit.assert_not_called()
+                # download_image was NOT called again
+                self.assertEqual(dlg.client.download_image.call_count, 1)
+
+    def test_inflight_thumbnail_saved_to_cache_when_generation_changes(self) -> None:
+        """Verify completed in-flight download populates cache even if search generation advanced."""
+        valid_png = bytes.fromhex(
+            "89504e470d0a1a0a0000000d4948445200000001000000010802000000907753de00000009"
+            "7048597300000f6100000f6101a83fa7690000000c49444154089963f8cfc0000003010100"
+            "9ce3bf590000000049454e44ae426082"
+        )
+        mock_mw = MagicMock()
+        mock_note = {"Expression": "猫", "Reading": "ねこ", "DefinitionPicture": ""}
+        mock_mw.col.get_note.return_value = mock_note
+
+        clear_session_thumbnail_cache()
+        self.addCleanup(clear_session_thumbnail_cache)
+
+        with patch("addon.ui.mw", mock_mw):
+            dlg = IrasutoyaDialog(parent=None, browser=None, note_ids=[1001])
+            self.addCleanup(dlg.close)
+
+            img = IrasutoyaImage("猫", "https://example.com/cat.png", "https://example.com/cat_t.png", "猫")
+            card = ImageCardWidget(img, on_select=lambda c: None, on_double_click=lambda c: None)
+
+            def mock_download(url: str, **kwargs: Any) -> bytes:
+                """Simulate generation advancing while download is mid-flight."""
+                dlg._search_generation += 1
+                return valid_png
+
+            dlg.client.download_image = MagicMock(side_effect=mock_download)
+
+            # Start worker task for generation 1
+            gen1 = dlg._search_generation
+            dlg._fetch_thumbnail_task(card, gen=gen1, delay_ms=0)
+
+            # Verify that even though generation changed during download, bytes were cached!
+            cached = dlg._thumb_byte_cache.get(img.thumb_url)
+            self.assertEqual(cached, valid_png)
+
+    def test_inflight_thumbnail_deduplication_coalesces_concurrent_requests(self) -> None:
+        """Verify multiple cards requesting same thumbnail URL coalesce into single download."""
+        valid_png = bytes.fromhex(
+            "89504e470d0a1a0a0000000d4948445200000001000000010802000000907753de00000009"
+            "7048597300000f6100000f6101a83fa7690000000c49444154089963f8cfc0000003010100"
+            "9ce3bf590000000049454e44ae426082"
+        )
+        mock_mw = MagicMock()
+        mock_note = {"Expression": "犬", "Reading": "いぬ", "DefinitionPicture": ""}
+        mock_mw.col.get_note.return_value = mock_note
+
+        clear_session_thumbnail_cache()
+        self.addCleanup(clear_session_thumbnail_cache)
+
+        with patch("addon.ui.mw", mock_mw):
+            dlg = IrasutoyaDialog(parent=None, browser=None, note_ids=[1001])
+            self.addCleanup(dlg.close)
+            applied_callbacks: List[Any] = []
+            dlg._run_on_main = applied_callbacks.append
+
+            img1 = IrasutoyaImage("犬 1", "https://example.com/dog.png", "https://example.com/dog_t.png", "犬")
+            img2 = IrasutoyaImage("犬 2", "https://example.com/dog.png", "https://example.com/dog_t.png", "犬")
+            card1 = ImageCardWidget(img1, on_select=lambda c: None, on_double_click=lambda c: None)
+            card2 = ImageCardWidget(img2, on_select=lambda c: None, on_double_click=lambda c: None)
+
+            download_started = threading.Event()
+            can_finish_download = threading.Event()
+
+            def mock_slow_download(url: str, **kwargs: Any) -> bytes:
+                """Signal download started and wait for permission to finish."""
+                download_started.set()
+                can_finish_download.wait(timeout=2.0)
+                return valid_png
+
+            dlg.client.download_image = MagicMock(side_effect=mock_slow_download)
+
+            original_get = dlg._thumb_byte_cache.get
+            get_count = 0
+            get_lock = threading.Lock()
+            t2_reached_cache = threading.Event()
+
+            def tracking_get(url: str) -> Optional[bytes]:
+                """Count cache get calls and signal when Thread 2 reaches cache check."""
+                nonlocal get_count
+                res = original_get(url)
+                with get_lock:
+                    get_count += 1
+                    if get_count == 2:
+                        t2_reached_cache.set()
+                return res
+
+            get_patcher = patch.object(dlg._thumb_byte_cache, "get", side_effect=tracking_get)
+            get_patcher.start()
+            self.addCleanup(get_patcher.stop)
+
+            # Thread 1 starts download
+            t1 = threading.Thread(
+                target=lambda: dlg._fetch_thumbnail_task(
+                    card1, gen=dlg._search_generation, delay_ms=0
+                )
+            )
+            t1.start()
+
+            # Wait until thread 1 has entered download_image
+            self.assertTrue(download_started.wait(timeout=1.0))
+
+            # Thread 2 starts for same URL while Thread 1 is downloading
+            t2 = threading.Thread(
+                target=lambda: dlg._fetch_thumbnail_task(
+                    card2, gen=dlg._search_generation, delay_ms=0
+                )
+            )
+            t2.start()
+
+            # Ensure thread 2 has checked cache and entered inflight wait
+            self.assertTrue(t2_reached_cache.wait(timeout=1.0))
+            time.sleep(0.05)
+
+            # Let thread 1 finish
+            can_finish_download.set()
+
+            t1.join(timeout=2.0)
+            t2.join(timeout=2.0)
+
+            # download_image must be called only once
+            self.assertEqual(dlg.client.download_image.call_count, 1)
+            self.assertEqual(dlg._thumb_byte_cache.get(img1.thumb_url), valid_png)
+            # Both cards must receive a thumbnail callback
+            self.assertEqual(len(applied_callbacks), 2)
+            for cb in applied_callbacks:
+                cb()
+            self.assertFalse(card1.thumb_label.pixmap().isNull())
+            self.assertFalse(card2.thumb_label.pixmap().isNull())
+
+    def test_failed_thumbnail_download_is_not_cached(self) -> None:
+        """Verify failed (b'') or corrupted thumbnail download is not cached and shows 'No Preview'."""
+        mock_mw = MagicMock()
+        mock_note = {"Expression": "鳥", "Reading": "とり", "DefinitionPicture": ""}
+        mock_mw.col.get_note.return_value = mock_note
+
+        clear_session_thumbnail_cache()
+        self.addCleanup(clear_session_thumbnail_cache)
+
+        with patch("addon.ui.mw", mock_mw):
+            dlg = IrasutoyaDialog(parent=None, browser=None, note_ids=[1001])
+            self.addCleanup(dlg.close)
+
+            img = IrasutoyaImage("鳥", "https://example.com/bird.png", "https://example.com/bird_t.png", "鳥")
+            card = ImageCardWidget(img, on_select=lambda c: None, on_double_click=lambda c: None)
+
+            dlg.client.download_image = MagicMock(side_effect=Exception("Connection timed out"))
+            dlg._run_on_main = lambda cb: cb()
+
+            dlg._fetch_thumbnail_task(card, gen=dlg._search_generation, delay_ms=0)
+
+            self.assertEqual(card.thumb_label.text(), "No Preview")
+            self.assertIsNone(dlg._thumb_byte_cache.get(img.thumb_url))
+            self.assertNotIn(img.thumb_url, dlg._thumb_pixmap_cache)
+
+            # Test corrupted non-image bytes (e.g. captive portal HTML) are not cached
+            corrupt_img = IrasutoyaImage("鳥2", "https://example.com/bird2.png", "https://example.com/bird2_t.png", "鳥")
+            corrupt_card = ImageCardWidget(corrupt_img, on_select=lambda c: None, on_double_click=lambda c: None)
+            dlg.client.download_image = MagicMock(return_value=b"<html>502 Bad Gateway</html>")
+            dlg._fetch_thumbnail_task(corrupt_card, gen=dlg._search_generation, delay_ms=0)
+
+            self.assertEqual(corrupt_card.thumb_label.text(), "No Preview")
+            self.assertIsNone(dlg._thumb_byte_cache.get(corrupt_img.thumb_url))
+            self.assertNotIn(corrupt_img.thumb_url, dlg._thumb_pixmap_cache)
+
+    def test_clear_gallery_cancels_pending_futures_and_done_clears_caches(self) -> None:
+        """Verify _clear_gallery cancels pending futures and done cleans up memory and client pool."""
+        mock_mw = MagicMock()
+        mock_note = {"Expression": "花", "Reading": "はな", "DefinitionPicture": ""}
+        mock_mw.col.get_note.return_value = mock_note
+
+        with patch("addon.ui.mw", mock_mw):
+            dlg = IrasutoyaDialog(parent=None, browser=None, note_ids=[1001])
+
+            mock_fut = MagicMock()
+            mock_fut.done.return_value = False
+            dlg._pending_thumb_futures.append(mock_fut)
+
+            # Populate pixmap cache
+            dlg._thumb_pixmap_cache["https://example.com/flower_t.png"] = MagicMock()
+            self.assertEqual(len(dlg._thumb_pixmap_cache), 1)
+
+            # _clear_gallery cancels pending futures
+            dlg._clear_gallery()
+            mock_fut.cancel.assert_called_once()
+            self.assertEqual(len(dlg._pending_thumb_futures), 0)
+
+            # done() clears pixmap cache and calls client.close()
+            with patch.object(dlg.client, "close") as mock_close:
+                dlg.done(0)
+                self.assertEqual(len(dlg._thumb_pixmap_cache), 0)
+                mock_close.assert_called_once()
 
 
 if __name__ == "__main__":

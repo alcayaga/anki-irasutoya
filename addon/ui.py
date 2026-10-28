@@ -6,7 +6,8 @@ import re
 import threading
 import time
 import urllib.parse
-from concurrent.futures import ThreadPoolExecutor
+from collections import OrderedDict
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from aqt import mw
@@ -22,6 +23,7 @@ from aqt.qt import (
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
+    QImage,
     QLabel,
     QLineEdit,
     QPixmap,
@@ -153,6 +155,74 @@ QRadioButton {{
 
 PAGE_SIZE = 24
 MAX_SUGGESTION_CHIPS = 8
+THUMB_CACHE_MAX_ENTRIES = 512
+THUMB_CACHE_MAX_BYTES = 8 * 1024 * 1024  # 8 MB hard cap
+DIALOG_PIXMAP_CACHE_MAX_ENTRIES = 128
+THUMB_WORKER_COUNT = 6
+THUMB_INITIAL_BURST = 4
+
+
+class _ThumbnailByteCache:
+    """Thread-safe bounded LRU cache for raw thumbnail image bytes."""
+
+    def __init__(
+        self,
+        max_entries: int = THUMB_CACHE_MAX_ENTRIES,
+        max_bytes: int = THUMB_CACHE_MAX_BYTES,
+    ) -> None:
+        """Initialize bounded LRU byte cache with entry and size limits."""
+        self.max_entries = max_entries
+        self.max_bytes = max_bytes
+        self._data: OrderedDict[str, bytes] = OrderedDict()
+        self._current_bytes = 0
+        self._lock = threading.Lock()
+
+    def get(self, url: str) -> Optional[bytes]:
+        """Return cached bytes for url and mark as most-recently used."""
+        if not url:
+            return None
+        with self._lock:
+            data = self._data.get(url)
+            if data is not None:
+                self._data.move_to_end(url)
+            return data
+
+    def put(self, url: str, data: bytes) -> None:
+        """Insert non-empty thumbnail bytes into the LRU cache."""
+        if not url or not data:
+            return
+        data_len = len(data)
+        if data_len > self.max_bytes:
+            return
+        with self._lock:
+            if url in self._data:
+                self._current_bytes -= len(self._data[url])
+            self._data[url] = data
+            self._current_bytes += data_len
+            self._data.move_to_end(url)
+
+            while (len(self._data) > self.max_entries or self._current_bytes > self.max_bytes) and self._data:
+                _old_url, old_data = self._data.popitem(last=False)
+                self._current_bytes -= len(old_data)
+
+    def clear(self) -> None:
+        """Remove all cached thumbnail bytes."""
+        with self._lock:
+            self._data.clear()
+            self._current_bytes = 0
+
+    def __len__(self) -> int:
+        """Return the number of entries currently cached."""
+        with self._lock:
+            return len(self._data)
+
+
+_SESSION_THUMB_CACHE = _ThumbnailByteCache()
+
+
+def clear_session_thumbnail_cache() -> None:
+    """Clear the session-wide thumbnail byte cache (primarily for tests)."""
+    _SESSION_THUMB_CACHE.clear()
 
 
 def make_description_snippet(description: str, query: str, max_chars: int = 70) -> str:
@@ -280,8 +350,15 @@ class ImageCardWidget(QFrame):
 
         self.update_style()
 
+    def set_scaled_pixmap(self, pixmap: QPixmap) -> None:
+        """Set an already-scaled preview pixmap on the white canvas directly."""
+        self.thumb_label.setPixmap(pixmap)
+
     def set_pixmap(self, pixmap: QPixmap) -> None:
-        """Set scaled preview pixmap on the white canvas."""
+        """Set preview pixmap on the white canvas, scaling smoothly if needed."""
+        if pixmap.width() <= 120 and pixmap.height() <= 96:
+            self.thumb_label.setPixmap(pixmap)
+            return
         scaled = pixmap.scaled(
             120,
             96,
@@ -367,9 +444,16 @@ class IrasutoyaDialog(QDialog):
         self.setStyleSheet(DIALOG_STYLESHEET)
 
         self._search_generation = 0
-        self._thumb_executor = ThreadPoolExecutor(max_workers=4)
+        self._thumb_executor = ThreadPoolExecutor(max_workers=THUMB_WORKER_COUNT)
+        self._pending_thumb_futures: List[Future] = []
         self._thumb_lock = threading.Lock()
         self._last_thumb_request_time = 0.0
+        self._next_thumb_request_time = 0.0
+        self._thumb_burst_remaining = THUMB_INITIAL_BURST
+        self._thumb_byte_cache = _SESSION_THUMB_CACHE
+        self._thumb_pixmap_cache: OrderedDict[str, QPixmap] = OrderedDict()
+        self._thumb_inflight: Dict[str, threading.Event] = {}
+        self._thumb_inflight_lock = threading.Lock()
         self.backend_lbl: Optional[QLabel] = None
 
         self._all_images: List[IrasutoyaImage] = []
@@ -433,11 +517,63 @@ class IrasutoyaDialog(QDialog):
             pass
         QTimer.singleShot(0, callback)
 
+    def _cancel_pending_thumb_futures(self) -> None:
+        """Cancel unstarted queued thumbnail download futures."""
+        for fut in self._pending_thumb_futures:
+            if not fut.done():
+                fut.cancel()
+        self._pending_thumb_futures.clear()
+
+    def _decode_thumbnail(self, thumb_data: bytes) -> Optional[QImage]:
+        """Decode and scale thumbnail bytes into a smooth-transformed QImage, or None if invalid."""
+        if not thumb_data:
+            return None
+        qimg = QImage.fromData(QByteArray(thumb_data))
+        if qimg.isNull():
+            return None
+        return qimg.scaled(
+            120,
+            96,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+
+    def _get_cached_pixmap(self, thumb_url: str) -> Optional[QPixmap]:
+        """Lookup pre-scaled QPixmap from dialog cache or decode from session byte cache."""
+        if not thumb_url:
+            return None
+        pixmap = self._thumb_pixmap_cache.get(thumb_url)
+        if pixmap is not None:
+            self._thumb_pixmap_cache.move_to_end(thumb_url)
+            return pixmap
+
+        data = self._thumb_byte_cache.get(thumb_url)
+        if data:
+            scaled_qimg = self._decode_thumbnail(data)
+            if scaled_qimg is not None:
+                pixmap = QPixmap.fromImage(scaled_qimg)
+                self._cache_dialog_pixmap(thumb_url, pixmap)
+                return pixmap
+        return None
+
+    def _cache_dialog_pixmap(self, thumb_url: str, pixmap: QPixmap) -> None:
+        """Store a pre-scaled QPixmap in the dialog LRU cache."""
+        if not thumb_url or pixmap.isNull():
+            return
+        self._thumb_pixmap_cache[thumb_url] = pixmap
+        self._thumb_pixmap_cache.move_to_end(thumb_url)
+        while len(self._thumb_pixmap_cache) > DIALOG_PIXMAP_CACHE_MAX_ENTRIES:
+            self._thumb_pixmap_cache.popitem(last=False)
+
     def done(self, result: int) -> None:
-        """Shut down background thumbnail executor and close dialog."""
+        """Shut down background thumbnail executor, release caches, and close dialog."""
         self._applying = False
         self._search_generation += 1
+        self._cancel_pending_thumb_futures()
         self._thumb_executor.shutdown(wait=False, cancel_futures=True)
+        self._thumb_pixmap_cache.clear()
+        if hasattr(self, "client") and self.client:
+            self.client.close()
         super().done(result)
 
     def resizeEvent(self, event) -> None:
@@ -1435,6 +1571,7 @@ class IrasutoyaDialog(QDialog):
 
     def _clear_gallery(self) -> None:
         """Remove all cards from the gallery."""
+        self._cancel_pending_thumb_futures()
         self.selected_card_widget = None
         self.image_cards.clear()
         self._all_images = []
@@ -1450,6 +1587,7 @@ class IrasutoyaDialog(QDialog):
 
     def _populate_gallery(self, images: List[IrasutoyaImage], gen: int) -> None:
         """Initialize gallery with search results and render the first page."""
+        self._thumb_burst_remaining = THUMB_INITIAL_BURST
         self._all_images = list(images)
         self._loaded_count = 0
         self._load_next_page(gen)
@@ -1504,8 +1642,15 @@ class IrasutoyaDialog(QDialog):
             self.gallery_layout.addWidget(card, row, col)
             self.image_cards.append(card)
 
-            # Submit thumbnail download to thread pool with fast thumb delay
-            self._thumb_executor.submit(self._fetch_thumbnail_task, card, gen, thumb_delay_ms)
+            # Check cache first for instant 0ms rendering
+            cached_pixmap = self._get_cached_pixmap(img.thumb_url)
+            if cached_pixmap is not None:
+                card.set_scaled_pixmap(cached_pixmap)
+            else:
+                fut = self._thumb_executor.submit(
+                    self._fetch_thumbnail_task, card, gen, thumb_delay_ms
+                )
+                self._pending_thumb_futures.append(fut)
 
         self._loaded_count = end_idx
         self.gallery_layout.activate()
@@ -1531,35 +1676,119 @@ class IrasutoyaDialog(QDialog):
         if gen != self._search_generation:
             return
         delay_sec = max(0.0, delay_ms / 1000.0)
-        with self._thumb_lock:
+        thumb_url = card.image.thumb_url
+
+        # In-flight deduplication: coalesce duplicate requests, but claim slot if previous downloader aborted
+        while True:
             if gen != self._search_generation:
                 return
-            if delay_sec > 0:
-                now = time.monotonic()
-                elapsed = now - self._last_thumb_request_time
-                if elapsed < delay_sec:
-                    time.sleep(delay_sec - elapsed)
-            self._last_thumb_request_time = time.monotonic()
-        if gen != self._search_generation:
-            return
-        try:
-            thumb_data = self.client.download_image(card.image.thumb_url, timeout=8, image=card.image)
-        except Exception:
-            thumb_data = b""
 
-        self._run_on_main(lambda: self._apply_thumbnail(card, gen, thumb_data))
-
-    def _apply_thumbnail(self, card: ImageCardWidget, gen: int, thumb_data: bytes) -> None:
-        """Main thread callback to apply thumbnail pixmap."""
-        if gen != self._search_generation:
-            return
-        if thumb_data:
-            pixmap = QPixmap()
-            pixmap.loadFromData(QByteArray(thumb_data))
-            if not pixmap.isNull():
-                card.set_pixmap(pixmap)
+            cached_data = self._thumb_byte_cache.get(thumb_url)
+            if cached_data:
+                scaled_qimg = self._decode_thumbnail(cached_data)
+                self._process_and_apply_thumbnail(card, gen, cached_data, scaled_qimg)
                 return
-        card.thumb_label.setText("No Preview")
+
+            with self._thumb_inflight_lock:
+                event_to_wait = self._thumb_inflight.get(thumb_url)
+                if event_to_wait is None:
+                    self._thumb_inflight[thumb_url] = threading.Event()
+                    break
+
+            # Another worker is actively downloading; wait for completion or abort
+            event_to_wait.wait(timeout=8.5)
+
+        # Active downloader: rate-limit slot reservation
+        try:
+            with self._thumb_lock:
+                if gen != self._search_generation:
+                    return
+                now = time.monotonic()
+                if self._thumb_burst_remaining > 0:
+                    self._thumb_burst_remaining -= 1
+                    wait_sec = 0.0
+                    self._next_thumb_request_time = max(now, self._next_thumb_request_time)
+                else:
+                    scheduled = max(now, self._next_thumb_request_time)
+                    wait_sec = max(0.0, scheduled - now)
+                    self._next_thumb_request_time = scheduled + delay_sec
+
+            if wait_sec > 0:
+                time.sleep(wait_sec)
+
+            if gen != self._search_generation:
+                return
+
+            try:
+                thumb_data = self.client.download_image(thumb_url, timeout=8, image=card.image)
+            except Exception:
+                thumb_data = b""
+
+            scaled_qimg = self._decode_thumbnail(thumb_data)
+            # SAVE-BEFORE-GENERATION-CHECK: Cache only bytes that decode to a valid image
+            if scaled_qimg is not None:
+                self._thumb_byte_cache.put(thumb_url, thumb_data)
+            else:
+                thumb_data = b""
+
+            self._process_and_apply_thumbnail(card, gen, thumb_data, scaled_qimg)
+        finally:
+            with self._thumb_inflight_lock:
+                ev = self._thumb_inflight.pop(thumb_url, None)
+                if ev is not None:
+                    ev.set()
+
+    def _process_and_apply_thumbnail(
+        self,
+        card: ImageCardWidget,
+        gen: int,
+        thumb_data: bytes,
+        scaled_qimg: Optional[QImage] = None,
+    ) -> None:
+        """Decode and scale thumbnail on background worker if needed, then marshal to main thread."""
+        if scaled_qimg is None and thumb_data:
+            scaled_qimg = self._decode_thumbnail(thumb_data)
+
+        self._run_on_main(
+            lambda td=thumb_data, sq=scaled_qimg: self._apply_thumbnail(card, gen, td, sq)
+        )
+
+    def _apply_thumbnail(
+        self,
+        card: ImageCardWidget,
+        gen: int,
+        thumb_data: bytes,
+        scaled_qimg: Optional[QImage] = None,
+    ) -> None:
+        """Main thread callback to apply thumbnail pixmap and populate dialog cache."""
+        thumb_url = card.image.thumb_url
+        if thumb_data:
+            pixmap = self._thumb_pixmap_cache.get(thumb_url)
+            if pixmap is None:
+                if scaled_qimg is not None and not scaled_qimg.isNull():
+                    pixmap = QPixmap.fromImage(scaled_qimg)
+                else:
+                    raw_pixmap = QPixmap()
+                    raw_pixmap.loadFromData(QByteArray(thumb_data))
+                    if not raw_pixmap.isNull():
+                        pixmap = raw_pixmap.scaled(
+                            120,
+                            96,
+                            Qt.AspectRatioMode.KeepAspectRatio,
+                            Qt.TransformationMode.SmoothTransformation,
+                        )
+                if pixmap is not None and not pixmap.isNull():
+                    self._cache_dialog_pixmap(thumb_url, pixmap)
+
+            if gen == self._search_generation:
+                if pixmap is not None and not pixmap.isNull():
+                    card.set_scaled_pixmap(pixmap)
+                    return
+                card.thumb_label.setText("No Preview")
+            return
+
+        if gen == self._search_generation:
+            card.thumb_label.setText("No Preview")
 
     def _on_card_selected(self, card: ImageCardWidget) -> None:
         """Highlight selected card, display checkmark badge, and enable Apply button."""
