@@ -12,6 +12,7 @@ from unittest.mock import patch
 from addon.catalog import create_schema, write_posts, write_synonyms
 from addon.feed import IrasutoyaImage, ParsedPost
 from scripts.build_synonyms import (
+    clean_sudachi_headword,
     fetch_kaishi_github_slice,
     fetch_sudachi_github,
     main,
@@ -588,6 +589,50 @@ class TestBuildSynonyms(unittest.TestCase):
         rows = cur.fetchall()
         conn.close()
         self.assertEqual(rows, [("イヌ", "猫")])
+
+    def test_clean_sudachi_headword_truncation_guards(self) -> None:
+        """Verify clean_sudachi_headword rejects truncated terms and accepts intact ones."""
+        # Truncated or structural changes rejected
+        self.assertEqual(clean_sudachi_headword("ジョン・F・ケネディ"), "")
+        self.assertEqual(clean_sudachi_headword("リンゴ / 蜜柑"), "")
+        self.assertEqual(clean_sudachi_headword("赤、青"), "")
+        self.assertEqual(clean_sudachi_headword(""), "")
+
+        # Intact terms accepted with NFKC normalization
+        self.assertEqual(clean_sudachi_headword("メッセージ・カード"), "メッセージ・カード")
+        self.assertEqual(clean_sudachi_headword(" ＴＶ "), "TV")
+        self.assertEqual(clean_sudachi_headword("就寝"), "就寝")
+        self.assertEqual(clean_sudachi_headword("猫"), "猫")
+
+    def test_fetch_sudachi_github_cache_path_includes_url_hash(self) -> None:
+        """Verify fetch_sudachi_github incorporates URL hash in cache filename."""
+        mock_csv = b"000001,1,0,1,0,0,0,(),sample,,\n" * 35000
+        mock_resp = io.BytesIO(mock_csv)
+
+        class MockUrlOpen:
+            def __enter__(self) -> io.BytesIO:
+                return mock_resp
+
+            def __exit__(self, *args: object) -> None:
+                pass
+
+        url1 = "https://example.com/v1/synonyms.txt"
+        url2 = "https://example.com/v2/synonyms.txt"
+        url1_hash = hashlib.sha256(url1.encode("utf-8")).hexdigest()[:10]
+        url2_hash = hashlib.sha256(url2.encode("utf-8")).hexdigest()[:10]
+
+        def fake_urlopen(*args: object, **kwargs: object) -> MockUrlOpen:
+            mock_resp.seek(0)
+            return MockUrlOpen()
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            cache_dir = os.path.join(self.temp_dir.name, "hash_cache")
+            path1 = fetch_sudachi_github(cache_dir=cache_dir, url=url1)
+            path2 = fetch_sudachi_github(cache_dir=cache_dir, url=url2)
+
+            self.assertIn(f"sudachi_synonyms_{url1_hash}.txt", path1)
+            self.assertIn(f"sudachi_synonyms_{url2_hash}.txt", path2)
+            self.assertNotEqual(path1, path2)
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ import sqlite3
 import struct
 import sys
 import time
+import unicodedata
 import urllib.error
 import urllib.request
 import zipfile
@@ -588,7 +589,8 @@ def fetch_sudachi_github(
         Path to local cached synonyms.txt file.
     """
     os.makedirs(cache_dir, exist_ok=True)
-    out_path = os.path.join(cache_dir, "sudachi_synonyms.txt")
+    url_hash = hashlib.sha256(url.encode("utf-8")).hexdigest()[:10]
+    out_path = os.path.join(cache_dir, f"sudachi_synonyms_{url_hash}.txt")
     if (
         os.path.isfile(out_path)
         and os.path.getsize(out_path) >= min_bytes
@@ -611,6 +613,22 @@ def fetch_sudachi_github(
     os.replace(tmp_path, out_path)
     logger.info("Saved %d bytes to %s", len(content), out_path)
     return out_path
+
+
+def clean_sudachi_headword(raw: str) -> str:
+    """Return cleaned headword, or empty string if cleaning truncated or structurally altered it.
+
+    Args:
+        raw: Raw headword string from Sudachi dictionary row.
+
+    Returns:
+        Cleaned headword matching its NFKC-normalized form, or empty string if discarded.
+    """
+    cleaned = clean_search_query(raw)
+    norm = unicodedata.normalize("NFKC", raw).strip()
+    if not cleaned or cleaned != norm:
+        return ""
+    return cleaned
 
 
 def populate_sudachi_synonyms(
@@ -733,7 +751,7 @@ def populate_sudachi_synonyms(
             field = r[7].strip() if len(r) > 7 else ""
             exp = r[2].strip() if len(r) > 2 and r[2] else "0"
             orth = r[6].strip() if len(r) > 6 and r[6] else "0"
-            hw = clean_search_query(r[8])
+            hw = clean_sudachi_headword(r[8])
             if not hw or hw in GRAMMAR_FUNCTION_WORDS:
                 continue
             # Exclude archaic/obsolete, misuse, misspelling, derogatory, and expansion-disabled
@@ -745,7 +763,7 @@ def populate_sudachi_synonyms(
             continue
 
         for s_row in valid_rows:
-            s_term = clean_search_query(s_row[8])
+            s_term = clean_sudachi_headword(s_row[8])
             if not s_term or s_term in existing_covered:
                 continue
             s_exp = s_row[2].strip() if len(s_row) > 2 and s_row[2] else "0"
@@ -756,7 +774,7 @@ def populate_sudachi_synonyms(
             # Candidate targets from the same group
             cands: List[Tuple[str, bool, bool, float]] = []
             for t_row in valid_rows:
-                t_term = clean_search_query(t_row[8])
+                t_term = clean_sudachi_headword(t_row[8])
                 if not t_term or t_term == s_term:
                     continue
                 t_is_noun = t_row[1].strip() if len(t_row) > 1 and t_row[1] else "1"
