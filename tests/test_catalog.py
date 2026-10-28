@@ -383,3 +383,57 @@ class TestCatalog(unittest.TestCase):
         # Image search still works normally
         results = index.search("黒猫")
         self.assertEqual(len(results), 2)
+
+    def test_write_synonyms_canonicalizes_case_and_merges_targets(self) -> None:
+        """Verify write_synonyms canonicalizes terms to lowercase in SQLite and merges colliding targets."""
+        conn = sqlite3.connect(self.db_path)
+        create_schema(conn)
+
+        # Write mixed-case terms that should fold to the same canonical key
+        write_synonyms(
+            conn,
+            source="sudachi",
+            mapping={
+                "Cupid": ["キューピッド"],
+                "cupid": ["キューピッド", "天使"],
+                "PC": ["パソコン"],
+            },
+        )
+
+        cursor = conn.cursor()
+        cursor.execute("SELECT term, target, source, ord FROM synonyms ORDER BY term, ord")
+        rows = cursor.fetchall()
+        conn.close()
+
+        # "cupid" should have merged targets without duplicate "キューピッド"
+        expected = [
+            ("cupid", "キューピッド", "sudachi", 0),
+            ("cupid", "天使", "sudachi", 1),
+            ("pc", "パソコン", "sudachi", 0),
+        ]
+        self.assertEqual(rows, expected)
+
+    def test_catalog_index_get_synonyms_case_insensitive_and_source_priority(self) -> None:
+        """Verify CatalogIndex.get_synonyms matches case-insensitively and orders sources deterministically."""
+        conn = sqlite3.connect(self.db_path)
+        write_posts(conn, self._sample_posts())
+        create_schema(conn)
+
+        # Add synonyms from different sources with mixed casing
+        write_synonyms(conn, source="sudachi", mapping={"cupid": ["キューピッド_sudachi"]})
+        write_synonyms(conn, source="manual", mapping={"Cupid": ["キューピッド_manual"]})
+        conn.close()
+
+        store = CatalogStore(self.db_path)
+        index = store.get_index()
+        self.assertIsNotNone(index)
+
+        # Case-insensitivity: lowercase, uppercase, and mixed-case must all resolve
+        self.assertEqual(index.get_synonyms("cupid", source="sudachi"), ["キューピッド_sudachi"])
+        self.assertEqual(index.get_synonyms("Cupid", source="sudachi"), ["キューピッド_sudachi"])
+        self.assertEqual(index.get_synonyms("CUPID", source="sudachi"), ["キューピッド_sudachi"])
+
+        # Unspecified source should order manual (0) before sudachi (2)
+        all_targets = index.get_synonyms("cupid")
+        self.assertEqual(all_targets, ["キューピッド_manual", "キューピッド_sudachi"])
+

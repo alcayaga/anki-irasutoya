@@ -673,7 +673,10 @@ def populate_sudachi_synonyms(
             cur.execute(
                 "SELECT DISTINCT term FROM synonyms WHERE source IN ('manual', 'donkuri/kaishi')"
             )
-            existing_covered = {r[0] for r in cur.fetchall()}
+            existing_covered = {
+                unicodedata.normalize("NFKC", str(r[0])).strip().casefold()
+                for r in cur.fetchall()
+            }
 
         cur.execute("SELECT i.title, p.title FROM images i JOIN posts p ON i.post_id = p.id")
         title_rows = cur.fetchall()
@@ -764,7 +767,8 @@ def populate_sudachi_synonyms(
 
         for s_row in valid_rows:
             s_term = clean_sudachi_headword(s_row[8])
-            if not s_term or s_term in existing_covered:
+            s_canonical = unicodedata.normalize("NFKC", str(s_term)).strip().casefold()
+            if not s_canonical or s_canonical in existing_covered:
                 continue
             s_exp = s_row[2].strip() if len(s_row) > 2 and s_row[2] else "0"
             if s_exp == "1":  # Cannot trigger expansion
@@ -810,11 +814,11 @@ def populate_sudachi_synonyms(
                         break
 
             if final_targets:
-                merged = clean_mapping.get(s_term, [])
+                merged = clean_mapping.get(s_canonical, [])
                 for tgt in final_targets:
                     if tgt not in merged and len(merged) < 3:
                         merged.append(tgt)
-                clean_mapping[s_term] = merged
+                clean_mapping[s_canonical] = merged
 
     new_rows = sum(len(t) for t in clean_mapping.values())
     if new_rows == 0:

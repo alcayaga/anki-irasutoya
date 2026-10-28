@@ -862,6 +862,18 @@ class TestTextUtils(unittest.TestCase):
         self.assertEqual(len(sudachi_cands), 1)
         self.assertEqual(sudachi_cands[0], ("寝る", "sudachi_synonym", 2))
 
+    def test_generate_search_candidates_case_insensitive_sudachi_synonym(self) -> None:
+        """Verify generate_search_candidates resolves Sudachi synonyms for Latin terms regardless of query case."""
+        with patch(
+            "addon.text_utils.lookup_sudachi_synonyms",
+            side_effect=lambda term: ["キューピッド"] if term.lower() == "cupid" else [],
+        ):
+            for q in ("cupid", "Cupid", "CUPID"):
+                cands = generate_search_candidates(q, allow_tier2=True)
+                sudachi_cands = [c for c in cands if c[1] == "sudachi_synonym"]
+                self.assertEqual(len(sudachi_cands), 1)
+                self.assertEqual(sudachi_cands[0], ("キューピッド", "sudachi_synonym", 2))
+
     def test_candidate_ordering_tier2_hierarchy_with_sudachi(self) -> None:
         """Verify candidate ordering: concept_map -> kaishi_concept -> note_reading -> same_field -> sudachi_synonym."""
         mock_note = {"Reading": "そうこう"}

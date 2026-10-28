@@ -317,13 +317,15 @@ class TestBuildSynonyms(unittest.TestCase):
 
     def test_populate_sudachi_synonyms_compiles_valid_mapping(self) -> None:
         """Verify populate_sudachi_synonyms compiles valid Sudachi CSV records into catalog.sqlite."""
-        # Add posts with illustrations for targets '寝る' and '買う'
+        # Add posts with illustrations for targets '寝る', '買う', and 'キューピッド'
         conn = sqlite3.connect(self.db_path)
         img1 = IrasutoyaImage("寝る人のイラスト", "https://1.bp.blogspot.com/s800/sleep.png", "t1.png", "寝る", post_id="2")
         post1 = ParsedPost("2", "睡眠のイラスト", "desc", "pub", "upd", (), [img1])
         img2 = IrasutoyaImage("買う人のイラスト", "https://1.bp.blogspot.com/s800/buy.png", "t2.png", "買う", post_id="3")
         post2 = ParsedPost("3", "買う人のイラスト", "desc", "pub", "upd", (), [img2])
-        write_posts(conn, [post1, post2])
+        img3 = IrasutoyaImage("キューピッドのイラスト", "https://1.bp.blogspot.com/s800/cupid.png", "t3.png", "キューピッド", post_id="4")
+        post3 = ParsedPost("4", "キューピッドのイラスト", "desc", "pub", "upd", (), [img3])
+        write_posts(conn, [post1, post2, post3])
         conn.close()
 
         csv_content = (
@@ -331,6 +333,8 @@ class TestBuildSynonyms(unittest.TestCase):
             "000016,2,0,3,0,0,0,(),買う,,\n"
             "023242,1,0,1,0,0,0,(),就寝,,\n"
             "023242,2,0,4,0,0,0,(),寝る,,\n"
+            "006612,1,0,1,0,0,1,(人名),Cupid,,\n"
+            "006612,2,0,3,0,0,0,(),キューピッド,,\n"
         )
         csv_path = os.path.join(self.temp_dir.name, "test_sudachi.txt")
         with open(csv_path, "w", encoding="utf-8") as f:
@@ -348,9 +352,10 @@ class TestBuildSynonyms(unittest.TestCase):
         meta_sources = cur.fetchone()[0]
         conn.close()
 
-        self.assertEqual(len(rows), 2)
-        self.assertEqual(rows[0], ("就寝", "寝る", "sudachi", 0))
-        self.assertEqual(rows[1], ("購入", "買う", "sudachi", 0))
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(rows[0], ("cupid", "キューピッド", "sudachi", 0))
+        self.assertEqual(rows[1], ("就寝", "寝る", "sudachi", 0))
+        self.assertEqual(rows[2], ("購入", "買う", "sudachi", 0))
         self.assertIn("sudachi", meta_sources)
 
         # Validate with catalog validator

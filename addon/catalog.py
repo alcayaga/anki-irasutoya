@@ -4,6 +4,7 @@ import logging
 import os
 import sqlite3
 import threading
+import unicodedata
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
@@ -54,9 +55,17 @@ class CatalogIndex:
         self._synonyms: Dict[Tuple[str, str], Tuple[str, ...]] = synonyms or {}
         self._synonyms_by_term: Dict[str, Dict[str, Tuple[str, ...]]] = {}
         for (term, src), targets in self._synonyms.items():
-            if term not in self._synonyms_by_term:
-                self._synonyms_by_term[term] = {}
-            self._synonyms_by_term[term][src] = targets
+            key = unicodedata.normalize("NFKC", str(term)).strip().casefold()
+            if not key:
+                continue
+            if key not in self._synonyms_by_term:
+                self._synonyms_by_term[key] = {}
+            existing = self._synonyms_by_term[key].get(src, ())
+            merged = list(existing)
+            for t in targets:
+                if t not in merged:
+                    merged.append(t)
+            self._synonyms_by_term[key][src] = tuple(merged)
 
     def search(self, query: str, image_size: str = "s800") -> List[IrasutoyaImage]:
         """Search illustrations by query keyword substring matching against title/post_title/description."""
@@ -93,7 +102,9 @@ class CatalogIndex:
         Returns:
             List of catalog-verified search queries.
         """
-        clean = term.strip()
+        if not term:
+            return []
+        clean = unicodedata.normalize("NFKC", str(term)).strip().casefold()
         if not clean or clean not in self._synonyms_by_term:
             return []
         src_map = self._synonyms_by_term[clean]
@@ -101,7 +112,15 @@ class CatalogIndex:
             return list(src_map.get(source, ()))
         results: List[str] = []
         seen: Set[str] = set()
-        for src in sorted(src_map, key=lambda s: (s != "manual", s)):
+        source_order = {
+            "manual": 0,
+            "donkuri/kaishi": 1,
+            "sudachi": 2,
+            "bilingual_gloss": 3,
+            "wordnet_synonym": 4,
+            "wordnet_hypernym": 5,
+        }
+        for src in sorted(src_map, key=lambda s: source_order.get(s, 99)):
             for t in src_map[src]:
                 if t not in seen:
                     seen.add(t)
@@ -475,15 +494,22 @@ def write_synonyms(
     cursor = conn.cursor()
     cursor.execute("DELETE FROM synonyms WHERE source = ?", (source,))
 
-    rows: List[Tuple[str, str, str, int]] = []
+    # Canonicalize and merge targets for colliding case-folded terms
+    canonical_mapping: Dict[str, List[str]] = {}
     for term, targets in sorted(mapping.items()):
-        clean_term = term.strip()
+        clean_term = unicodedata.normalize("NFKC", str(term)).strip().casefold()
         if not clean_term:
             continue
-        for ord_idx, target in enumerate(targets):
+        merged = canonical_mapping.setdefault(clean_term, [])
+        for target in targets:
             clean_target = str(target).strip()
-            if clean_target:
-                rows.append((clean_term, clean_target, source, ord_idx))
+            if clean_target and clean_target not in merged:
+                merged.append(clean_target)
+
+    rows: List[Tuple[str, str, str, int]] = []
+    for clean_term, targets in sorted(canonical_mapping.items()):
+        for ord_idx, target in enumerate(targets):
+            rows.append((clean_term, target, source, ord_idx))
 
     if rows:
         cursor.executemany(

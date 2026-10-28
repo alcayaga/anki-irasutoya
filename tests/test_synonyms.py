@@ -154,6 +154,21 @@ class TestSynonyms(unittest.TestCase):
             self.assertEqual(lookup_sudachi_synonyms(""), [])
             self.assertEqual(lookup_sudachi_synonyms("   "), [])
 
+    def test_lookup_sudachi_synonyms_case_insensitivity(self) -> None:
+        """Verify lookup_sudachi_synonyms resolves Latin headwords regardless of query casing."""
+        conn = sqlite3.connect(self.db_path)
+        write_synonyms(
+            conn,
+            source="sudachi",
+            mapping={"Cupid": ["キューピッド"]},
+        )
+        conn.close()
+
+        with patch("addon.synonyms.default_store", return_value=self.test_store):
+            self.assertEqual(lookup_sudachi_synonyms("cupid"), ["キューピッド"])
+            self.assertEqual(lookup_sudachi_synonyms("Cupid"), ["キューピッド"])
+            self.assertEqual(lookup_sudachi_synonyms("CUPID"), ["キューピッド"])
+
     def test_write_image_keywords_and_meta_stamp(self) -> None:
         """Verify write_image_keywords stores image keywords and stamps keyword_sources in meta."""
         conn = sqlite3.connect(self.db_path)
