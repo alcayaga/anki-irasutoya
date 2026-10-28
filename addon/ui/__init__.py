@@ -1,7 +1,11 @@
 """User interface package for the Anki Irasutoya add-on."""
-from aqt import mw
+from typing import Any
 
-from .dialog import IrasutoyaDialog
+try:
+    from aqt import mw
+except ImportError:
+    mw: Any = None
+
 from .helpers import (
     _description_match_term,
     _is_desc_only_match,
@@ -25,13 +29,25 @@ from .styles import (
     THUMB_INITIAL_BURST,
     THUMB_WORKER_COUNT,
 )
-from .thumbnails import (
-    _SESSION_THUMB_CACHE,
-    ThumbnailLoader,
-    _ThumbnailByteCache,
-    clear_session_thumbnail_cache,
-)
-from .widgets import ImageCardWidget, populate_suggestion_chips
+
+# Conditionally load Qt-dependent dialog and widgets if aqt/PyQt6 is available
+try:
+    from .dialog import IrasutoyaDialog
+    from .thumbnails import (
+        _SESSION_THUMB_CACHE,
+        ThumbnailLoader,
+        _ThumbnailByteCache,
+        clear_session_thumbnail_cache,
+    )
+    from .widgets import ImageCardWidget, populate_suggestion_chips
+except ImportError:
+    IrasutoyaDialog = None  # type: ignore[assignment,misc]
+    ThumbnailLoader = None  # type: ignore[assignment,misc]
+    ImageCardWidget = None  # type: ignore[assignment,misc]
+    _ThumbnailByteCache = None  # type: ignore[assignment,misc]
+    _SESSION_THUMB_CACHE = None  # type: ignore[assignment,misc]
+    clear_session_thumbnail_cache = None  # type: ignore[assignment,misc]
+    populate_suggestion_chips = None  # type: ignore[assignment,misc]
 
 __all__ = [
     "CHEVRON_ICON_PATH",
