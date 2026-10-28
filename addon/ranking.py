@@ -250,6 +250,7 @@ def calculate_category_score(
     clean_q = query.strip()
     q_cf = clean_q.casefold()
     cat_set = set(categories)
+    cat_set_cf = {c.casefold() for c in categories}
     is_canonical_mark = _is_canonical_mark_title(title, clean_q)
 
     # 1. Anti-archetype penalty (capped at -70.0)
@@ -285,7 +286,7 @@ def calculate_category_score(
     # 3. Positive archetype boost (capped at +35.0, gated by allow_boost)
     boost = 0.0
     if allow_boost:
-        if clean_q in cat_set:
+        if clean_q in cat_set or q_cf in cat_set_cf:
             boost += 25.0
 
         effective_pos = pos_type or infer_pos_type(clean_q)

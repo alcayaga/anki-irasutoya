@@ -476,6 +476,16 @@ class TestRanking(unittest.TestCase):
         )
         self.assertEqual(score_catching_with_cats, score_catching_no_cats)
 
+        # Case-insensitive category match for Latin category (e.g. "POP")
+        score_pop_upper = calculate_category_score(
+            ("POP",), "POP", title="POPのイラスト", allow_boost=True
+        )
+        score_pop_lower = calculate_category_score(
+            ("POP",), "pop", title="POPのイラスト", allow_boost=True
+        )
+        self.assertEqual(score_pop_lower, score_pop_upper)
+        self.assertGreater(score_pop_lower, 0.0)
+
     def test_anti_archetype_category_penalties(self):
         """Verify anti-archetype categories (文字, マーク, フレーム) receive negative adjustments."""
         img_frame = IrasutoyaImage(
