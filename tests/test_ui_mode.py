@@ -1275,6 +1275,136 @@ class TestUIMode(unittest.TestCase):
                 self.assertEqual(len(dlg._thumb_pixmap_cache), 0)
                 mock_close.assert_called_once()
 
+    def test_has_existing_media_detection(self) -> None:
+        """Verify has_existing_media correctly recognizes image tags and filename extensions."""
+        from addon.ui import has_existing_media
+
+        self.assertTrue(has_existing_media('<img src="cat.png">'))
+        self.assertTrue(has_existing_media('<IMG SRC="DOG.JPG">'))
+        self.assertTrue(has_existing_media("photo.webp"))
+        self.assertTrue(has_existing_media("illustration.png"))
+        self.assertTrue(has_existing_media("banner.jpeg"))
+        self.assertTrue(has_existing_media("anim.gif"))
+        self.assertFalse(has_existing_media(""))
+        self.assertFalse(has_existing_media("just plain text"))
+        self.assertFalse(has_existing_media("<b>cat</b>"))
+
+    def test_format_fallback_reason_variations(self) -> None:
+        """Verify format_fallback_reason covers all reason message combinations."""
+        from addon.ui import format_fallback_reason
+
+        # 1. Unknown / unprobed counts defaults to direct title match message
+        self.assertEqual(
+            format_fallback_reason("犬", probed_counts=None),
+            "No direct title match for '犬'",
+        )
+
+        # 2. Zero results
+        self.assertEqual(
+            format_fallback_reason("犬", probed_counts={"犬": 0}),
+            "No direct results for '犬'",
+        )
+
+        # 3. Description match only
+        self.assertEqual(
+            format_fallback_reason(
+                "犬", probed_counts={"犬": 2}, probed_desc_matches={"犬"}
+            ),
+            "No direct title match for '犬'",
+        )
+
+        # 4. Non-description positive count (e.g. decorative or keyword-only)
+        self.assertEqual(
+            format_fallback_reason(
+                "犬", probed_counts={"犬": 2}, probed_desc_matches=set()
+            ),
+            "No direct title illustration for '犬'",
+        )
+
+    def test_probe_catalog_candidates_caching_and_stale_guards(self) -> None:
+        """Verify probe_catalog_candidates caches counts and raises _StaleSearch when stale."""
+        from addon.ui import (
+            _StaleSearch,
+            probe_catalog_candidates,
+        )
+
+        mock_catalog = MagicMock()
+        mock_catalog.search.side_effect = lambda q, **kw: [
+            IrasutoyaImage(f"{q}のイラスト", f"https://example.com/{q}.png", "t", q)
+        ]
+
+        count_cache: Dict[str, int] = {}
+        desc_cache: Dict[str, bool] = {}
+
+        counts, desc_matches = probe_catalog_candidates(
+            catalog=mock_catalog,
+            image_size="s800",
+            candidate_terms=["猫"],
+            restore_term="犬",
+            count_cache=count_cache,
+            desc_cache=desc_cache,
+            is_stale=lambda: False,
+        )
+
+        self.assertEqual(counts["猫"], 1)
+        self.assertEqual(counts["犬"], 1)
+        self.assertIn("猫", count_cache)
+        self.assertIn("犬", count_cache)
+
+        # Calling again with filled cache makes 0 search calls
+        mock_catalog.search.reset_mock()
+        counts2, _ = probe_catalog_candidates(
+            catalog=mock_catalog,
+            image_size="s800",
+            candidate_terms=["猫"],
+            restore_term=None,
+            count_cache=count_cache,
+            desc_cache=desc_cache,
+            is_stale=lambda: False,
+        )
+        self.assertEqual(counts2["猫"], 1)
+        mock_catalog.search.assert_not_called()
+
+        # Stale check raises _StaleSearch
+        with self.assertRaises(_StaleSearch):
+            probe_catalog_candidates(
+                catalog=mock_catalog,
+                image_size="s800",
+                candidate_terms=["鳥"],
+                restore_term=None,
+                count_cache=count_cache,
+                desc_cache=desc_cache,
+                is_stale=lambda: True,
+            )
+
+    def test_thumbnail_loader_standalone_lifecycle(self) -> None:
+        """Verify ThumbnailLoader manages burst token resets, cache operations, and shutdown."""
+        from addon.ui import ThumbnailLoader
+
+        loader = ThumbnailLoader(worker_count=2, initial_burst=3)
+        self.assertEqual(loader._burst_remaining, 3)
+
+        # Decrement burst
+        loader._burst_remaining = 0
+        loader.reset_burst()
+        self.assertEqual(loader._burst_remaining, 3)
+
+        # Pixmap caching
+        pixmap = MagicMock()
+        pixmap.isNull.return_value = False
+        loader.cache_dialog_pixmap("https://example.com/test.png", pixmap)
+        self.assertEqual(len(loader.pixmap_cache), 1)
+
+        # Shutdown cleans up
+        mock_fut = MagicMock()
+        mock_fut.done.return_value = False
+        loader.pending_futures.append(mock_fut)
+
+        loader.shutdown()
+        mock_fut.cancel.assert_called_once()
+        self.assertEqual(len(loader.pending_futures), 0)
+        self.assertEqual(len(loader.pixmap_cache), 0)
+
 
 if __name__ == "__main__":
     unittest.main()
