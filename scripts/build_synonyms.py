@@ -31,6 +31,7 @@ if REPO_ROOT not in sys.path:
 
 from addon.catalog import (  # noqa: E402
     CatalogStore,
+    canonicalize_synonym_term,
     create_schema,
     default_store,
     write_image_keywords,
@@ -674,7 +675,7 @@ def populate_sudachi_synonyms(
                 "SELECT DISTINCT term FROM synonyms WHERE source IN ('manual', 'donkuri/kaishi')"
             )
             existing_covered = {
-                unicodedata.normalize("NFKC", str(r[0])).strip().casefold()
+                canonicalize_synonym_term(r[0])
                 for r in cur.fetchall()
             }
 
@@ -767,7 +768,7 @@ def populate_sudachi_synonyms(
 
         for s_row in valid_rows:
             s_term = clean_sudachi_headword(s_row[8])
-            s_canonical = unicodedata.normalize("NFKC", str(s_term)).strip().casefold()
+            s_canonical = canonicalize_synonym_term(s_term)
             if not s_canonical or s_canonical in existing_covered:
                 continue
             s_exp = s_row[2].strip() if len(s_row) > 2 and s_row[2] else "0"
@@ -779,7 +780,7 @@ def populate_sudachi_synonyms(
             cands: List[Tuple[str, bool, bool, float]] = []
             for t_row in valid_rows:
                 t_term = clean_sudachi_headword(t_row[8])
-                if not t_term or t_term == s_term:
+                if not t_term or canonicalize_synonym_term(t_term) == s_canonical:
                     continue
                 t_is_noun = t_row[1].strip() if len(t_row) > 1 and t_row[1] else "1"
                 # Predicates (is_noun=2) must not cross-map to nouns (is_noun=1)

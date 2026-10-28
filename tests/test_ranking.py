@@ -460,6 +460,22 @@ class TestRanking(unittest.TestCase):
         )
         self.assertGreater(score_cat, score_cat_nocat)
 
+        # Near-miss Latin substring (e.g. "cat" inside "Catching up") without valid boundary must NOT receive category boost
+        img_catching = IrasutoyaImage(
+            title="Catching upのイラスト",
+            image_url="https://example.com/c.png",
+            thumb_url="https://example.com/t.png",
+            post_title="Catching upのイラスト",
+            categories=("動物", "ペット"),
+        )
+        score_catching_with_cats = score_candidate_image(img_catching, "cat", pos_type="noun")
+        score_catching_no_cats = score_candidate_image(
+            IrasutoyaImage("Catching upのイラスト", "https://example.com/c.png", "https://example.com/t.png", "Catching upのイラスト"),
+            "cat",
+            pos_type="noun",
+        )
+        self.assertEqual(score_catching_with_cats, score_catching_no_cats)
+
     def test_anti_archetype_category_penalties(self):
         """Verify anti-archetype categories (文字, マーク, フレーム) receive negative adjustments."""
         img_frame = IrasutoyaImage(

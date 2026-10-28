@@ -439,6 +439,11 @@ def _is_non_particle_hiragana_prefix(text: str, idx: int) -> bool:
     return prev_ch not in SINGLE_CHAR_PARTICLES + ATTRIBUTIVE_ENDINGS
 
 
+def _has_latin(text: str) -> bool:
+    """Return True if text contains any cased (Latin) characters that differ between upper and lower case."""
+    return any(ch.casefold() != ch.upper() for ch in text)
+
+
 def classify_match_boundary(text: str, query: str) -> str:
     """Classify the boundary quality of query within text.
 
@@ -458,7 +463,7 @@ def classify_match_boundary(text: str, query: str) -> str:
     if not clean_text or not clean_query:
         return "none"
 
-    has_latin = any(ch.casefold() != ch.upper() for ch in clean_query)
+    has_latin = _has_latin(clean_query)
     t_cf = clean_text.casefold() if has_latin else ""
     q_cf = clean_query.casefold() if has_latin else ""
 
@@ -723,7 +728,7 @@ def score_candidate_image(
     title = img.title.strip()
     post_title = img.post_title.strip()
 
-    has_latin = any(ch.casefold() != ch.upper() for ch in clean_q)
+    has_latin = _has_latin(clean_q)
     t_cf = title.casefold() if has_latin else ""
     q_cf = clean_q.casefold() if has_latin else ""
     pt_cf = post_title.casefold() if has_latin else ""
@@ -839,13 +844,18 @@ def score_candidate_image(
     # 7. Category-aware archetype scoring (modulated by POS, gated by title presence)
     cats = getattr(img, "categories", ())
     if cats:
-        has_title_presence = bool(
-            qual_title == "inflected"
-            or clean_q in title
-            or clean_q in post_title
-            or (has_latin and (q_cf in t_cf or (pt_cf and q_cf in pt_cf)))
-            or (post_title and classify_match_boundary(post_title, clean_q) == "inflected")
-        )
+        if has_latin:
+            has_title_presence = bool(
+                qual_title != "none"
+                or (post_title and classify_match_boundary(post_title, clean_q) != "none")
+            )
+        else:
+            has_title_presence = bool(
+                qual_title == "inflected"
+                or clean_q in title
+                or clean_q in post_title
+                or (post_title and classify_match_boundary(post_title, clean_q) == "inflected")
+            )
         score += calculate_category_score(
             cats, clean_q, pos_type=pos_type, title=title, allow_boost=has_title_presence
         )

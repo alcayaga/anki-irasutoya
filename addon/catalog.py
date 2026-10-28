@@ -42,6 +42,13 @@ class _CatalogImageRecord:
     haystack: str
 
 
+def canonicalize_synonym_term(term: object) -> str:
+    """Return the NFKC-normalized, trimmed, case-folded key used for synonym terms."""
+    if term is None:
+        return ""
+    return unicodedata.normalize("NFKC", str(term)).strip().casefold()
+
+
 class CatalogIndex:
     """Immutable, in-memory index for fast substring search across Irasutoya metadata."""
 
@@ -55,7 +62,7 @@ class CatalogIndex:
         self._synonyms: Dict[Tuple[str, str], Tuple[str, ...]] = synonyms or {}
         self._synonyms_by_term: Dict[str, Dict[str, Tuple[str, ...]]] = {}
         for (term, src), targets in self._synonyms.items():
-            key = unicodedata.normalize("NFKC", str(term)).strip().casefold()
+            key = canonicalize_synonym_term(term)
             if not key:
                 continue
             if key not in self._synonyms_by_term:
@@ -104,7 +111,7 @@ class CatalogIndex:
         """
         if not term:
             return []
-        clean = unicodedata.normalize("NFKC", str(term)).strip().casefold()
+        clean = canonicalize_synonym_term(term)
         if not clean or clean not in self._synonyms_by_term:
             return []
         src_map = self._synonyms_by_term[clean]
@@ -497,7 +504,7 @@ def write_synonyms(
     # Canonicalize and merge targets for colliding case-folded terms
     canonical_mapping: Dict[str, List[str]] = {}
     for term, targets in sorted(mapping.items()):
-        clean_term = unicodedata.normalize("NFKC", str(term)).strip().casefold()
+        clean_term = canonicalize_synonym_term(term)
         if not clean_term:
             continue
         merged = canonical_mapping.setdefault(clean_term, [])
