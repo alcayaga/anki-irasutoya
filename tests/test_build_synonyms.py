@@ -491,8 +491,8 @@ class TestBuildSynonyms(unittest.TestCase):
         self.assertEqual(rows, [("イヌ", "猫")])
 
     def test_fetch_sudachi_github_mocked(self) -> None:
-        """Verify fetch_sudachi_github downloads and caches synonyms.txt."""
-        mock_csv = b"000001,1,0,1,0,0,0,(),sample,,\n" * 100
+        """Verify fetch_sudachi_github downloads, validates minimum size, and caches synonyms.txt."""
+        mock_csv = b"000001,1,0,1,0,0,0,(),sample,,\n" * 35000
         mock_resp = io.BytesIO(mock_csv)
 
         class MockUrlOpen:
@@ -511,6 +511,28 @@ class TestBuildSynonyms(unittest.TestCase):
             self.assertTrue(os.path.isfile(path))
             with open(path, "rb") as f:
                 self.assertEqual(f.read(), mock_csv)
+
+            # Test cache reuse
+            path2 = fetch_sudachi_github(cache_dir=cache_dir, url="https://example.com/mock_synonyms.txt")
+            self.assertEqual(path2, path)
+
+        # Test small payload raises ValueError
+        small_resp = io.BytesIO(b"too small")
+
+        class SmallUrlOpen:
+            def __enter__(self) -> io.BytesIO:
+                return small_resp
+
+            def __exit__(self, *args: object) -> None:
+                pass
+
+        def fake_small_urlopen(*args: object, **kwargs: object) -> SmallUrlOpen:
+            return SmallUrlOpen()
+
+        with patch("urllib.request.urlopen", side_effect=fake_small_urlopen):
+            new_cache = os.path.join(self.temp_dir.name, "small_cache")
+            with self.assertRaises(ValueError):
+                fetch_sudachi_github(cache_dir=new_cache, url="https://example.com/small_synonyms.txt")
 
     def test_populate_sudachi_synonyms_merges_multiple_groups_for_same_term(self) -> None:
         """Verify populate_sudachi_synonyms merges targets across multiple groups up to 3 targets."""

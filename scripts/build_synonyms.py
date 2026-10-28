@@ -564,8 +564,9 @@ def populate_kaishi_concepts(
 
 
 SUDACHI_DICT_RAW_URL = (
-    "https://raw.githubusercontent.com/WorksApplications/SudachiDict/develop/src/main/text/synonyms.txt"
+    "https://raw.githubusercontent.com/WorksApplications/SudachiDict/v20261015/src/main/text/synonyms.txt"
 )
+SUDACHI_MIN_BYTES = 1024 * 1024
 CANONICAL_MATCH_BOUNDARIES = frozenset({"exact_quoted", "standalone", "polite_prefix", "inflected"})
 
 
@@ -573,6 +574,7 @@ def fetch_sudachi_github(
     cache_dir: str = ".catalog_cache",
     url: str = SUDACHI_DICT_RAW_URL,
     max_age_days: float = 7.0,
+    min_bytes: int = SUDACHI_MIN_BYTES,
 ) -> str:
     """Fetch SudachiDict synonyms.txt from GitHub raw content into cache_dir.
 
@@ -580,6 +582,7 @@ def fetch_sudachi_github(
         cache_dir: Directory to cache fetched synonyms.txt file.
         url: Remote URL for SudachiDict synonyms.txt.
         max_age_days: Maximum age of cached file in days before refreshing.
+        min_bytes: Minimum accepted file size in bytes for cache reuse and downloads.
 
     Returns:
         Path to local cached synonyms.txt file.
@@ -588,7 +591,7 @@ def fetch_sudachi_github(
     out_path = os.path.join(cache_dir, "sudachi_synonyms.txt")
     if (
         os.path.isfile(out_path)
-        and os.path.getsize(out_path) > 1024 * 1024
+        and os.path.getsize(out_path) >= min_bytes
         and (time.time() - os.path.getmtime(out_path) < max_age_days * 86400)
     ):
         logger.info("Reusing cached SudachiDict synonyms at %s", out_path)
@@ -599,7 +602,7 @@ def fetch_sudachi_github(
     with urllib.request.urlopen(req, timeout=60) as resp:
         content = resp.read()
 
-    if not content or len(content) < 1000:
+    if not content or len(content) < min_bytes:
         raise ValueError(f"Downloaded SudachiDict file too small ({len(content)} bytes)")
 
     tmp_path = f"{out_path}.tmp"
