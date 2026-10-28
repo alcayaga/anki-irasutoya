@@ -831,11 +831,17 @@ def populate_sudachi_synonyms(
     committed = False
     try:
         create_schema(conn)
-        existing = (
-            conn.execute("SELECT count(*) FROM synonyms WHERE source = 'sudachi'").fetchone()[0]
-            if has_syns
-            else 0
-        )
+        existing = 0
+        if has_syns:
+            legacy_targets: Dict[str, Set[str]] = {}
+            for legacy_term, legacy_target in conn.execute(
+                "SELECT term, target FROM synonyms WHERE source = 'sudachi'"
+            ):
+                legacy_key = canonicalize_synonym_term(legacy_term)
+                if legacy_key:
+                    legacy_targets.setdefault(legacy_key, set()).add(legacy_target)
+            existing = sum(min(3, len(targets)) for targets in legacy_targets.values())
+
         if existing > 0 and new_rows < existing * 0.8:
             logger.error(
                 "Sudachi import produced %d rows, significantly fewer than %d existing rows; refusing replacement.",

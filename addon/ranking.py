@@ -248,13 +248,14 @@ def calculate_category_score(
 
     score = 0.0
     clean_q = query.strip()
+    q_cf = clean_q.casefold()
     cat_set = set(categories)
     is_canonical_mark = _is_canonical_mark_title(title, clean_q)
 
     # 1. Anti-archetype penalty (capped at -70.0)
     anti_penalty = 0.0
     for cat, penalty in UNIVERSAL_ANTI_ARCHETYPE_CATEGORIES.items():
-        if cat in cat_set and cat not in clean_q:
+        if cat in cat_set and cat.casefold() not in q_cf:
             if cat == "マーク" and is_canonical_mark:
                 continue
             # Avoid applying duplicate penalty if title keyword already applied it
@@ -272,7 +273,7 @@ def calculate_category_score(
     hazard_penalty = 0.0
     has_unrelated_hazard = False
     for cat, penalty in SITUATIONAL_HAZARD_CATEGORIES.items():
-        if cat in cat_set and cat not in clean_q:
+        if cat in cat_set and cat.casefold() not in q_cf:
             if cat == "災害" and clean_q in NATURAL_DISASTER_QUERIES:
                 continue
             has_unrelated_hazard = True
@@ -609,19 +610,21 @@ def classify_match_boundary(text: str, query: str) -> str:
         return "standalone"
 
     # Check verb inflections (e.g. 疲れた人のイラスト for 疲れる, 勝った人のイラスト for 勝つ)
+    search_text = t_cf if has_latin else clean_text
     for inflected in conjugate_japanese_verb(clean_query):
+        inf_query = inflected.casefold() if has_latin else inflected
         is_stem = not inflected.endswith(("た", "だ", "う"))
-        pos = clean_text.find(inflected)
+        pos = search_text.find(inf_query)
         while pos != -1:
-            p_ch = clean_text[pos - 1] if pos > 0 else ""
-            end = pos + len(inflected)
-            n_ch = clean_text[end] if end < len(clean_text) else ""
+            p_ch = search_text[pos - 1] if pos > 0 else ""
+            end = pos + len(inf_query)
+            n_ch = search_text[end] if end < len(search_text) else ""
             prev_kanji = bool(p_ch and KANJI_CHAR_RE.match(p_ch))
             next_kanji = bool(n_ch and KANJI_CHAR_RE.match(n_ch))
             # Must not be preceded by Kanji, and bare stems (食べ, 売り) must not form Kanji compounds (食べ物, 売り場)
             if not prev_kanji and not (is_stem and next_kanji):
                 return "inflected"
-            pos = clean_text.find(inflected, pos + 1)
+            pos = search_text.find(inf_query, pos + 1)
 
     return best_quality
 
