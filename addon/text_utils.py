@@ -523,6 +523,7 @@ def generate_search_candidates(
     concept_lookup: Optional[Callable[[str], List[str]]] = None,
     kaishi_lookup: Optional[Callable[[str], List[str]]] = None,
     sudachi_lookup: Optional[Callable[[str], List[str]]] = None,
+    bilingual_lookup: Optional[Callable[[Any, Optional[Any]], List[str]]] = None,
 ) -> List[Tuple[str, str, int]]:
     """Generate prioritized search candidate queries with confidence tiers.
     
@@ -533,7 +534,8 @@ def generate_search_candidates(
         Tier 2 (Phonetic & Reading Fallbacks): Readings from separate note fields,
                        same-field furigana, verb masu-stems, Katakana chōonpu expansion, heuristic compound deinflection,
                        Yomitan sense-specific kanji (esp.), Yomitan cross-references (see:),
-                       curated visual concept maps, Kaishi 1.5k concept bridges, SudachiDict synonym bridges.
+                       curated visual concept maps, Kaishi 1.5k concept bridges, SudachiDict synonym bridges,
+                       bilingual English definition gloss bridges.
     
     Args:
         raw_source: Raw text or HTML from the source field.
@@ -544,6 +546,7 @@ def generate_search_candidates(
         concept_lookup: Optional callable mapping a headword to a list of target concept strings.
         kaishi_lookup: Optional callable mapping a headword to a list of Kaishi 1.5k target strings.
         sudachi_lookup: Optional callable mapping a headword to a list of Sudachi synonym target strings.
+        bilingual_lookup: Optional callable mapping a note and optional Yomitan metadata to bilingual concept target strings.
 
     Returns:
         List of (candidate_query, reason_label, confidence_tier).
@@ -721,6 +724,16 @@ def generate_search_candidates(
         if len(deinflections) > 1:
             for alt in deinflections[1:]:
                 add(alt, "deinflected_base_speculative", 2)
+
+        # Bilingual definition keyword fallback (English gloss to Irasutoya topic noun bridge)
+        if note is not None:
+            if bilingual_lookup:
+                b_targets = bilingual_lookup(note, yomitan_meta)
+            else:
+                from .synonyms import lookup_bilingual_glosses
+                b_targets = lookup_bilingual_glosses(note, yomitan_meta=yomitan_meta, store=store)
+            for b_target in b_targets[:3]:
+                add(b_target, "bilingual_gloss", 2)
 
     return candidates
 

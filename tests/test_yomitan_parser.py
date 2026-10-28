@@ -3,6 +3,7 @@ import unittest
 
 from addon.yomitan_parser import (
     extract_yomitan_metadata_from_note,
+    normalize_english_gloss,
     parse_yomitan_html,
 )
 
@@ -236,6 +237,133 @@ class TestYomitanParser(unittest.TestCase):
         note_plain = {"Expression": "猫", "Meaning": "Cat"}
         meta_none = extract_yomitan_metadata_from_note(note_plain)
         self.assertIsNone(meta_none)
+
+    def test_normalize_english_gloss(self) -> None:
+        """Test normalization and filtering of English definition glosses."""
+        from addon.yomitan_parser import normalize_english_gloss
+
+        self.assertEqual(normalize_english_gloss("to pass away"), "pass away")
+        self.assertEqual(normalize_english_gloss("to be angry (at someone)"), "angry")
+        self.assertEqual(normalize_english_gloss("a cat"), "cat")
+        self.assertEqual(normalize_english_gloss("an apple"), "apple")
+        self.assertEqual(normalize_english_gloss("the dog"), "dog")
+        self.assertEqual(normalize_english_gloss("[archaic] to fly"), "fly")
+        self.assertEqual(normalize_english_gloss("Cupid"), "cupid")
+        self.assertEqual(normalize_english_gloss(""), "")
+        self.assertEqual(normalize_english_gloss("   "), "")
+        self.assertEqual(normalize_english_gloss(None), "")  # type: ignore[arg-type]
+        self.assertEqual(normalize_english_gloss("日本語"), "")
+        self.assertEqual(normalize_english_gloss("りんご (apple)"), "")
+        self.assertEqual(normalize_english_gloss("12345"), "")
+        self.assertEqual(normalize_english_gloss("too many words in this definition sentence"), "")
+
+    def test_yomitan_structured_glossary_extraction(self) -> None:
+        """Test extraction of English glosses from structured Yomitan ul tags."""
+        html_content = (
+            '<div class="yomitan-glossary">'
+            '<ol><li><i>(v5u, vi)</i>'
+            '<ul data-sc-content="glossary">'
+            '<li>to pass away</li>'
+            '<li>to die</li>'
+            '<li>departure</li>'
+            '<li>run (e.g.; fast)</li>'
+            '</ul></li></ol></div>'
+        )
+        meta = parse_yomitan_html(html_content)
+        self.assertIsNotNone(meta)
+        self.assertEqual(meta.english_glosses, ["pass away", "die", "departure", "run"])
+
+    def test_yomitan_legacy_span_glossary_extraction(self) -> None:
+        """Test fallback extraction of English glosses from legacy span tags."""
+        html_content = (
+            '<div class="yomitan-glossary">'
+            '<ol><li><i>(n)</i>'
+            '<span>cupid</span>; <span>god of love</span>;'
+            '<span data-sc-content="refGlosses">reference item</span>'
+            '<span><span>nested</span> span</span>'
+            '</li></ol></div>'
+        )
+        meta = parse_yomitan_html(html_content)
+        self.assertIsNotNone(meta)
+        self.assertEqual(meta.english_glosses, ["cupid", "god of love", "nested span"])
+
+    def test_normalize_english_gloss_parenthetical_with_japanese(self) -> None:
+        """Test stripping parentheticals containing Japanese annotations while preserving Latin glosses."""
+        self.assertEqual(normalize_english_gloss("cat (猫)"), "cat")
+        self.assertEqual(normalize_english_gloss("dog [犬]"), "dog")
+        self.assertEqual(normalize_english_gloss("猫"), "")
+        self.assertEqual(normalize_english_gloss("cat (feline)"), "cat")
+
+    def test_yomitan_excluded_containers(self) -> None:
+        """Test that excluded containers (examples, antonyms) do not leak into English glosses."""
+        html_content = (
+            '<div class="yomitan-glossary">'
+            '<ol><li><i>(n)</i>'
+            '<span>cupid<ul data-sc-content="examples">'
+            '<li><span>He shoots arrows like cupid.</span></li>'
+            '</ul> arrow</span>; <span>god of love</span>'
+            '<div data-sc-content="antonyms">'
+            '<span>devil</span>'
+            '</div>'
+            '</li></ol></div>'
+        )
+        meta = parse_yomitan_html(html_content)
+        self.assertIsNotNone(meta)
+        self.assertEqual(meta.english_glosses, ["cupid arrow", "god of love"])
+
+    def test_extract_yomitan_metadata_merges_fields(self) -> None:
+        """Test merging metadata across fields when an earlier field only contains glosses."""
+        note = {
+            "MainDefinition": (
+                '<div class="yomitan-glossary">'
+                '<ol><li><span>cat</span>; <span>feline</span></li></ol>'
+                '</div>'
+            ),
+            "Glossary": (
+                '<div class="yomitan-glossary">'
+                '<ol><li><i>(n, vs)</i></li></ol>'
+                '</div>'
+            ),
+        }
+        meta = extract_yomitan_metadata_from_note(note)
+        self.assertIsNotNone(meta)
+        self.assertIn("n", meta.pos_tags)
+        self.assertIn("vs", meta.pos_tags)
+        self.assertEqual(meta.english_glosses, ["cat", "feline"])
+
+    def test_extract_english_glosses_from_note(self) -> None:
+        """Test extracting English glosses from various note structures."""
+        from addon.yomitan_parser import extract_english_glosses_from_note
+
+        # 1. From pre-parsed yomitan_meta
+        meta = parse_yomitan_html('<ul data-sc-content="glossary"><li>to run</li></ul>')
+        glosses = extract_english_glosses_from_note({}, yomitan_meta=meta)
+        self.assertEqual(glosses, ["run"])
+
+        # 2. From note with structured MainDefinition
+        note_structured = {
+            "Expression": "走る",
+            "MainDefinition": '<ul data-sc-content="glossary"><li>to sprint</li><li>to dash</li></ul>',
+        }
+        self.assertEqual(extract_english_glosses_from_note(note_structured), ["sprint", "dash"])
+
+        # 3. From note with plain-text Meaning field
+        note_plain = {
+            "Expression": "亡くなる",
+            "Meaning": "to pass away; to die (euphemistic)",
+        }
+        self.assertEqual(extract_english_glosses_from_note(note_plain), ["pass away", "die"])
+
+        # 4. From note with English field
+        note_english = {
+            "Expression": "猫",
+            "English": "cat, feline",
+        }
+        self.assertEqual(extract_english_glosses_from_note(note_english), ["cat", "feline"])
+
+        # 5. Invalid / empty note
+        self.assertEqual(extract_english_glosses_from_note(None), [])
+        self.assertEqual(extract_english_glosses_from_note({}), [])
 
     def test_empty_and_malformed(self):
         """Test edge cases: None, empty, malformed HTML."""

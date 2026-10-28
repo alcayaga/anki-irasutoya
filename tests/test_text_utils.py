@@ -920,9 +920,61 @@ class TestTextUtils(unittest.TestCase):
                     self.assertLess(idx_reading, idx_same_kana)
                     self.assertLess(idx_same_kana, idx_sudachi)
 
+    def test_generate_search_candidates_emits_bilingual_gloss(self) -> None:
+        """Verify generate_search_candidates emits Tier 2 candidates from bilingual definition glosses."""
+        mock_note = {"Expression": "亡くなる", "Meaning": "to pass away"}
+        with patch(
+            "addon.synonyms.lookup_bilingual_glosses",
+            return_value=["死ぬ", "葬式"],
+        ):
+            cands = generate_search_candidates("亡くなる", note=mock_note, allow_tier2=True)
+            b_cands = [c for c in cands if c[1] == "bilingual_gloss"]
+            self.assertEqual(len(b_cands), 2)
+            self.assertEqual(b_cands[0], ("死ぬ", "bilingual_gloss", 2))
+            self.assertEqual(b_cands[1], ("葬式", "bilingual_gloss", 2))
 
+    def test_generate_search_candidates_bilingual_suppressed_when_tier2_false(self) -> None:
+        """Verify bilingual gloss candidates are suppressed when allow_tier2 is False."""
+        mock_note = {"Expression": "亡くなる", "Meaning": "to pass away"}
+        with patch(
+            "addon.synonyms.lookup_bilingual_glosses",
+            return_value=["死ぬ"],
+        ):
+            cands = generate_search_candidates("亡くなる", note=mock_note, allow_tier2=False)
+            b_cands = [c for c in cands if c[1] == "bilingual_gloss"]
+            self.assertEqual(len(b_cands), 0)
+
+    def test_generate_search_candidates_injected_bilingual_lookup(self) -> None:
+        """Verify generate_search_candidates uses injected bilingual_lookup callable."""
+        mock_note = {"Expression": "疾走", "Meaning": "sprint"}
+        cands = generate_search_candidates(
+            "疾走",
+            note=mock_note,
+            allow_tier2=True,
+            bilingual_lookup=lambda note, meta: ["全力疾走", "ランニング"],
+        )
+        b_cands = [c for c in cands if c[1] == "bilingual_gloss"]
+        self.assertEqual(len(b_cands), 2)
+        self.assertEqual(b_cands[0], ("全力疾走", "bilingual_gloss", 2))
+        self.assertEqual(b_cands[1], ("ランニング", "bilingual_gloss", 2))
+
+    def test_generate_search_candidates_grammar_pos_suppresses_bilingual(self) -> None:
+        """Verify grammar particle/auxiliary notes suppress Tier 2 bilingual glosses."""
+        mock_note = {
+            "Expression": "及び",
+            "MainDefinition": '<ol><li><i>(conj, JMdict)</i> and</li></ol>',
+        }
+        cands = generate_search_candidates(
+            "及び",
+            note=mock_note,
+            allow_tier2=True,
+            bilingual_lookup=lambda note, meta: ["出発"],
+        )
+        b_cands = [c for c in cands if c[1] == "bilingual_gloss"]
+        self.assertEqual(len(b_cands), 0)
 
 
 if __name__ == "__main__":
     unittest.main()
+
 

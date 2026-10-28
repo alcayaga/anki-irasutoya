@@ -17,6 +17,7 @@ from scripts.build_synonyms import (
     fetch_kaishi_github_slice,
     fetch_sudachi_github,
     main,
+    populate_bilingual_glosses,
     populate_kaishi_concepts,
     populate_manual_concepts,
     populate_sudachi_synonyms,
@@ -93,6 +94,86 @@ class TestBuildSynonyms(unittest.TestCase):
         with open(sha_path, "r", encoding="utf-8") as f:
             sha_content = f.read()
         self.assertEqual(sha_content, f"{expected_digest}  {os.path.basename(self.db_path)}\n")
+
+    def test_populate_bilingual_glosses_valid_input_writes_and_refreshes_sha256(self) -> None:
+        """Verify valid bilingual concepts write source='bilingual_gloss' rows and refresh sha256."""
+        json_path = os.path.join(self.temp_dir.name, "valid_bilingual.json")
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump({"concepts": {"cat": ["猫"], "feline": ["猫"]}}, f)
+
+        success = populate_bilingual_glosses(self.db_path, json_path, min_matched=2)
+        self.assertTrue(success)
+
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT term, target, source FROM synonyms WHERE source = 'bilingual_gloss' ORDER BY term")
+        rows = cur.fetchall()
+        conn.close()
+        self.assertEqual(rows, [("cat", "猫", "bilingual_gloss"), ("feline", "猫", "bilingual_gloss")])
+
+        sha_path = f"{self.db_path}.sha256"
+        self.assertTrue(os.path.isfile(sha_path))
+
+    def test_populate_bilingual_glosses_unmatched_target_fails_and_rolls_back(self) -> None:
+        """Verify unmatched bilingual targets abort and leave database unchanged."""
+        json_path = os.path.join(self.temp_dir.name, "invalid_bilingual.json")
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump({"concepts": {"unknown": ["存在しないイラスト999"]}}, f)
+
+        success = populate_bilingual_glosses(self.db_path, json_path, min_matched=1)
+        self.assertFalse(success)
+
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT count(*) FROM synonyms WHERE source = 'bilingual_gloss'")
+        count = cur.fetchone()[0]
+        conn.close()
+        self.assertEqual(count, 0)
+
+    def test_populate_bilingual_glosses_min_matched_guard(self) -> None:
+        """Verify populate_bilingual_glosses fails when concept count is below min_matched."""
+        json_path = os.path.join(self.temp_dir.name, "few_bilingual.json")
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump({"concepts": {"cat": ["猫"]}}, f)
+
+        success = populate_bilingual_glosses(self.db_path, json_path, min_matched=5)
+        self.assertFalse(success)
+
+    def test_populate_bilingual_glosses_min_matched_after_validation(self) -> None:
+        """Verify populate_bilingual_glosses fails when valid concepts fall below min_matched."""
+        json_path = os.path.join(self.temp_dir.name, "dropped_bilingual.json")
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump({"concepts": {"cat": ["猫"], "empty": []}}, f)
+
+        # raw count is 2 (passes raw_concepts check), but valid count is 1 < 2
+        success = populate_bilingual_glosses(self.db_path, json_path, min_matched=2)
+        self.assertFalse(success)
+
+    def test_populate_bilingual_glosses_non_canonical_headword_fails(self) -> None:
+        """Verify populate_bilingual_glosses rejects unnormalized headwords at build time."""
+        json_path = os.path.join(self.temp_dir.name, "unnormalized_bilingual.json")
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump({"concepts": {"To Run": ["走る"]}}, f)
+
+        success = populate_bilingual_glosses(self.db_path, json_path, min_matched=1)
+        self.assertFalse(success)
+
+    def test_main_cli_bilingual(self) -> None:
+        """Verify main() CLI executes --bilingual flag."""
+        json_path = os.path.join(self.temp_dir.name, "cli_bilingual.json")
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump({"concepts": {"cat": ["猫"]}}, f)
+
+        with patch("scripts.build_synonyms.BILINGUAL_MIN_MATCHED", 1):
+            ret = main(["--catalog", self.db_path, "--bilingual", json_path])
+            self.assertEqual(ret, 0)
+
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT term, target FROM synonyms WHERE source = 'bilingual_gloss'")
+        rows = cur.fetchall()
+        conn.close()
+        self.assertEqual(rows, [("cat", "猫")])
 
     def test_validate_catalog_synonyms_unmatched_stored_target_fails(self) -> None:
         """Verify validate_catalog_synonyms returns False when a stored target has no title matches."""

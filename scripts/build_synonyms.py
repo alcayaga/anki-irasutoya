@@ -48,11 +48,13 @@ from addon.ranking import (  # noqa: E402
     score_candidate_image,
 )
 from addon.text_utils import GRAMMAR_FUNCTION_WORDS, clean_search_query  # noqa: E402
+from addon.yomitan_parser import normalize_english_gloss  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("build_synonyms")
 
 DEFAULT_CATALOG_PATH = os.path.join(REPO_ROOT, "addon", "data", "catalog.sqlite")
+DEFAULT_BILINGUAL_CONCEPTS_PATH = os.path.join(REPO_ROOT, "scripts", "sources", "bilingual_concepts.json")
 
 
 def filter_relevant_illustrations(
@@ -89,39 +91,50 @@ def update_catalog_sha256(catalog_path: str) -> str:
     return digest
 
 
-def populate_manual_concepts(
+def _populate_concept_json_mapping(
     catalog_path: str,
-    manual_json_path: str,
+    json_path: str,
+    source: str,
+    min_matched: int,
+    validate_canonical_headwords: bool = False,
 ) -> bool:
-    """Compile human-curated manual concepts into catalog.sqlite synonyms table.
+    """Validate JSON visual concepts against catalog illustration titles and populate synonyms.
 
     Args:
-        catalog_path: Path to catalog.sqlite to update.
-        manual_json_path: Path to source JSON file containing manual concepts.
+        catalog_path: Path to destination catalog.sqlite database.
+        json_path: Path to source JSON file containing concept definitions.
+        source: Source attribution string for synonyms table.
+        min_matched: Minimum required valid concept mappings before writing.
+        validate_canonical_headwords: If True, validates headwords match canonical English glosses.
 
     Returns:
         True if all targets validated and populated successfully, False otherwise.
     """
     catalog_path = os.path.abspath(catalog_path)
-    manual_json_path = os.path.abspath(manual_json_path)
+    json_path = os.path.abspath(json_path)
 
     if not os.path.isfile(catalog_path):
         logger.error("Catalog database not found: %s", catalog_path)
         return False
 
-    if not os.path.isfile(manual_json_path):
-        logger.error("Manual concepts file not found: %s", manual_json_path)
+    if not os.path.isfile(json_path):
+        logger.error("Concepts file not found: %s", json_path)
         return False
 
-    with open(manual_json_path, "r", encoding="utf-8") as f:
+    with open(json_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
     raw_concepts: Dict[str, List[str]] = data.get("concepts", {})
-    if not raw_concepts:
-        logger.error("No concepts found in %s", manual_json_path)
+    if not raw_concepts or len(raw_concepts) < min_matched:
+        logger.error(
+            "Too few concepts (%d < %d) found in %s",
+            len(raw_concepts),
+            min_matched,
+            json_path,
+        )
         return False
 
-    logger.info("Validating %d manual concepts against %s...", len(raw_concepts), catalog_path)
+    logger.info("Validating %d %s concepts against %s...", len(raw_concepts), source, catalog_path)
     store = CatalogStore(catalog_path)
     index = store.get_index()
     if index is None:
@@ -133,6 +146,15 @@ def populate_manual_concepts(
     clean_mapping: Dict[str, List[str]] = {}
     for headword, targets in sorted(raw_concepts.items()):
         clean_hw = headword.strip()
+        if validate_canonical_headwords:
+            norm_hw = normalize_english_gloss(clean_hw)
+            if norm_hw != clean_hw:
+                logger.error(
+                    "Validation FAILED: '%s' is not in canonical normalized form (expected '%s')",
+                    clean_hw,
+                    norm_hw,
+                )
+                validation_failures.append((clean_hw, "non-canonical-headword"))
         valid_targets: List[str] = []
         for target in targets:
             clean_tgt = str(target).strip()
@@ -152,13 +174,22 @@ def populate_manual_concepts(
         logger.error("Aborting populate: %d targets failed validation.", len(validation_failures))
         return False
 
+    if not clean_mapping or len(clean_mapping) < min_matched:
+        logger.error(
+            "Too few valid concepts (%d < %d) after validation in %s",
+            len(clean_mapping),
+            min_matched,
+            json_path,
+        )
+        return False
+
     # Connect to catalog and write synonyms
-    logger.info("Writing %d validated manual concept mappings into %s...", len(clean_mapping), catalog_path)
+    logger.info("Writing %d validated %s concept mappings into %s...", len(clean_mapping), source, catalog_path)
     try:
         conn = sqlite3.connect(catalog_path)
         try:
-            inserted = write_synonyms(conn, source="manual", mapping=clean_mapping)
-            logger.info("Inserted %d synonym rows into catalog (source='manual')", inserted)
+            inserted = write_synonyms(conn, source=source, mapping=clean_mapping)
+            logger.info("Inserted %d synonym rows into catalog (source='%s')", inserted, source)
             conn.execute("PRAGMA journal_mode = DELETE")
             conn.execute("VACUUM")
             conn.commit()
@@ -168,6 +199,59 @@ def populate_manual_concepts(
         # Re-compute and refresh the SHA256 sidecar checksum after writing synonyms
         update_catalog_sha256(catalog_path)
     return True
+
+
+def populate_manual_concepts(
+    catalog_path: str,
+    manual_json_path: str,
+    min_matched: int = 1,
+) -> bool:
+    """Compile human-curated manual concepts into catalog.sqlite synonyms table.
+
+    Args:
+        catalog_path: Path to catalog.sqlite to update.
+        manual_json_path: Path to source JSON file containing manual concepts.
+        min_matched: Minimum required concept mappings before writing (defaults to 1).
+
+    Returns:
+        True if all targets validated and populated successfully, False otherwise.
+    """
+    return _populate_concept_json_mapping(
+        catalog_path=catalog_path,
+        json_path=manual_json_path,
+        source="manual",
+        min_matched=min_matched,
+        validate_canonical_headwords=False,
+    )
+
+
+BILINGUAL_MIN_MATCHED = 50
+
+
+def populate_bilingual_glosses(
+    catalog_path: str,
+    bilingual_file_path: str,
+    min_matched: Optional[int] = None,
+) -> bool:
+    """Compile human-curated and validated bilingual definition glosses into catalog.sqlite synonyms table.
+
+    Args:
+        catalog_path: Path to catalog.sqlite to update.
+        bilingual_file_path: Path to source JSON file containing bilingual concepts.
+        min_matched: Minimum required concept mappings before writing (defaults to BILINGUAL_MIN_MATCHED).
+
+    Returns:
+        True if all targets validated and populated successfully, False otherwise.
+    """
+    if min_matched is None:
+        min_matched = BILINGUAL_MIN_MATCHED
+    return _populate_concept_json_mapping(
+        catalog_path=catalog_path,
+        json_path=bilingual_file_path,
+        source="bilingual_gloss",
+        min_matched=min_matched,
+        validate_canonical_headwords=True,
+    )
 
 
 KAISHI_RELEASES_API = "https://api.github.com/repos/donkuri/kaishi/releases/latest"
@@ -957,6 +1041,12 @@ def main(argv: Sequence[str]) -> int:
         help="Path to manual concepts JSON source file to populate into catalog.sqlite",
     )
     parser.add_argument(
+        "--bilingual",
+        nargs="?",
+        const=DEFAULT_BILINGUAL_CONCEPTS_PATH,
+        help=f"Path to bilingual concepts JSON file to compile into catalog (default: {DEFAULT_BILINGUAL_CONCEPTS_PATH})",
+    )
+    parser.add_argument(
         "--kaishi-github",
         action="store_true",
         help="Fetch Kaishi 1.5k latest release from GitHub and populate synonyms and image_keywords",
@@ -995,6 +1085,13 @@ def main(argv: Sequence[str]) -> int:
 
     if args.manual:
         ok = populate_manual_concepts(catalog_path=args.catalog, manual_json_path=args.manual)
+        if not ok:
+            return 1
+
+    if args.bilingual:
+        ok = populate_bilingual_glosses(
+            catalog_path=args.catalog, bilingual_file_path=args.bilingual
+        )
         if not ok:
             return 1
 
