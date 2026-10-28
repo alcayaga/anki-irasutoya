@@ -622,8 +622,14 @@ def classify_match_boundary(text: str, query: str) -> str:
             n_ch = search_text[end] if end < len(search_text) else ""
             prev_kanji = bool(p_ch and KANJI_CHAR_RE.match(p_ch))
             next_kanji = bool(n_ch and KANJI_CHAR_RE.match(n_ch))
-            # Must not be preceded by Kanji, and bare stems (食べ, 売り) must not form Kanji compounds (食べ物, 売り場)
-            if not prev_kanji and not (is_stem and next_kanji):
+            prev_is_alnum = bool(
+                has_latin and p_ch and p_ch.isalnum() and (p_ch.isascii() or p_ch.casefold() != p_ch.upper())
+            )
+            next_is_alnum = bool(
+                has_latin and n_ch and n_ch.isalnum() and (n_ch.isascii() or n_ch.casefold() != n_ch.upper())
+            )
+            # Must not be preceded by Kanji or Latin alnum, and bare stems (食べ, 売り) must not form Kanji compounds (食べ物, 売り場)
+            if not prev_kanji and not prev_is_alnum and not next_is_alnum and not (is_stem and next_kanji):
                 return "inflected"
             pos = search_text.find(inf_query, pos + 1)
 

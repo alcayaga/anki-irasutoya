@@ -266,6 +266,10 @@ class TestRanking(unittest.TestCase):
         self.assertEqual(classify_match_boundary("Éのイラスト", "é"), "exact_quoted")
         self.assertEqual(classify_match_boundary("Caféのイラスト", "café"), "exact_quoted")
 
+        # Mixed-script Latin+Japanese inflections
+        self.assertEqual(classify_match_boundary("PCを使った人のイラスト", "pcを使う"), "inflected")
+        self.assertEqual(classify_match_boundary("SDX化した人のイラスト", "dx化する"), "none")
+
     def test_score_callout_text_heavy_penalty(self):
         """Test that illustrated text callouts receive heavy penalty instead of hard rejection."""
         img_callout = IrasutoyaImage(

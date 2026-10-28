@@ -838,7 +838,8 @@ def populate_sudachi_synonyms(
                 "SELECT term, target FROM synonyms WHERE source = 'sudachi'"
             ):
                 legacy_key = canonicalize_synonym_term(legacy_term)
-                if legacy_key:
+                legacy_target_key = canonicalize_synonym_term(legacy_target)
+                if legacy_key and legacy_target_key != legacy_key:
                     legacy_targets.setdefault(legacy_key, set()).add(legacy_target)
             existing = sum(min(3, len(targets)) for targets in legacy_targets.values())
 
