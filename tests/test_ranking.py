@@ -268,6 +268,7 @@ class TestRanking(unittest.TestCase):
 
         # Mixed-script Latin+Japanese inflections
         self.assertEqual(classify_match_boundary("PCを使った人のイラスト", "pcを使う"), "inflected")
+        self.assertEqual(classify_match_boundary("AIを使ったPCのイラスト", "AIを使う"), "inflected")
         self.assertEqual(classify_match_boundary("SDX化した人のイラスト", "dx化する"), "none")
 
     def test_score_callout_text_heavy_penalty(self):
