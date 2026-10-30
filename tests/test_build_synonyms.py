@@ -317,7 +317,7 @@ class TestBuildSynonyms(unittest.TestCase):
 
     def test_populate_sudachi_synonyms_compiles_valid_mapping(self) -> None:
         """Verify populate_sudachi_synonyms compiles valid Sudachi CSV records into catalog.sqlite."""
-        # Add posts with illustrations for targets '寝る', '買う', and 'キューピッド'
+        # Add posts with illustrations for targets '寝る', '買う', 'キューピッド', and '天使'
         conn = sqlite3.connect(self.db_path)
         img1 = IrasutoyaImage("寝る人のイラスト", "https://1.bp.blogspot.com/s800/sleep.png", "t1.png", "寝る", post_id="2")
         post1 = ParsedPost("2", "睡眠のイラスト", "desc", "pub", "upd", (), [img1])
@@ -325,7 +325,9 @@ class TestBuildSynonyms(unittest.TestCase):
         post2 = ParsedPost("3", "買う人のイラスト", "desc", "pub", "upd", (), [img2])
         img3 = IrasutoyaImage("キューピッドのイラスト", "https://1.bp.blogspot.com/s800/cupid.png", "t3.png", "キューピッド", post_id="4")
         post3 = ParsedPost("4", "キューピッドのイラスト", "desc", "pub", "upd", (), [img3])
-        write_posts(conn, [post1, post2, post3])
+        img4 = IrasutoyaImage("天使のイラスト", "https://1.bp.blogspot.com/s800/angel.png", "t4.png", "天使", post_id="5")
+        post4 = ParsedPost("5", "天使のイラスト", "desc", "pub", "upd", (), [img4])
+        write_posts(conn, [post1, post2, post3, post4])
         conn.close()
 
         csv_content = (
@@ -335,6 +337,8 @@ class TestBuildSynonyms(unittest.TestCase):
             "023242,2,0,4,0,0,0,(),寝る,,\n"
             "006612,1,0,1,0,0,1,(人名),Cupid,,\n"
             "006612,2,0,3,0,0,0,(),キューピッド,,\n"
+            "006613,1,0,1,0,0,1,(人名),CUPID,,\n"
+            "006613,2,0,3,0,0,0,(),天使,,\n"
         )
         csv_path = os.path.join(self.temp_dir.name, "test_sudachi.txt")
         with open(csv_path, "w", encoding="utf-8") as f:
@@ -346,16 +350,17 @@ class TestBuildSynonyms(unittest.TestCase):
         # Verify rows in SQLite
         conn = sqlite3.connect(self.db_path)
         cur = conn.cursor()
-        cur.execute("SELECT term, target, source, ord FROM synonyms WHERE source = 'sudachi' ORDER BY term")
+        cur.execute("SELECT term, target, source, ord FROM synonyms WHERE source = 'sudachi' ORDER BY term, ord")
         rows = cur.fetchall()
         cur.execute("SELECT value FROM meta WHERE key = 'synonym_sources'")
         meta_sources = cur.fetchone()[0]
         conn.close()
 
-        self.assertEqual(len(rows), 3)
+        self.assertEqual(len(rows), 4)
         self.assertEqual(rows[0], ("cupid", "キューピッド", "sudachi", 0))
-        self.assertEqual(rows[1], ("就寝", "寝る", "sudachi", 0))
-        self.assertEqual(rows[2], ("購入", "買う", "sudachi", 0))
+        self.assertEqual(rows[1], ("cupid", "天使", "sudachi", 1))
+        self.assertEqual(rows[2], ("就寝", "寝る", "sudachi", 0))
+        self.assertEqual(rows[3], ("購入", "買う", "sudachi", 0))
         self.assertIn("sudachi", meta_sources)
 
         # Validate with catalog validator

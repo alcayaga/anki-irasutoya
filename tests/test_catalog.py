@@ -422,6 +422,14 @@ class TestCatalog(unittest.TestCase):
         # Add synonyms from different sources with mixed casing
         write_synonyms(conn, source="sudachi", mapping={"cupid": ["キューピッド_sudachi"]})
         write_synonyms(conn, source="manual", mapping={"Cupid": ["キューピッド_manual"]})
+        conn.executemany(
+            "INSERT INTO synonyms (term, target, source, ord) VALUES (?, ?, ?, ?)",
+            [
+                ("CAT", "legacy_upper", "sudachi", 0),
+                ("cat", "legacy_lower", "sudachi", 0),
+            ],
+        )
+        conn.commit()
         conn.close()
 
         store = CatalogStore(self.db_path)
@@ -432,6 +440,12 @@ class TestCatalog(unittest.TestCase):
         self.assertEqual(index.get_synonyms("cupid", source="sudachi"), ["キューピッド_sudachi"])
         self.assertEqual(index.get_synonyms("Cupid", source="sudachi"), ["キューピッド_sudachi"])
         self.assertEqual(index.get_synonyms("CUPID", source="sudachi"), ["キューピッド_sudachi"])
+
+        # Defensive index merging of uncanonicalized legacy rows differing only by case
+        self.assertCountEqual(
+            index.get_synonyms("cat", source="sudachi"),
+            ["legacy_upper", "legacy_lower"],
+        )
 
         # Unspecified source should order manual (0) before sudachi (2)
         all_targets = index.get_synonyms("cupid")
