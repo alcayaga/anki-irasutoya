@@ -447,8 +447,8 @@ def _has_latin(text: str) -> bool:
 
 
 def _is_latin_alnum(ch: str) -> bool:
-    """Return True if ch is an ASCII alphanumeric or a cased letter."""
-    return bool(ch) and ch.isalnum() and (ch.isascii() or ch.casefold() != ch.upper())
+    """Return True if ch is an ASCII alphanumeric, decimal digit, or a cased letter."""
+    return bool(ch) and ch.isalnum() and (ch.isascii() or ch.isdecimal() or ch.casefold() != ch.upper())
 
 
 def classify_match_boundary(text: str, query: str) -> str:
@@ -523,8 +523,8 @@ def classify_match_boundary(text: str, query: str) -> str:
                 if idx + len(q_cf) < len(t_cf)
                 else ""
             )
-            prev_is_alnum = _is_latin_alnum(prev_ch)
-            next_is_alnum = _is_latin_alnum(next_ch)
+            prev_is_alnum = _is_latin_alnum(q_cf[0]) and _is_latin_alnum(prev_ch)
+            next_is_alnum = _is_latin_alnum(q_cf[-1]) and _is_latin_alnum(next_ch)
             if prev_is_alnum or next_is_alnum:
                 continue
         else:

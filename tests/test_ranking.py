@@ -271,6 +271,13 @@ class TestRanking(unittest.TestCase):
         self.assertEqual(classify_match_boundary("AIを使ったPCのイラスト", "AIを使う"), "inflected")
         self.assertEqual(classify_match_boundary("SDX化した人のイラスト", "dx化する"), "none")
 
+        # Full-width digits should block standalone match for Latin queries just like ASCII digits
+        self.assertEqual(classify_match_boundary("PC１のイラスト", "pc"), "none")
+        self.assertEqual(classify_match_boundary("１PCのイラスト", "pc"), "none")
+
+        # Mixed-script direct query ending in Japanese followed by Latin title text
+        self.assertEqual(classify_match_boundary("AIを使うPCのイラスト", "AIを使う"), "standalone")
+
     def test_score_callout_text_heavy_penalty(self):
         """Test that illustrated text callouts receive heavy penalty instead of hard rejection."""
         img_callout = IrasutoyaImage(
