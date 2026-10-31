@@ -619,15 +619,39 @@ def extract_yomitan_metadata_from_note(note: Any) -> Optional[YomitanMetadata]:
     return combined_meta if (combined_meta and _has_data(combined_meta)) else None
 
 
+HTML_VOID_TAGS = frozenset({
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"
+})
+BLOCK_TAGS = frozenset({
+    "address", "article", "aside", "blockquote", "dd", "div", "dl", "dt", "fieldset",
+    "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6",
+    "header", "hr", "li", "main", "nav", "ol", "p", "pre", "section", "table", "tbody",
+    "td", "tfoot", "th", "thead", "tr", "ul"
+})
+
+
 class ExcludedContainersStripper(HTMLParser):
     """HTML parser that strips excluded containers (examples, notes, references, antonyms) and extracts text."""
 
     def __init__(self) -> None:
+        """Initialize exclusion stack and extracted text token accumulator."""
         super().__init__()
         self._excluded_ancestors: List[str] = []
         self._tokens: List[str] = []
 
     def handle_starttag(self, tag: str, attrs: Sequence[Tuple[str, Optional[str]]]) -> None:
+        """Process opening tag, updating exclusion state and void element text boundaries.
+
+        Args:
+            tag: Lowercase HTML tag name.
+            attrs: Sequence of attribute (name, value) pairs.
+        """
+        tag_lower = tag.lower()
+        if tag_lower == "br":
+            if not self._excluded_ancestors:
+                self._tokens.append("; ")
+            return
+
         attr_dict = dict(attrs)
         sc_content = attr_dict.get("data-sc-content", "") or ""
         cls = attr_dict.get("class", "") or ""
@@ -635,26 +659,47 @@ class ExcludedContainersStripper(HTMLParser):
             sc_content in ("examples", "notes", "references", "antonyms")
             or "example" in cls.lower()
         )
-        if is_excluded or self._excluded_ancestors:
-            self._excluded_ancestors.append(tag)
+        if (is_excluded or self._excluded_ancestors) and tag_lower not in HTML_VOID_TAGS:
+            self._excluded_ancestors.append(tag_lower)
 
     def handle_endtag(self, tag: str) -> None:
+        """Process closing tag, unwinding exclusion state and emitting block delimiters.
+
+        Args:
+            tag: Lowercase HTML tag name.
+        """
+        tag_lower = tag.lower()
         if self._excluded_ancestors:
-            if tag == self._excluded_ancestors[-1]:
+            is_outermost = len(self._excluded_ancestors) == 1
+            if tag_lower == self._excluded_ancestors[-1]:
                 self._excluded_ancestors.pop()
-            elif tag in self._excluded_ancestors:
-                while self._excluded_ancestors and self._excluded_ancestors[-1] != tag:
+                if is_outermost and tag_lower in BLOCK_TAGS:
+                    self._tokens.append("; ")
+            elif tag_lower in self._excluded_ancestors:
+                while self._excluded_ancestors and self._excluded_ancestors[-1] != tag_lower:
                     self._excluded_ancestors.pop()
                 if self._excluded_ancestors:
                     self._excluded_ancestors.pop()
-        elif tag in ("li", "div", "p", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "br"):
+                    if is_outermost and tag_lower in BLOCK_TAGS:
+                        self._tokens.append("; ")
+        elif tag_lower in ("li", "div", "p", "tr", "h1", "h2", "h3", "h4", "h5", "h6"):
             self._tokens.append("; ")
 
     def handle_data(self, data: str) -> None:
+        """Accumulate character data when outside excluded containers.
+
+        Args:
+            data: Raw text fragment.
+        """
         if not self._excluded_ancestors:
             self._tokens.append(data)
 
     def get_text(self) -> str:
+        """Return full extracted text with delimiters.
+
+        Returns:
+            Concatenated text tokens.
+        """
         return "".join(self._tokens)
 
 
@@ -686,8 +731,7 @@ def extract_english_glosses_from_note(
 ) -> List[str]:
     """Extract and normalize English gloss candidates from an Anki note.
 
-    Prioritizes structured Yomitan definitions, then falls back to plain-text definition
-    and translation fields.
+    Prioritizes structured and plain-text vocabulary definition fields over sentence translations.
 
     Args:
         note: Anki note or mapping containing flashcard fields.
@@ -702,28 +746,26 @@ def extract_english_glosses_from_note(
     if not note or not hasattr(note, "__getitem__"):
         return []
 
-    # Check note using full Yomitan parser
-    meta = extract_yomitan_metadata_from_note(note)
-    if meta and meta.english_glosses:
-        return list(dict.fromkeys(meta.english_glosses))
-
-    # Fallback: scan definition and translation fields for plain-text glosses
-    fields_to_check = NOTE_DEFINITION_FIELDS + (
-        "English",
-    )
+    fields_to_check = NOTE_DEFINITION_FIELDS + ("English",)
     glosses: List[str] = []
     seen: Set[str] = set()
 
+    # Pass 1: Prioritize vocabulary definition fields (structured HTML or plain-text)
     for f in fields_to_check:
         if f in note and note[f]:
-            raw_val = str(note[f]).strip()
-            if not raw_val:
+            val = str(note[f]).strip()
+            if not val:
                 continue
-            clean_val = strip_html_excluded_containers(raw_val)
+            # Try structured HTML first if Yomitan markup present
+            if any(m in val for m in ("data-sc-content", "formsTable", "JMdict", "yomitan")):
+                meta = parse_yomitan_html(val)
+                if meta and meta.english_glosses:
+                    return list(dict.fromkeys(meta.english_glosses))
+
+            # Plain-text extraction
+            clean_val = strip_html_excluded_containers(val)
             clean_val = html.unescape(clean_val).strip()
-            # Remove parentheticals before delimiter splitting
             clean_val = re.sub(r"\([^)]*\)|\[[^\]]*\]", " ", clean_val)
-            # Split on standard definition delimiters
             parts = re.split(r"[;,/\n、，]", clean_val)
             for part in parts:
                 norm = normalize_english_gloss(part)
@@ -731,6 +773,11 @@ def extract_english_glosses_from_note(
                     seen.add(norm)
                     glosses.append(norm)
             if glosses:
-                break
+                return glosses
 
-    return glosses
+    # Pass 2: Fallback to scanning any remaining fields (e.g. Sentence Meaning) only if no vocabulary gloss found
+    meta = extract_yomitan_metadata_from_note(note)
+    if meta and meta.english_glosses:
+        return list(dict.fromkeys(meta.english_glosses))
+
+    return []

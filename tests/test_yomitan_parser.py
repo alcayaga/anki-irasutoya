@@ -2,6 +2,7 @@
 import unittest
 
 from addon.yomitan_parser import (
+    extract_english_glosses_from_note,
     extract_yomitan_metadata_from_note,
     normalize_english_gloss,
     parse_yomitan_html,
@@ -437,6 +438,33 @@ class TestYomitanParser(unittest.TestCase):
         self.assertNotIn("to jump", cleaned)
         self.assertIn("train", cleaned)
         self.assertIn("locomotive", cleaned)
+
+    def test_strip_html_excluded_containers_void_elements_and_block_boundaries(self) -> None:
+        """Verify void elements do not leave exclusion active and block containers insert boundaries."""
+        from addon.yomitan_parser import strip_html_excluded_containers
+
+        # Void elements: <img class="example"> should not discard following text
+        html_img = '<div><img class="example">cat</div>'
+        self.assertIn("cat", strip_html_excluded_containers(html_img))
+
+        # <br> should create a boundary
+        html_br = "cat<br>dog"
+        self.assertEqual(strip_html_excluded_containers(html_br).strip(), "cat; dog")
+
+        # Block-level excluded container boundary: "cat<ul>...</ul>dog" -> "cat; dog"
+        html_block = 'cat<ul data-sc-content="examples"><li>to run</li></ul>dog'
+        cleaned = strip_html_excluded_containers(html_block)
+        parts = [p.strip() for p in cleaned.split(";") if p.strip()]
+        self.assertEqual(parts, ["cat", "dog"])
+
+    def test_plain_text_meaning_preferred_over_marked_up_sentence_meaning(self) -> None:
+        """Verify plain-text Meaning takes priority over Yomitan marked-up Sentence Meaning."""
+        note = {
+            "Expression": "主治医",
+            "Sentence Meaning": '<div class="yomitan-glossary"><ol><li><i>(n)</i> <span>dog barked</span></li></ol></div>',
+            "Meaning": "doctor",
+        }
+        self.assertEqual(extract_english_glosses_from_note(note), ["doctor"])
 
 
 if __name__ == "__main__":
