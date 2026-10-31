@@ -1,8 +1,14 @@
 """Unit tests for text query extraction and sanitization utilities."""
+import os
 import re
+import sqlite3
+import tempfile
 import unittest
+from typing import List
 from unittest.mock import patch
 
+from addon.catalog import CatalogStore, create_schema, write_synonyms
+from addon.synonyms import lookup_sudachi_synonyms
 from addon.text_utils import clean_search_query, generate_search_candidates
 
 
@@ -861,6 +867,33 @@ class TestTextUtils(unittest.TestCase):
         sudachi_cands = [c for c in cands if c[1] == "sudachi_synonym"]
         self.assertEqual(len(sudachi_cands), 1)
         self.assertEqual(sudachi_cands[0], ("寝る", "sudachi_synonym", 2))
+
+    def test_generate_search_candidates_case_insensitive_sudachi_synonym(self) -> None:
+        """Verify generate_search_candidates resolves Sudachi synonyms for Latin terms regardless of query case."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = os.path.join(tmp_dir, "test_catalog.sqlite")
+            conn = sqlite3.connect(db_path)
+            create_schema(conn)
+            conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', '1')")
+            write_synonyms(conn, source="sudachi", mapping={"Cupid": ["キューピッド"]})
+            conn.commit()
+            conn.close()
+
+            test_store = CatalogStore(db_path)
+
+            def real_lookup(term: str) -> List[str]:
+                """Look up Sudachi synonyms from isolated test store."""
+                return lookup_sudachi_synonyms(term, store=test_store)
+
+            for q in ("cupid", "Cupid", "CUPID"):
+                cands = generate_search_candidates(
+                    q,
+                    allow_tier2=True,
+                    sudachi_lookup=real_lookup,
+                )
+                sudachi_cands = [c for c in cands if c[1] == "sudachi_synonym"]
+                self.assertEqual(len(sudachi_cands), 1)
+                self.assertEqual(sudachi_cands[0], ("キューピッド", "sudachi_synonym", 2))
 
     def test_candidate_ordering_tier2_hierarchy_with_sudachi(self) -> None:
         """Verify candidate ordering: concept_map -> kaishi_concept -> note_reading -> same_field -> sudachi_synonym."""

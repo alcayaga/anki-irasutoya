@@ -31,6 +31,7 @@ if REPO_ROOT not in sys.path:
 
 from addon.catalog import (  # noqa: E402
     CatalogStore,
+    canonicalize_synonym_term,
     create_schema,
     default_store,
     write_image_keywords,
@@ -673,7 +674,10 @@ def populate_sudachi_synonyms(
             cur.execute(
                 "SELECT DISTINCT term FROM synonyms WHERE source IN ('manual', 'donkuri/kaishi')"
             )
-            existing_covered = {r[0] for r in cur.fetchall()}
+            existing_covered = {
+                canonicalize_synonym_term(r[0])
+                for r in cur.fetchall()
+            }
 
         cur.execute("SELECT i.title, p.title FROM images i JOIN posts p ON i.post_id = p.id")
         title_rows = cur.fetchall()
@@ -764,7 +768,8 @@ def populate_sudachi_synonyms(
 
         for s_row in valid_rows:
             s_term = clean_sudachi_headword(s_row[8])
-            if not s_term or s_term in existing_covered:
+            s_canonical = canonicalize_synonym_term(s_term)
+            if not s_canonical or s_canonical in existing_covered:
                 continue
             s_exp = s_row[2].strip() if len(s_row) > 2 and s_row[2] else "0"
             if s_exp == "1":  # Cannot trigger expansion
@@ -775,7 +780,7 @@ def populate_sudachi_synonyms(
             cands: List[Tuple[str, bool, bool, float]] = []
             for t_row in valid_rows:
                 t_term = clean_sudachi_headword(t_row[8])
-                if not t_term or t_term == s_term:
+                if not t_term or canonicalize_synonym_term(t_term) == s_canonical:
                     continue
                 t_is_noun = t_row[1].strip() if len(t_row) > 1 and t_row[1] else "1"
                 # Predicates (is_noun=2) must not cross-map to nouns (is_noun=1)
@@ -810,11 +815,11 @@ def populate_sudachi_synonyms(
                         break
 
             if final_targets:
-                merged = clean_mapping.get(s_term, [])
+                merged = clean_mapping.get(s_canonical, [])
                 for tgt in final_targets:
                     if tgt not in merged and len(merged) < 3:
                         merged.append(tgt)
-                clean_mapping[s_term] = merged
+                clean_mapping[s_canonical] = merged
 
     new_rows = sum(len(t) for t in clean_mapping.values())
     if new_rows == 0:
@@ -826,11 +831,18 @@ def populate_sudachi_synonyms(
     committed = False
     try:
         create_schema(conn)
-        existing = (
-            conn.execute("SELECT count(*) FROM synonyms WHERE source = 'sudachi'").fetchone()[0]
-            if has_syns
-            else 0
-        )
+        existing = 0
+        if has_syns:
+            legacy_targets: Dict[str, Set[str]] = {}
+            for legacy_term, legacy_target in conn.execute(
+                "SELECT term, target FROM synonyms WHERE source = 'sudachi'"
+            ):
+                legacy_key = canonicalize_synonym_term(legacy_term)
+                legacy_target_key = canonicalize_synonym_term(legacy_target)
+                if legacy_key and legacy_target_key != legacy_key:
+                    legacy_targets.setdefault(legacy_key, set()).add(legacy_target)
+            existing = sum(min(3, len(targets)) for targets in legacy_targets.values())
+
         if existing > 0 and new_rows < existing * 0.8:
             logger.error(
                 "Sudachi import produced %d rows, significantly fewer than %d existing rows; refusing replacement.",
