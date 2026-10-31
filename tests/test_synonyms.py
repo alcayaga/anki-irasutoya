@@ -271,6 +271,31 @@ class TestSynonyms(unittest.TestCase):
             ["電車"],
         )
 
+        # 11. Plain-text verb note without Yomitan metadata suppresses noun-only collision
+        note_plain_verb_train = {"Expression": "鍛える", "Meaning": "to train; to drill"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_plain_verb_train, yomitan_meta=None, store=self.test_store),
+            [],
+        )
+
+        note_html_verb_train = {"Expression": "鍛える", "Meaning": "<div>to train</div>"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_html_verb_train, yomitan_meta=None, store=self.test_store),
+            [],
+        )
+
+        note_plain_verb_weather = {"Expression": "乗り切る", "Meaning": "to weather; to get through"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_plain_verb_weather, yomitan_meta=None, store=self.test_store),
+            [],
+        )
+
+        note_plain_noun_train = {"Expression": "電車", "Meaning": "train"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_plain_noun_train, yomitan_meta=None, store=self.test_store),
+            ["電車"],
+        )
+
     def test_write_image_keywords_and_meta_stamp(self) -> None:
         """Verify write_image_keywords stores image keywords and stamps keyword_sources in meta."""
         conn = sqlite3.connect(self.db_path)

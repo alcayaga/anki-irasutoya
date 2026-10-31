@@ -229,10 +229,10 @@ class YomitanHTMLParser(HTMLParser):
             self._current_note_text = []
 
         # Structured glossary detection: <ul data-sc-content="glossary">
-        if tag == "ul" and sc_content == "glossary":
+        if tag in ("ul", "ol") and sc_content == "glossary":
             self._in_glossary_ul = True
             self._glossary_ul_depth = 1
-        elif self._in_glossary_ul and tag == "ul":
+        elif self._in_glossary_ul and tag in ("ul", "ol"):
             self._glossary_ul_depth += 1
 
         if self._in_glossary_ul and tag == "li" and not self._excluded_ancestors:
@@ -424,12 +424,13 @@ class YomitanHTMLParser(HTMLParser):
         # Handle structured glossary
         if self._in_glossary_ul:
             if tag == "li" and self._in_glossary_li and not was_excluded:
-                self._in_glossary_li = False
-                raw_gloss = "".join(self._current_gloss_text).strip()
-                for norm in _split_and_normalize_glosses(raw_gloss):
-                    if norm not in self.metadata.english_glosses:
-                        self.metadata.english_glosses.append(norm)
-            elif tag == "ul":
+                if self._glossary_ul_depth == 1:
+                    self._in_glossary_li = False
+                    raw_gloss = "".join(self._current_gloss_text).strip()
+                    for norm in _split_and_normalize_glosses(raw_gloss):
+                        if norm not in self.metadata.english_glosses:
+                            self.metadata.english_glosses.append(norm)
+            elif tag in ("ul", "ol"):
                 self._glossary_ul_depth -= 1
                 if self._glossary_ul_depth <= 0:
                     self._in_glossary_ul = False
@@ -598,7 +599,7 @@ def extract_yomitan_metadata_from_note(note: Any) -> Optional[YomitanMetadata]:
             if k in NOTE_DEFINITION_FIELDS:
                 continue
             val = str(note[k]).strip()
-            if "data-sc-content" in val or "formsTable" in val or "JMdict" in val:
+            if "data-sc-content" in val or "formsTable" in val or "JMdict" in val or "yomitan" in val:
                 meta = parse_yomitan_html(val)
                 if _has_data(meta):
                     if combined_meta is None:

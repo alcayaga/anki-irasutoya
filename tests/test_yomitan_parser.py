@@ -382,6 +382,27 @@ class TestYomitanParser(unittest.TestCase):
         self.assertIsNone(extract_yomitan_metadata_from_note(None))
         self.assertIsNone(extract_yomitan_metadata_from_note({}))
 
+    def test_yomitan_structured_glossary_nested_list_preserves_trailing_text(self) -> None:
+        """Verify nested list inside glossary item does not prematurely close the parent item."""
+        html_input = (
+            '<ul data-sc-content="glossary">'
+            "<li>prefix <ul><li>nested item</li></ul> suffix</li>"
+            "</ul>"
+        )
+        meta = parse_yomitan_html(html_input)
+        self.assertIsNotNone(meta)
+        self.assertIn("prefix nested item suffix", meta.english_glosses)
+
+    def test_extract_yomitan_metadata_fallback_scans_yomitan_marker(self) -> None:
+        """Verify legacy Yomitan markup in non-definition fields is scanned via 'yomitan' marker."""
+        note = {
+            "Sentence Meaning": '<div class="yomitan-glossary"><ol><li><i>(n)</i> <span>doctor</span></li></ol></div>',
+        }
+        meta = extract_yomitan_metadata_from_note(note)
+        self.assertIsNotNone(meta)
+        self.assertIn("n", meta.pos_tags)
+        self.assertIn("doctor", meta.english_glosses)
+
 
 if __name__ == "__main__":
     unittest.main()

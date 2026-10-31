@@ -1,5 +1,6 @@
 """Synonym dictionaries and visual concept mapping bridges backed by the SQLite catalog."""
 import logging
+import re
 from typing import Any, List, Optional, Set
 
 from .catalog import CatalogStore, default_store
@@ -93,14 +94,31 @@ ENGLISH_PREPOSITIONS = frozenset({"in", "of", "for", "with", "at", "from", "on",
 ENGLISH_NOUN_ONLY_COLLISIONS = frozenset({"train", "weather"})
 
 
-def _is_verb_note(yomitan_meta: Optional[Any]) -> bool:
-    """Determine whether the note represents a verb from Yomitan metadata."""
-    if yomitan_meta is None:
-        return False
-    if getattr(yomitan_meta, "verb_class", None):
-        return True
-    tags = getattr(yomitan_meta, "pos_tags", None) or set()
-    return any(t == "v" or t.startswith(("v1", "v5", "vs", "vk", "vz", "vi", "vt")) for t in tags)
+def _is_verb_note(yomitan_meta: Optional[Any], note: Any = None) -> bool:
+    """Determine whether the note represents a verb from Yomitan metadata or note definition fields.
+
+    Args:
+        yomitan_meta: Optional pre-parsed YomitanMetadata.
+        note: Optional Anki note or field dictionary.
+
+    Returns:
+        True if verb POS tags or infinitive 'to <verb>' patterns are detected, False otherwise.
+    """
+    if yomitan_meta is not None:
+        if getattr(yomitan_meta, "verb_class", None):
+            return True
+        tags = getattr(yomitan_meta, "pos_tags", None) or set()
+        if any(t == "v" or t.startswith(("v1", "v5", "vs", "vk", "vz", "vi", "vt")) for t in tags):
+            return True
+    if note and hasattr(note, "__getitem__"):
+        from .yomitan_parser import NOTE_DEFINITION_FIELDS
+
+        for f in NOTE_DEFINITION_FIELDS + ("English",):
+            if f in note and note[f]:
+                val = re.sub(r"<[^>]+>", ";", str(note[f])).strip()
+                if re.search(r"(?i)(?:^|[;\n,(])\s*(?:to\s+[a-z]+|\(v(?:erb|[15ktsz])?\))", val):
+                    return True
+    return False
 
 
 def lookup_bilingual_glosses(
@@ -128,7 +146,7 @@ def lookup_bilingual_glosses(
 
     targets: List[str] = []
     seen: Set[str] = set()
-    is_verb = _is_verb_note(yomitan_meta)
+    is_verb = _is_verb_note(yomitan_meta, note)
 
     # Pass 1: exact matches on full normalized glosses
     for gloss in glosses:
