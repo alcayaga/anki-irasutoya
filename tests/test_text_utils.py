@@ -26,6 +26,9 @@ class TestTextUtils(unittest.TestCase):
         s_patcher = patch("addon.text_utils.lookup_sudachi_synonyms", return_value=[])
         s_patcher.start()
         self.addCleanup(s_patcher.stop)
+        b_patcher = patch("addon.text_utils.lookup_bilingual_glosses", return_value=[])
+        b_patcher.start()
+        self.addCleanup(b_patcher.stop)
 
     def test_empty_and_none(self):
         """Test handling of None and empty string inputs."""
@@ -924,7 +927,7 @@ class TestTextUtils(unittest.TestCase):
         """Verify generate_search_candidates emits Tier 2 candidates from bilingual definition glosses."""
         mock_note = {"Expression": "亡くなる", "Meaning": "to pass away"}
         with patch(
-            "addon.synonyms.lookup_bilingual_glosses",
+            "addon.text_utils.lookup_bilingual_glosses",
             return_value=["死ぬ", "葬式"],
         ):
             cands = generate_search_candidates("亡くなる", note=mock_note, allow_tier2=True)
@@ -937,7 +940,7 @@ class TestTextUtils(unittest.TestCase):
         """Verify bilingual gloss candidates are suppressed when allow_tier2 is False."""
         mock_note = {"Expression": "亡くなる", "Meaning": "to pass away"}
         with patch(
-            "addon.synonyms.lookup_bilingual_glosses",
+            "addon.text_utils.lookup_bilingual_glosses",
             return_value=["死ぬ"],
         ):
             cands = generate_search_candidates("亡くなる", note=mock_note, allow_tier2=False)

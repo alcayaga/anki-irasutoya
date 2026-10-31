@@ -5,6 +5,7 @@ import unicodedata
 from typing import Any, Callable, List, Optional, Tuple
 
 from .synonyms import (
+    lookup_bilingual_glosses,
     lookup_concept_map,
     lookup_kaishi_concept,
     lookup_sudachi_synonyms,
@@ -730,7 +731,6 @@ def generate_search_candidates(
             if bilingual_lookup:
                 b_targets = bilingual_lookup(note, yomitan_meta)
             else:
-                from .synonyms import lookup_bilingual_glosses
                 b_targets = lookup_bilingual_glosses(note, yomitan_meta=yomitan_meta, store=store)
             for b_target in b_targets[:3]:
                 add(b_target, "bilingual_gloss", 2)
