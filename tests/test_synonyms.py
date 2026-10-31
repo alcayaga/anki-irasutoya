@@ -169,6 +169,60 @@ class TestSynonyms(unittest.TestCase):
             self.assertEqual(lookup_sudachi_synonyms("Cupid"), ["キューピッド"])
             self.assertEqual(lookup_sudachi_synonyms("CUPID"), ["キューピッド"])
 
+    def test_lookup_bilingual_glosses(self) -> None:
+        """Verify lookup_bilingual_glosses bridges English glosses to catalog targets."""
+        from addon.synonyms import lookup_bilingual_glosses
+
+        conn = sqlite3.connect(self.db_path)
+        write_synonyms(
+            conn,
+            source="bilingual_gloss",
+            mapping={
+                "pass away": ["亡くなる", "葬式"],
+                "die": ["死ぬ", "亡くなる"],
+                "cupid": ["キューピッド"],
+                "sprint": ["走る", "全力疾走", "徒競走", "ランニング"],
+            },
+        )
+        conn.close()
+
+        # 1. Plain text definition field
+        note_plain = {"Expression": "亡くなる", "Meaning": "to pass away; to die"}
+        targets = lookup_bilingual_glosses(note_plain, store=self.test_store)
+        self.assertEqual(targets, ["亡くなる", "葬式", "死ぬ"])
+
+        # 2. Case insensitivity and normalization
+        note_cased = {"Expression": "キューピッド", "Meaning": "Cupid (god of love)"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_cased, store=self.test_store),
+            ["キューピッド"],
+        )
+
+        # 3. Up to 3 distinct targets capping
+        note_many = {"Expression": "走る", "Meaning": "sprint"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_many, store=self.test_store),
+            ["走る", "全力疾走", "徒競走"],
+        )
+
+        # 4. Note with Yomitan structured definition
+        note_yomitan = {
+            "Expression": "亡くなる",
+            "MainDefinition": '<ul data-sc-content="glossary"><li>to pass away</li></ul>',
+        }
+        self.assertEqual(
+            lookup_bilingual_glosses(note_yomitan, store=self.test_store),
+            ["亡くなる", "葬式"],
+        )
+
+        # 5. Empty or missing note
+        self.assertEqual(lookup_bilingual_glosses(None, store=self.test_store), [])
+        self.assertEqual(lookup_bilingual_glosses({}, store=self.test_store), [])
+        self.assertEqual(
+            lookup_bilingual_glosses({"Expression": "猫", "Meaning": "unknownwordxyz"}, store=self.test_store),
+            [],
+        )
+
     def test_write_image_keywords_and_meta_stamp(self) -> None:
         """Verify write_image_keywords stores image keywords and stamps keyword_sources in meta."""
         conn = sqlite3.connect(self.db_path)
