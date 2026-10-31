@@ -110,12 +110,14 @@ def _is_verb_note(yomitan_meta: Optional[Any], note: Any = None) -> bool:
         tags = getattr(yomitan_meta, "pos_tags", None) or set()
         if any(t == "v" or t.startswith(("v1", "v5", "vs", "vk", "vz", "vi", "vt")) for t in tags):
             return True
+        if "n" in tags:
+            return False
     if note and hasattr(note, "__getitem__"):
-        from .yomitan_parser import NOTE_DEFINITION_FIELDS
+        from .yomitan_parser import NOTE_DEFINITION_FIELDS, strip_html_excluded_containers
 
         for f in NOTE_DEFINITION_FIELDS + ("English",):
             if f in note and note[f]:
-                val = re.sub(r"<[^>]+>", ";", str(note[f])).strip()
+                val = strip_html_excluded_containers(str(note[f]))
                 if re.search(r"(?i)(?:^|[;\n,(])\s*(?:to\s+[a-z]+|\(v(?:erb|[15ktsz])?\))", val):
                     return True
     return False

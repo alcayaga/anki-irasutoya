@@ -403,6 +403,41 @@ class TestYomitanParser(unittest.TestCase):
         self.assertIn("n", meta.pos_tags)
         self.assertIn("doctor", meta.english_glosses)
 
+    def test_yomitan_structured_glossary_excludes_nested_references_and_notes(self) -> None:
+        """Verify nested references and notes inside a glossary item are not absorbed as glosses."""
+        html_input = (
+            '<ul data-sc-content="glossary">'
+            "<li>cat"
+            '<ul data-sc-content="notes"><li>esp. domestic cat</li></ul>'
+            '<ul data-sc-content="references"><li>see also: feline</li></ul>'
+            "</li>"
+            "</ul>"
+        )
+        meta = parse_yomitan_html(html_input)
+        self.assertIsNotNone(meta)
+        self.assertEqual(meta.english_glosses, ["cat"])
+
+    def test_strip_html_excluded_containers_multi_item_nesting(self) -> None:
+        """Verify strip_html_excluded_containers removes nested example lists with multiple children."""
+        from addon.yomitan_parser import strip_html_excluded_containers
+
+        html_input = (
+            "<div>train"
+            '<ul data-sc-content="examples">'
+            "<li>Example 1: to run</li>"
+            "<li>Example 2: to jump</li>"
+            "</ul>"
+            "<span>locomotive</span>"
+            "</div>"
+        )
+        cleaned = strip_html_excluded_containers(html_input)
+        self.assertNotIn("Example 1", cleaned)
+        self.assertNotIn("to run", cleaned)
+        self.assertNotIn("Example 2", cleaned)
+        self.assertNotIn("to jump", cleaned)
+        self.assertIn("train", cleaned)
+        self.assertIn("locomotive", cleaned)
+
 
 if __name__ == "__main__":
     unittest.main()

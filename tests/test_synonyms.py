@@ -296,6 +296,18 @@ class TestSynonyms(unittest.TestCase):
             ["電車"],
         )
 
+        # 12. Noun with authoritative "n" POS tag is not misclassified as verb by example phrases
+        from addon.synonyms import _is_verb_note
+        note_noun_with_example = {
+            "Expression": "電車",
+            "Meaning": "train <div class='example'>I have to run to catch the train</div>",
+        }
+        self.assertFalse(_is_verb_note(meta_noun, note_noun_with_example))
+        self.assertEqual(
+            lookup_bilingual_glosses(note_noun_with_example, yomitan_meta=meta_noun, store=self.test_store),
+            ["電車"],
+        )
+
     def test_write_image_keywords_and_meta_stamp(self) -> None:
         """Verify write_image_keywords stores image keywords and stamps keyword_sources in meta."""
         conn = sqlite3.connect(self.db_path)

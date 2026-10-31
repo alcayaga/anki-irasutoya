@@ -455,7 +455,12 @@ class YomitanHTMLParser(HTMLParser):
             self._current_ref_text.append(data)
         if self._in_notes_li:
             self._current_note_text.append(data)
-        if self._in_glossary_li and not self._excluded_ancestors:
+        if (
+            self._in_glossary_li
+            and not self._excluded_ancestors
+            and not self._in_ref_ul
+            and not self._in_notes_ul
+        ):
             self._current_gloss_text.append(data)
         elif self._legacy_span_depth > 0 and not self._excluded_ancestors:
             self._current_span_text.append(data)
@@ -614,6 +619,67 @@ def extract_yomitan_metadata_from_note(note: Any) -> Optional[YomitanMetadata]:
     return combined_meta if (combined_meta and _has_data(combined_meta)) else None
 
 
+class ExcludedContainersStripper(HTMLParser):
+    """HTML parser that strips excluded containers (examples, notes, references, antonyms) and extracts text."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._excluded_ancestors: List[str] = []
+        self._tokens: List[str] = []
+
+    def handle_starttag(self, tag: str, attrs: Sequence[Tuple[str, Optional[str]]]) -> None:
+        attr_dict = dict(attrs)
+        sc_content = attr_dict.get("data-sc-content", "") or ""
+        cls = attr_dict.get("class", "") or ""
+        is_excluded = (
+            sc_content in ("examples", "notes", "references", "antonyms")
+            or "example" in cls.lower()
+        )
+        if is_excluded or self._excluded_ancestors:
+            self._excluded_ancestors.append(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        if self._excluded_ancestors:
+            if tag == self._excluded_ancestors[-1]:
+                self._excluded_ancestors.pop()
+            elif tag in self._excluded_ancestors:
+                while self._excluded_ancestors and self._excluded_ancestors[-1] != tag:
+                    self._excluded_ancestors.pop()
+                if self._excluded_ancestors:
+                    self._excluded_ancestors.pop()
+        elif tag in ("li", "div", "p", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "br"):
+            self._tokens.append("; ")
+
+    def handle_data(self, data: str) -> None:
+        if not self._excluded_ancestors:
+            self._tokens.append(data)
+
+    def get_text(self) -> str:
+        return "".join(self._tokens)
+
+
+def strip_html_excluded_containers(html_text: str) -> str:
+    """Strip example, note, reference, and antonym containers from HTML and return delimiter-separated text.
+
+    Args:
+        html_text: Raw HTML string.
+
+    Returns:
+        Cleaned text with excluded containers stripped and block boundaries delimited by semicolons.
+    """
+    if not html_text:
+        return ""
+    if "<" not in html_text:
+        return html_text
+    stripper = ExcludedContainersStripper()
+    try:
+        stripper.feed(html_text)
+        return stripper.get_text()
+    except Exception:
+        # Fallback if HTML is malformed
+        return re.sub(r"<[^>]+>", " ", html_text)
+
+
 def extract_english_glosses_from_note(
     note: Any,
     yomitan_meta: Optional[YomitanMetadata] = None,
@@ -653,9 +719,7 @@ def extract_english_glosses_from_note(
             raw_val = str(note[f]).strip()
             if not raw_val:
                 continue
-            # Replace block boundaries that separate definitions with delimiters before stripping tags
-            clean_val = re.sub(r"</(?:li|div|p|tr|h\d)>|<br\s*/?>", "; ", raw_val)
-            clean_val = re.sub(r"<[^>]+>", " ", clean_val)
+            clean_val = strip_html_excluded_containers(raw_val)
             clean_val = html.unescape(clean_val).strip()
             # Remove parentheticals before delimiter splitting
             clean_val = re.sub(r"\([^)]*\)|\[[^\]]*\]", " ", clean_val)
