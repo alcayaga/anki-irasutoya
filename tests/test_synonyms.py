@@ -180,8 +180,12 @@ class TestSynonyms(unittest.TestCase):
             mapping={
                 "pass away": ["亡くなる", "葬式"],
                 "die": ["死ぬ", "亡くなる"],
+                "death": ["墓", "葬式"],
                 "cupid": ["キューピッド"],
                 "sprint": ["走る", "全力疾走", "徒競走", "ランニング"],
+                "doctor": ["医者"],
+                "school": ["学校"],
+                "train": ["電車"],
             },
         )
         conn.close()
@@ -221,6 +225,50 @@ class TestSynonyms(unittest.TestCase):
         self.assertEqual(
             lookup_bilingual_glosses({"Expression": "猫", "Meaning": "unknownwordxyz"}, store=self.test_store),
             [],
+        )
+
+        # 6. Multi-word compound gloss with constituent word fallback
+        note_compound = {"Expression": "主治医", "Meaning": "family doctor"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_compound, store=self.test_store),
+            ["医者"],
+        )
+
+        # 7. Prepositional phrase prioritizes first word (e.g. "doctor in charge" -> "doctor")
+        note_prep = {"Expression": "主治医", "Meaning": "doctor in charge (of a patient)"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_prep, store=self.test_store),
+            ["医者"],
+        )
+
+        # 8. Stop-word phrase leaving a single content noun (e.g. "after school" -> "school")
+        note_after_school = {"Expression": "放課後", "Meaning": "after school"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_after_school, store=self.test_store),
+            ["学校"],
+        )
+
+        # 9. Morphological noun variant "death"
+        note_death = {"Expression": "死亡推定時刻", "Meaning": "estimated time of death"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_death, store=self.test_store),
+            ["墓", "葬式"],
+        )
+
+        # 10. Verb POS gating suppresses noun-only polysemic collisions (e.g. "train" -> "電車")
+        from addon.yomitan_parser import YomitanMetadata
+        meta_verb = YomitanMetadata(verb_class="v5r", pos_tags={"v5r", "vt"})
+        note_verb_train = {"Expression": "鍛える", "Meaning": "forge; drill; train"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_verb_train, yomitan_meta=meta_verb, store=self.test_store),
+            [],
+        )
+
+        meta_noun = YomitanMetadata(pos_tags={"n"})
+        note_noun_train = {"Expression": "快速", "Meaning": "rapid train"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_noun_train, yomitan_meta=meta_noun, store=self.test_store),
+            ["電車"],
         )
 
     def test_write_image_keywords_and_meta_stamp(self) -> None:

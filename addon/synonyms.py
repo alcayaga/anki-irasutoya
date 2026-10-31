@@ -84,6 +84,25 @@ def lookup_sudachi_synonyms(
     return lookup_synonyms(term, source="sudachi", store=store)
 
 
+ENGLISH_STOP_WORDS = frozenset({
+    "in", "of", "for", "a", "an", "the", "to", "at", "on", "by", "with",
+    "and", "or", "from", "as", "about", "into", "over", "after", "one's",
+    "sb", "sth", "someone", "something", "etc", "esp", "chiefly", "especially",
+})
+ENGLISH_PREPOSITIONS = frozenset({"in", "of", "for", "with", "at", "from", "on", "by", "about"})
+ENGLISH_NOUN_ONLY_COLLISIONS = frozenset({"train", "weather"})
+
+
+def _is_verb_note(yomitan_meta: Optional[Any]) -> bool:
+    """Determine whether the note represents a verb from Yomitan metadata."""
+    if yomitan_meta is None:
+        return False
+    if getattr(yomitan_meta, "verb_class", None):
+        return True
+    tags = getattr(yomitan_meta, "pos_tags", None) or set()
+    return any(t == "v" or t.startswith(("v1", "v5", "vs", "vk", "vz", "vi", "vt")) for t in tags)
+
+
 def lookup_bilingual_glosses(
     note: Any,
     yomitan_meta: Optional[Any] = None,
@@ -109,12 +128,47 @@ def lookup_bilingual_glosses(
 
     targets: List[str] = []
     seen: Set[str] = set()
+    is_verb = _is_verb_note(yomitan_meta)
+
+    # Pass 1: exact matches on full normalized glosses
     for gloss in glosses:
+        if is_verb and gloss in ENGLISH_NOUN_ONLY_COLLISIONS:
+            continue
         for t in lookup_synonyms(gloss, source="bilingual_gloss", store=store):
             if t not in seen:
                 seen.add(t)
                 targets.append(t)
                 if len(targets) >= 3:
                     return targets
+
+    # Pass 2: headword and constituent words from multi-word glosses
+    for gloss in glosses:
+        raw_words = gloss.split()
+        if len(raw_words) <= 1:
+            continue
+        words = [w for w in raw_words if w not in ENGLISH_STOP_WORDS and len(w) > 2]
+        if not words:
+            continue
+        if len(words) == 1:
+            ordered_words = words
+        else:
+            # In English prepositional phrases ("doctor in charge", "doctor of medicine"),
+            # the head noun is the first word. In compound noun phrases ("family doctor", "sports car"),
+            # the head noun is the last word.
+            has_prep = any(p in raw_words for p in ENGLISH_PREPOSITIONS)
+            if has_prep:
+                ordered_words = [words[0], words[-1]] + words[1:-1]
+            else:
+                ordered_words = [words[-1], words[0]] + words[1:-1]
+        for w in dict.fromkeys(ordered_words):
+            if is_verb and w in ENGLISH_NOUN_ONLY_COLLISIONS:
+                continue
+            for t in lookup_synonyms(w, source="bilingual_gloss", store=store):
+                if t not in seen:
+                    seen.add(t)
+                    targets.append(t)
+                    if len(targets) >= 3:
+                        return targets
+
     return targets
 

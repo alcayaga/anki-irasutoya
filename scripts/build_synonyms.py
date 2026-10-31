@@ -143,6 +143,7 @@ def _populate_concept_json_mapping(
 
     # Pre-validate all target keywords against catalog titles
     validation_failures: List[Tuple[str, str]] = []
+    headword_failures = 0
     clean_mapping: Dict[str, List[str]] = {}
     for headword, targets in sorted(raw_concepts.items()):
         clean_hw = headword.strip()
@@ -154,7 +155,7 @@ def _populate_concept_json_mapping(
                     clean_hw,
                     norm_hw,
                 )
-                validation_failures.append((clean_hw, "non-canonical-headword"))
+                headword_failures += 1
         valid_targets: List[str] = []
         for target in targets:
             clean_tgt = str(target).strip()
@@ -168,10 +169,14 @@ def _populate_concept_json_mapping(
         if valid_targets:
             clean_mapping[clean_hw] = valid_targets
 
-    if validation_failures:
+    if validation_failures or headword_failures:
         for hw, tgt in validation_failures:
             logger.error("Validation FAILED: '%s' -> target '%s' has 0 title illustration matches in catalog", hw, tgt)
-        logger.error("Aborting populate: %d targets failed validation.", len(validation_failures))
+        logger.error(
+            "Aborting populate: %d targets and %d headwords failed validation.",
+            len(validation_failures),
+            headword_failures,
+        )
         return False
 
     if not clean_mapping or len(clean_mapping) < min_matched:
@@ -1149,6 +1154,7 @@ def main(argv: Sequence[str]) -> int:
         and not args.kaishi_github
         and not args.sudachi
         and not args.sudachi_github
+        and not args.bilingual
         and not args.validate
     ):
         parser.print_help()

@@ -265,6 +265,7 @@ class TestYomitanParser(unittest.TestCase):
             '<ul data-sc-content="glossary">'
             '<li>to pass away</li>'
             '<li>to die</li>'
+            '<li><span><ul data-sc-content="examples"><li>nested example</li></ul></span></li>'
             '<li>departure</li>'
             '<li>run (e.g.; fast)</li>'
             '</ul></li></ol></div>'
@@ -361,7 +362,15 @@ class TestYomitanParser(unittest.TestCase):
         }
         self.assertEqual(extract_english_glosses_from_note(note_english), ["cat", "feline"])
 
-        # 5. Invalid / empty note
+        # 5. Vocabulary meaning preferred over sentence translation
+        note_sentence = {
+            "Expression": "主治医",
+            "Sentence Meaning": "A dog barked loudly",
+            "Meaning": "doctor",
+        }
+        self.assertEqual(extract_english_glosses_from_note(note_sentence), ["doctor"])
+
+        # 6. Invalid / empty note
         self.assertEqual(extract_english_glosses_from_note(None), [])
         self.assertEqual(extract_english_glosses_from_note({}), [])
 

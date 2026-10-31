@@ -153,7 +153,7 @@ class TestBuildSynonyms(unittest.TestCase):
         """Verify populate_bilingual_glosses rejects unnormalized headwords at build time."""
         json_path = os.path.join(self.temp_dir.name, "unnormalized_bilingual.json")
         with open(json_path, "w", encoding="utf-8") as f:
-            json.dump({"concepts": {"To Run": ["走る"]}}, f)
+            json.dump({"concepts": {"To Run": ["猫"]}}, f)
 
         success = populate_bilingual_glosses(self.db_path, json_path, min_matched=1)
         self.assertFalse(success)
