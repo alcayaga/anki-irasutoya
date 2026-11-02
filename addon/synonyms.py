@@ -205,6 +205,24 @@ def _is_verb_note(yomitan_meta: Optional[Any], note: Any = None) -> bool:
     return False
 
 
+def _is_action_target(target: str) -> bool:
+    """Return True if target represents an action, verb, or event illustration.
+
+    Args:
+        target: Japanese candidate query target.
+
+    Returns:
+        True if target is an allowed action target or infers to verb POS, False otherwise.
+    """
+    if not target:
+        return False
+    if target in BILINGUAL_ACTION_TARGETS:
+        return True
+    from .ranking import infer_pos_type
+
+    return infer_pos_type(target) == "verb"
+
+
 def lookup_bilingual_glosses(
     note: Any,
     yomitan_meta: Optional[Any] = None,
@@ -243,7 +261,7 @@ def lookup_bilingual_glosses(
         if has_style_school and gloss == "school":
             continue
         for t in lookup_synonyms(gloss, source="bilingual_gloss", store=store):
-            if is_verb and t not in BILINGUAL_ACTION_TARGETS:
+            if is_verb and not _is_action_target(t):
                 continue
             if is_transitive_only and t in LOCOMOTION_ACTION_TARGETS:
                 continue

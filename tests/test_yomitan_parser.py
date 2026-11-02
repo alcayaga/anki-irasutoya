@@ -593,6 +593,18 @@ class TestYomitanParser(unittest.TestCase):
         note_bracketed = {"Expression": "単語", "Meaning": "1. start; 2. begin; 3〔rare〕 drink"}
         self.assertEqual(extract_english_glosses_from_note(note_bracketed), ["start", "begin"])
 
+        note_paren_jmdict = {
+            "Expression": "単語",
+            "Meaning": "(1, n, JMdict) apple (2, n, JMdict) fruit (3, n, JMdict) slang",
+        }
+        self.assertEqual(extract_english_glosses_from_note(note_paren_jmdict), ["apple", "fruit"])
+
+        note_wide_paren = {
+            "Expression": "単語",
+            "Meaning": "（1, n）dog（2, n）hound（3, n）canine",
+        }
+        self.assertEqual(extract_english_glosses_from_note(note_wide_paren), ["dog", "hound"])
+
     def test_normalize_english_gloss_the_rest(self) -> None:
         """Verify normalize_english_gloss preserves 'the rest' while stripping other leading articles."""
         self.assertEqual(normalize_english_gloss("the rest"), "the rest")

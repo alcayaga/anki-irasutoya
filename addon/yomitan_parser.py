@@ -816,15 +816,18 @@ def extract_english_glosses_from_note(
             # Plain-text extraction
             clean_val = strip_html_excluded_containers(val)
             clean_val = html.unescape(clean_val).strip()
-            m_sense3 = re.search(r"(?:^|[\n;,\s])(?:3\.(?!\d)|3[、\)]|3\s*〔|③|\([3３]\)|（[3３]）)", clean_val)
+            m_sense3 = re.search(
+                r"(?:^|[\n;,\s])(?:[3３]\.(?!\d)|[3３][、\)]|[3３]\s*〔|③)|[\(（][3３](?:\s*[,、]|[\)）])",
+                clean_val,
+            )
             if m_sense3:
                 clean_val = clean_val[:m_sense3.start()]
             clean_val = re.sub(
-                r"(?:^|[\n;,\s])(?:[①-⑳]|[\d]+\.(?!\d)|[\d]+[、\)\]]|[\(（][\d]+[\)）]|\d+\s*〔[^〕]*〕)\s*",
+                r"(?:^|[\n;,\s])(?:[①-⑳]|[\d０-９]+\.(?!\d)|[\d０-９]+[、\)\]]|\d+\s*〔[^〕]*〕)\s*|[\(（][\d０-９]+(?:[、,][^\)）]*)?[\)）]\s*",
                 "; ",
                 clean_val,
             )
-            clean_val = re.sub(r"\([^)]*\)|\[[^\]]*\]", " ", clean_val)
+            clean_val = re.sub(r"\([^)]*\)|\[[^\]]*\]|（[^）]*）", " ", clean_val)
             parts = re.split(r"[;,/\n、，]", clean_val)
             for part in parts:
                 norm = normalize_english_gloss(part)

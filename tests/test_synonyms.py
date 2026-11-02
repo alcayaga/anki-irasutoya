@@ -405,6 +405,26 @@ class TestSynonyms(unittest.TestCase):
             [],
         )
 
+        # 21. Action target classification permits catalog verbs dynamically (e.g. "to help" -> "手伝う")
+        note_verb_help = {"Expression": "助ける", "Meaning": "to help; to assist"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_verb_help, store=self.test_store),
+            ["手伝う"],
+        )
+
+    def test_is_action_target(self) -> None:
+        """Verify _is_action_target accepts verb morphology and allowlisted event actions."""
+        from addon.synonyms import _is_action_target
+
+        self.assertTrue(_is_action_target("買う"))
+        self.assertTrue(_is_action_target("手伝う"))
+        self.assertTrue(_is_action_target("料理"))
+        self.assertTrue(_is_action_target("葬式"))
+        self.assertFalse(_is_action_target("電車"))
+        self.assertFalse(_is_action_target("学校"))
+        self.assertFalse(_is_action_target("部屋"))
+        self.assertFalse(_is_action_target(""))
+
     def test_is_noun_note(self) -> None:
         """Verify _is_noun_note distinguishes nouns from verbs and discourse expressions."""
         from addon.synonyms import _is_noun_note
