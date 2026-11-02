@@ -422,6 +422,15 @@ class TestSynonyms(unittest.TestCase):
         meta_exp = YomitanMetadata(pos_tags={"exp", "int"})
         self.assertFalse(_is_noun_note(meta_exp))
 
+        meta_adj_i = YomitanMetadata(pos_tags={"adj-i"})
+        self.assertFalse(_is_noun_note(meta_adj_i))
+
+        meta_adj_na = YomitanMetadata(pos_tags={"adj-na"})
+        self.assertFalse(_is_noun_note(meta_adj_na))
+
+        meta_adv = YomitanMetadata(pos_tags={"adv"})
+        self.assertFalse(_is_noun_note(meta_adv))
+
         # Note without Yomitan metadata: check plain text
         self.assertTrue(_is_noun_note(None, {"Expression": "林檎", "Meaning": "apple"}))
         self.assertFalse(_is_noun_note(None, {"Expression": "走る", "Meaning": "to run"}))

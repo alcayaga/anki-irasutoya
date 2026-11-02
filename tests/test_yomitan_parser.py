@@ -528,6 +528,30 @@ class TestYomitanParser(unittest.TestCase):
         cleaned_dojg = strip_html_excluded_containers(html_dojg)
         self.assertNotIn("telephone call", cleaned_dojg)
 
+    def test_grammar_dict_before_jmdict_does_not_block_primary(self) -> None:
+        """Verify excluded grammar dictionary appearing first does not establish primary dict or drop JMdict senses."""
+        html_grammar_first = (
+            '<div class="yomitan-glossary"><ol>'
+            '<li data-dictionary="日本語文法辞典(全集)">'
+            '<span>pasokon means personal computer</span></li>'
+            '<li data-dictionary="JMdict [2026-08-20]"><i>(1, n, JMdict)</i> '
+            '<span><ul data-sc-content="glossary"><li>primary sense</li></ul></span></li>'
+            '<li data-dictionary="JMdict [2026-08-20]"><i>(2, n, JMdict)</i> '
+            '<span><ul data-sc-content="glossary"><li>secondary sense</li></ul></span></li>'
+            '</ol></div>'
+        )
+        meta = parse_yomitan_html(html_grammar_first)
+        self.assertIsNotNone(meta)
+        self.assertEqual(meta.english_glosses, ["primary sense", "secondary sense"])
+
+    def test_plain_text_quantities_not_truncated_as_sense_3(self) -> None:
+        """Verify definitions with quantities like '3 people' or '3 times' are not truncated as sense 3."""
+        note_quantity = {"Expression": "単語", "Meaning": "a room for 3 people"}
+        self.assertEqual(extract_english_glosses_from_note(note_quantity), ["room for 3 people"])
+
+        note_times = {"Expression": "単語", "Meaning": "done 3 times daily"}
+        self.assertEqual(extract_english_glosses_from_note(note_times), ["done 3 times daily"])
+
     def test_plain_text_sense_3_truncation(self) -> None:
         """Verify plain text definition extraction truncates at sense 3."""
         note_numbered = {"Expression": "単語", "Meaning": "1. apple; 2. fruit; 3. slang"}

@@ -132,7 +132,16 @@ BILINGUAL_ACTION_TARGETS = frozenset({
     "墓",
 })
 
-LOCOMOTION_ACTION_TARGETS = frozenset({"走る", "歩く", "泳ぐ"})
+LOCOMOTION_ACTION_TARGETS = frozenset({
+    "走る",
+    "全力疾走",
+    "徒競走",
+    "ランニング",
+    "歩く",
+    "散歩",
+    "泳ぐ",
+    "水泳",
+})
 
 NEGATION_OR_IDIOM_TOKENS = frozenset({
     "cannot", "can't", "unable", "not", "never", "without", "no", "please",
@@ -162,7 +171,7 @@ def _is_noun_note(yomitan_meta: Optional[Any], note: Any = None) -> bool:
         tags = getattr(yomitan_meta, "pos_tags", None) or set()
         if any(t == "n" or t.startswith(("n-", "adj-no")) for t in tags):
             return True
-        if tags and tags.issubset({"exp", "int", "conj", "prt", "aux", "aux-v", "aux-adj"}):
+        if tags:
             return False
     return not _is_verb_note(yomitan_meta, note)
 

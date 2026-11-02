@@ -79,7 +79,7 @@ def normalize_english_gloss(text: str) -> str:
     s = s.casefold().strip()
 
     # Strip leading list numbers / bullet markers (e.g. "1.", "1)", "(1)", "①", "1〔rare〕")
-    s = re.sub(r"^(?:[\d]+[\.\)、\]]|[\(（]?[\d]+[\)）]|[①-⑳]|\d+\s*〔[^〕]*〕|\d+\s+)\s*", "", s)
+    s = re.sub(r"^(?:[\d]+[\.、\)\]]|[\(（]?[\d]+[\)）]|[①-⑳]|\d+\s*〔[^〕]*〕)\s*", "", s)
 
     # Repeatedly strip leading articles, infinitive, and copula markers
     while True:
@@ -200,12 +200,6 @@ class YomitanHTMLParser(HTMLParser):
         data_dict = (attr_dict.get("data-dictionary", "") or "").strip()
         data_dict_lower = data_dict.lower()
 
-        if data_dict:
-            if self._current_dictionary is None:
-                self._current_dictionary = data_dict
-            elif data_dict != self._current_dictionary and self.metadata.english_glosses:
-                self._primary_dict_completed = True
-
         # Track containers explicitly excluded from definition glosses (e.g. examples, antonyms, grammar dicts)
         is_excluded_container = (
             sc_content in ("examples", "antonyms")
@@ -213,6 +207,11 @@ class YomitanHTMLParser(HTMLParser):
         )
         if is_excluded_container or self._excluded_ancestors:
             self._excluded_ancestors.append(tag)
+        elif data_dict:
+            if self._current_dictionary is None:
+                self._current_dictionary = data_dict
+            elif data_dict != self._current_dictionary and self.metadata.english_glosses:
+                self._primary_dict_completed = True
 
         if tag == "i":
             self._in_i = True
@@ -810,7 +809,7 @@ def extract_english_glosses_from_note(
             # Plain-text extraction
             clean_val = strip_html_excluded_containers(val)
             clean_val = html.unescape(clean_val).strip()
-            m_sense3 = re.search(r"(?:^|[\n;,\s])(?:3[\.、\s\)]|3\s*〔|③|\(3\))", clean_val)
+            m_sense3 = re.search(r"(?:^|[\n;,\s])(?:3[\.、\)]|3\s*〔|③|\([3３]\)|（[3３]）)", clean_val)
             if m_sense3:
                 clean_val = clean_val[:m_sense3.start()]
             clean_val = re.sub(
