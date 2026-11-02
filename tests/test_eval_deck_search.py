@@ -141,8 +141,17 @@ class TestEvalDeckSearch(unittest.TestCase):
 
         with patch("scripts.eval_deck_search.default_store") as mock_store:
             mock_client = MagicMock()
-            # Stage baseline search raises an error
-            mock_client.search_with_fallbacks.side_effect = RuntimeError("Stage baseline network failure")
+            fake_img = IrasutoyaImage(
+                title="猫のイラスト",
+                image_url="https://1.bp.blogspot.com/s800/cat.png",
+                thumb_url="https://1.bp.blogspot.com/s120-c/cat.png",
+                post_title="猫のイラスト",
+            )
+            # Stage baseline search raises an error, but subsequent evaluated search succeeds
+            mock_client.search_with_fallbacks.side_effect = [
+                RuntimeError("Stage baseline network failure"),
+                ([fake_img], ("猫", "exact", 1), fake_img),
+            ]
             mock_store.return_value.get_index.return_value = MagicMock()
 
             with patch("scripts.eval_deck_search.IrasutoyaClient", return_value=mock_client):

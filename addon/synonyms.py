@@ -190,7 +190,7 @@ def _is_verb_note(yomitan_meta: Optional[Any], note: Any = None) -> bool:
         tags = getattr(yomitan_meta, "pos_tags", None) or set()
         # If the note has noun classification 'n', suru-nouns ('vs') remain noun-eligible
         if "n" in tags and any(t.startswith("vs") for t in tags):
-            if not any(t == "v" or t.startswith(("v1", "v5", "vk", "vz", "vi", "vt")) for t in tags):
+            if not any(t == "v" or t.startswith(("v1", "v5", "vk", "vz")) for t in tags):
                 return False
         if getattr(yomitan_meta, "verb_class", None):
             return True

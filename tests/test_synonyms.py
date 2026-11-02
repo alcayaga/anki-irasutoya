@@ -428,11 +428,23 @@ class TestSynonyms(unittest.TestCase):
             ["手伝う"],
         )
 
-        # 22. Mixed noun/verb metadata (n + vs) preserves noun targets even when verb_class is set to 'vs'
+        # 22. Mixed noun/verb metadata (n + vs, n + vs + vt, n + vs + vi) preserves noun targets even when verb_class is set to 'vs'
         meta_suru_noun = YomitanMetadata(verb_class="vs", pos_tags={"n", "vs"})
         note_suru_room = {"Expression": "部屋", "Meaning": "room"}
         self.assertEqual(
             lookup_bilingual_glosses(note_suru_room, yomitan_meta=meta_suru_noun, store=self.test_store),
+            ["部屋"],
+        )
+
+        meta_suru_vt = YomitanMetadata(verb_class="vs", pos_tags={"n", "vs", "vt"})
+        self.assertEqual(
+            lookup_bilingual_glosses(note_suru_room, yomitan_meta=meta_suru_vt, store=self.test_store),
+            ["部屋"],
+        )
+
+        meta_suru_vi = YomitanMetadata(verb_class="vs", pos_tags={"n", "vs", "vi"})
+        self.assertEqual(
+            lookup_bilingual_glosses(note_suru_room, yomitan_meta=meta_suru_vi, store=self.test_store),
             ["部屋"],
         )
 
@@ -456,15 +468,15 @@ class TestSynonyms(unittest.TestCase):
             ["部屋"],
         )
 
-        # 24. Leading infinitive in English field correctly triggers verb classification
+        # 24. Leading infinitive in English field correctly triggers verb classification (filtering noun-only targets)
         note_leading_english = {
-            "Expression": "走る",
-            "Meaning": "run",
-            "English": "to run fast",
+            "Expression": "泊まる",
+            "Meaning": "room",
+            "English": "to room somewhere",
         }
         self.assertEqual(
             lookup_bilingual_glosses(note_leading_english, store=self.test_store),
-            ["走る"],
+            [],
         )
 
     def test_is_action_target(self) -> None:
