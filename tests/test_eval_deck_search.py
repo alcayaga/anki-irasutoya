@@ -121,6 +121,46 @@ class TestEvalDeckSearch(unittest.TestCase):
         self.assertIn("1. Legacy (Naive Direct Query)", output)
         self.assertIn("4. Bilingual Gloss (Definition Bridge)", output)
 
+    @patch("scripts.eval_deck_search.anki_invoke")
+    @patch("sys.stdout", new_callable=io.StringIO)
+    def test_run_evaluation_stage_baseline_error_preserves_failure(
+        self, mock_stdout: io.StringIO, mock_invoke: MagicMock
+    ) -> None:
+        """Verify errors during stage baseline calculation mark the note as failed and preserve failure status."""
+        mock_invoke.side_effect = [
+            [101],
+            [{"cardId": 101, "note": 1001, "fields": {"FreqSort": {"value": "1"}}}],
+            [{
+                "noteId": 1001,
+                "fields": {
+                    "Expression": {"value": "猫"},
+                    "Meaning": {"value": "cat"},
+                },
+            }],
+        ]
+
+        with patch("scripts.eval_deck_search.default_store") as mock_store:
+            mock_client = MagicMock()
+            # Stage baseline search raises an error
+            mock_client.search_with_fallbacks.side_effect = RuntimeError("Stage baseline network failure")
+            mock_store.return_value.get_index.return_value = MagicMock()
+
+            with patch("scripts.eval_deck_search.IrasutoyaClient", return_value=mock_client):
+                with self.assertRaises(SystemExit) as cm:
+                    run_evaluation(
+                        deck_name="TestDeck",
+                        limit=1,
+                        delay=0.0,
+                        backend="catalog",
+                        track_stages=True,
+                    )
+                self.assertEqual(cm.exception.code, 1)
+
+        output = mock_stdout.getvalue()
+        self.assertIn("[WARNING] Stage baseline search failed", output)
+        self.assertIn("⚠", output)
+        self.assertIn("had failed search requests and were excluded from recall", output)
+
 
 if __name__ == "__main__":
     unittest.main()

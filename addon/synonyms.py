@@ -187,9 +187,13 @@ def _is_verb_note(yomitan_meta: Optional[Any], note: Any = None) -> bool:
         True if verb POS tags or infinitive 'to <verb>' patterns are detected, False otherwise.
     """
     if yomitan_meta is not None:
+        tags = getattr(yomitan_meta, "pos_tags", None) or set()
+        # If the note has noun classification 'n', suru-nouns ('vs') remain noun-eligible
+        if "n" in tags and any(t.startswith("vs") for t in tags):
+            if not any(t == "v" or t.startswith(("v1", "v5", "vk", "vz", "vi", "vt")) for t in tags):
+                return False
         if getattr(yomitan_meta, "verb_class", None):
             return True
-        tags = getattr(yomitan_meta, "pos_tags", None) or set()
         if any(t == "v" or t.startswith(("v1", "v5", "vs", "vk", "vz", "vi", "vt")) for t in tags):
             return True
         if "n" in tags:
@@ -200,7 +204,12 @@ def _is_verb_note(yomitan_meta: Optional[Any], note: Any = None) -> bool:
         for f in NOTE_DEFINITION_FIELDS + ("English", "SelectionText"):
             if f in note and note[f]:
                 val = strip_html_excluded_containers(str(note[f]))
-                if re.search(r"(?i)(?:^|[;\n,(])\s*(?:to\s+[a-z]+|\(v(?:erb|[15ktsz])?\))", val):
+                pattern = (
+                    r"(?i)(?:^|[;\n,(])\s*(?:to\s+[a-z]+|\(v(?:erb|[15ktsz])?\))"
+                    if f in NOTE_DEFINITION_FIELDS
+                    else r"(?i)^\s*to\s+[a-z]+"
+                )
+                if re.search(pattern, val):
                     return True
     return False
 

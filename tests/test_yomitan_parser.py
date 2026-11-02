@@ -626,6 +626,29 @@ class TestYomitanParser(unittest.TestCase):
         _merge_metadata(empty_target, source)
         self.assertEqual(empty_target.english_glosses, ["physician"])
 
+    def test_header_before_structured_entry_not_completed(self) -> None:
+        """Verify top-level header span does not lock or complete dictionary before structured entry."""
+        html = (
+            "<span>JMdict</span>"
+            '<div data-dictionary="JMdict">'
+            '<ul data-sc-content="glossary">'
+            "<li>apple</li>"
+            "</ul>"
+            "</div>"
+        )
+        meta = parse_yomitan_html(html)
+        self.assertEqual(meta.english_glosses, ["apple"])
+
+    def test_legacy_entry_numbered_example_before_sense_2(self) -> None:
+        """Verify numbered sense marker inside excluded example does not complete primary dictionary."""
+        html = (
+            "<i>(1, n)</i><span>first definition</span>"
+            '<div data-sc-content="examples"><i>(1)</i> Example sentence here</div>'
+            "<i>(2, n)</i><span>second definition</span>"
+        )
+        meta = parse_yomitan_html(html)
+        self.assertEqual(meta.english_glosses, ["first definition", "second definition"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -194,6 +194,7 @@ class TestSynonyms(unittest.TestCase):
                 "rest": ["休憩"],
                 "work": ["仕事"],
                 "room": ["部屋"],
+                "office": ["事務所"],
             },
         )
         conn.close()
@@ -398,6 +399,21 @@ class TestSynonyms(unittest.TestCase):
             [],
         )
 
+        # Partial-word boundary vs exact blocked prefix:
+        # "head office" should split and reach "office" -> ["事務所"]
+        # while "head of" remains blocked -> []
+        note_head_office = {"Expression": "本社", "Meaning": "head office; headquarters"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_head_office, store=self.test_store),
+            ["事務所"],
+        )
+
+        note_head_of = {"Expression": "長", "Meaning": "head of; chief"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_head_of, store=self.test_store),
+            [],
+        )
+
         # 20. Style/manner "school" suppression (e.g. "school of thought", martial arts style)
         note_style_school = {"Expression": "流儀", "Meaning": "way; method; style; school; system"}
         self.assertEqual(
@@ -410,6 +426,45 @@ class TestSynonyms(unittest.TestCase):
         self.assertEqual(
             lookup_bilingual_glosses(note_verb_help, store=self.test_store),
             ["手伝う"],
+        )
+
+        # 22. Mixed noun/verb metadata (n + vs) preserves noun targets even when verb_class is set to 'vs'
+        meta_suru_noun = YomitanMetadata(verb_class="vs", pos_tags={"n", "vs"})
+        note_suru_room = {"Expression": "部屋", "Meaning": "room"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_suru_room, yomitan_meta=meta_suru_noun, store=self.test_store),
+            ["部屋"],
+        )
+
+        # 22b. Real Yomitan HTML parser output for suru-noun retains noun eligibility
+        from addon.yomitan_parser import parse_yomitan_html
+
+        parsed_suru = parse_yomitan_html('<i>(1, n, vs, JMdict)</i><ul data-sc-content="glossary"><li>room</li></ul>')
+        self.assertEqual(
+            lookup_bilingual_glosses(note_suru_room, yomitan_meta=parsed_suru, store=self.test_store),
+            ["部屋"],
+        )
+
+        # 23. Mid-sentence infinitive in English field does not trigger false verb classification
+        note_sentence_english = {
+            "Expression": "部屋",
+            "Meaning": "room",
+            "English": "I went home, to be safe.",
+        }
+        self.assertEqual(
+            lookup_bilingual_glosses(note_sentence_english, store=self.test_store),
+            ["部屋"],
+        )
+
+        # 24. Leading infinitive in English field correctly triggers verb classification
+        note_leading_english = {
+            "Expression": "走る",
+            "Meaning": "run",
+            "English": "to run fast",
+        }
+        self.assertEqual(
+            lookup_bilingual_glosses(note_leading_english, store=self.test_store),
+            ["走る"],
         )
 
     def test_is_action_target(self) -> None:

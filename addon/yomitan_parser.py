@@ -216,7 +216,7 @@ class YomitanHTMLParser(HTMLParser):
         if is_excluded_container or self._excluded_ancestors:
             self._excluded_ancestors.append(tag)
         elif data_dict:
-            if not self._has_collected_gloss:
+            if not self._has_collected_gloss or self._current_dictionary is None:
                 self._current_dictionary = data_dict
             elif data_dict != self._current_dictionary:
                 self._primary_dict_completed = True
@@ -311,39 +311,40 @@ class YomitanHTMLParser(HTMLParser):
 
         if tag == "i" and self._in_i:
             self._in_i = False
-            raw = "".join(self._current_i_text).strip()
-            m = re.match(r"^\((.*)\)$", raw)
-            if m:
-                inner = m.group(1)
-                inner = re.sub(r"JMdict(\s*\[.*?\])?", "", inner, flags=re.IGNORECASE)
-                parts = [p.strip() for p in inner.split(",") if p.strip()]
-                # Check for (forms...) entry indicator
-                if "forms" in parts:
-                    self._in_forms_entry = True
-                sense_tags = {p for p in parts if not p.isdigit()}
-                if parts and parts[0].isdigit():
-                    sense_num = int(parts[0])
-                    is_first_sense = (sense_num == 1)
-                    if is_first_sense and self._has_seen_sense_1 and self._has_collected_gloss:
-                        self._primary_dict_completed = True
-                    if is_first_sense:
-                        self._has_seen_sense_1 = True
-                    self._current_sense_number = sense_num
-                else:
-                    is_first_sense = not self._sense_tags
-                    if is_first_sense and self._has_seen_sense_1 and self._has_collected_gloss:
-                        self._primary_dict_completed = True
-                    if is_first_sense:
-                        self._has_seen_sense_1 = True
-                    self._current_sense_number = 1
-                if sense_tags and "forms" not in sense_tags:
-                    self._sense_tags.append(sense_tags)
-                for p in dict.fromkeys(x for x in parts if not x.isdigit()):
-                    self.metadata.pos_tags.add(p)
-                    if p == "uk" and is_first_sense:
-                        self.metadata.is_uk = True
-                    if not self.metadata.verb_class and VERB_POS_PATTERN.match(p):
-                        self.metadata.verb_class = p
+            if not was_excluded and not self._excluded_ancestors:
+                raw = "".join(self._current_i_text).strip()
+                m = re.match(r"^\((.*)\)$", raw)
+                if m:
+                    inner = m.group(1)
+                    inner = re.sub(r"JMdict(\s*\[.*?\])?", "", inner, flags=re.IGNORECASE)
+                    parts = [p.strip() for p in inner.split(",") if p.strip()]
+                    # Check for (forms...) entry indicator
+                    if "forms" in parts:
+                        self._in_forms_entry = True
+                    sense_tags = {p for p in parts if not p.isdigit()}
+                    if parts and parts[0].isdigit():
+                        sense_num = int(parts[0])
+                        is_first_sense = (sense_num == 1)
+                        if is_first_sense and self._has_seen_sense_1 and self._has_collected_gloss:
+                            self._primary_dict_completed = True
+                        if is_first_sense:
+                            self._has_seen_sense_1 = True
+                        self._current_sense_number = sense_num
+                    else:
+                        is_first_sense = not self._sense_tags
+                        if is_first_sense and self._has_seen_sense_1 and self._has_collected_gloss:
+                            self._primary_dict_completed = True
+                        if is_first_sense:
+                            self._has_seen_sense_1 = True
+                        self._current_sense_number = 1
+                    if sense_tags and "forms" not in sense_tags:
+                        self._sense_tags.append(sense_tags)
+                    for p in dict.fromkeys(x for x in parts if not x.isdigit()):
+                        self.metadata.pos_tags.add(p)
+                        if p == "uk" and is_first_sense:
+                            self.metadata.is_uk = True
+                        if not self.metadata.verb_class and VERB_POS_PATTERN.match(p):
+                            self.metadata.verb_class = p
 
         # Handle formsTable
         if self._in_forms_table:
@@ -496,7 +497,8 @@ class YomitanHTMLParser(HTMLParser):
                 if raw_span:
                     if _split_and_normalize_glosses(raw_span):
                         self._legacy_spans.append(raw_span)
-                        self._has_collected_gloss = True
+                        if self._has_seen_sense_1 or bool(self._sense_tags) or self._current_dictionary is not None:
+                            self._has_collected_gloss = True
 
     def handle_data(self, data: str) -> None:
         if self._in_i:

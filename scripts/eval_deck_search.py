@@ -341,6 +341,7 @@ def run_evaluation(
         )
 
         # Optional Stage 2 & 3 baseline calculation for catalog backend
+        eval_error = False
         note_t1_hit = False
         note_t2_hit = False
         if track_stages and backend in ("catalog", "both"):
@@ -371,7 +372,6 @@ def run_evaluation(
 
         live_res, live_cand, live_best = [], None, None
         cat_res, cat_cand, cat_best = [], None, None
-        eval_error = False
 
         if backend in ("live", "both"):
             try:
@@ -535,9 +535,10 @@ def run_evaluation(
         print(f"Legacy Search Recall:     {legacy_hits:3d} / {valid_total} ({leg_pct:.1f}%)")
         print(f"Live Search Recall:       {live_hits:3d} / {valid_total} ({live_pct:.1f}%)")
     if backend in ("catalog", "both"):
-        leg_pct = (legacy_hits / valid_total * 100) if valid_total else 0.0
         cat_pct = (cat_hits / valid_total * 100) if valid_total else 0.0
-        print(f"Legacy Search Recall:     {legacy_hits:3d} / {valid_total} ({leg_pct:.1f}%)")
+        if backend == "catalog":
+            leg_pct = (legacy_hits / valid_total * 100) if valid_total else 0.0
+            print(f"Legacy Search Recall:     {legacy_hits:3d} / {valid_total} ({leg_pct:.1f}%)")
         print(f"Catalog Search Recall:    {cat_hits:3d} / {valid_total} ({cat_pct:.1f}%)")
     if allow_bilingual:
         bi_hits = sum(1 for r in valid_results if r.get("matched_reason") == "bilingual_gloss")
