@@ -21,7 +21,7 @@ Enrich your Anki flashcards with illustrations from [いらすとや (Irasutoya)
   - **Automatic Note Reading Field Discovery**: In Batch Mode, automatically inspects reading fields on the note (`ExpressionReading`, `Reading`, `Word Reading`, `Kana`, or furigana brackets) if the primary Kanji query yields zero illustrations.
   - **Tiered Confidence Strategy & Audit Tagging**:
     - **Tier 1 (Safe Syntactic Transforms)**: Applied automatically with zero homophone risk.
-    - **Tier 2 (Semantic & Reading Fallbacks)**: If an image is matched via a phonetic reading fallback in Batch Mode, the note is automatically tagged with `irasutoya::fallback_reading` for effortless one-click auditability in the Anki Browser.
+    - **Tier 2 (Semantic & Reading Fallbacks)**: Phonetic readings and bilingual definition keywords (Yomitan/JMdict and plain-text English glosses). If an image is matched via a Tier 2 fallback in Batch Mode, the note is automatically tagged with `irasutoya::fallback_reading` for effortless one-click auditability in the Anki Browser.
   - **Archetype & Relevance Scoring Engine**: Favors canonical, standalone illustrations over negative situations, multi-figure scenarios, or incidental mentions (e.g. `本` selects a clean book rather than tax paperwork).
 - **Dual Mode**:
   - **Single Card Interactive Gallery**:

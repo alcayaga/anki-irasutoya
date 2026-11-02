@@ -217,6 +217,7 @@ def run_evaluation(
     limit: int = 50,
     delay: float = 0.25,
     allow_tier2: bool = True,
+    allow_bilingual: bool = True,
     backend: str = "both",
     verbose: bool = False,
     anki_url: str = "http://localhost:8765"
@@ -225,12 +226,13 @@ def run_evaluation(
     print("=" * 72)
     print("  IRASUTOYA SEARCH RECALL BENCHMARK (NON-DESTRUCTIVE DRY RUN)")
     print("=" * 72)
-    print(f"Deck:            {deck_name}")
-    print(f"Sort Field:      {sort_field}")
-    print(f"Sample Limit:    {limit}")
-    print(f"Polite Delay:    {delay}s")
-    print(f"Backend Target:  {backend}")
-    print(f"Tier 2 Fallback: {'Enabled' if allow_tier2 else 'Disabled'}")
+    print(f"Deck:               {deck_name}")
+    print(f"Sort Field:         {sort_field}")
+    print(f"Sample Limit:       {limit}")
+    print(f"Polite Delay:       {delay}s")
+    print(f"Backend Target:     {backend}")
+    print(f"Tier 2 Fallback:    {'Enabled' if allow_tier2 else 'Disabled'}")
+    print(f"Bilingual Fallback: {'Enabled' if allow_bilingual else 'Disabled'}")
     print("-" * 72)
 
     try:
@@ -289,7 +291,11 @@ def run_evaluation(
 
         # --- 2. EVALUATED SEARCH MECHANISMS ---
         candidates = generate_search_candidates(
-            raw_source, note=fields, allow_tier2=allow_tier2, allow_deinflection=True
+            raw_source,
+            note=fields,
+            allow_tier2=allow_tier2,
+            allow_deinflection=True,
+            bilingual_lookup=(None if allow_bilingual else (lambda note, yomitan_meta=None: [])),
         )
         pos_type = safe_extract_note_pos_type(fields)
 
@@ -368,6 +374,9 @@ def run_evaluation(
                 if matched_reason == "primary":
                     status = "NEW_HIT_PRIMARY"
                     status_marker = "★P"
+                elif matched_reason == "bilingual_gloss":
+                    status = "NEW_HIT_BILINGUAL"
+                    status_marker = "★B"
                 elif matched_tier == 1:
                     status = "NEW_HIT_T1"
                     status_marker = "★1"
@@ -432,6 +441,10 @@ def run_evaluation(
     if backend in ("catalog", "both"):
         cat_pct = (cat_hits / valid_total * 100) if valid_total else 0.0
         print(f"Catalog Search Recall:    {cat_hits:3d} / {valid_total} ({cat_pct:.1f}%)")
+    if allow_bilingual:
+        bi_hits = sum(1 for r in valid_results if r.get("matched_reason") == "bilingual_gloss")
+        bi_pct = (bi_hits / valid_total * 100) if valid_total else 0.0
+        print(f"Bilingual Gloss Hits:     {bi_hits:3d} / {valid_total} ({bi_pct:.1f}%)")
 
     if backend == "both" and diff_table:
         print("\n" + "-" * 72)
@@ -460,6 +473,7 @@ def main():
     parser.add_argument("--delay", type=float, default=0.25, help="Polite delay between HTTP requests in seconds (default: 0.25)")
     parser.add_argument("--backend", choices=["live", "catalog", "both"], default="both", help="Search backend to benchmark (default: both)")
     parser.add_argument("--disable-tier2", action="store_true", help="Disable Tier 2 reading fallbacks")
+    parser.add_argument("--disable-bilingual", action="store_true", help="Disable bilingual definition gloss fallbacks")
     parser.add_argument("--verbose", "-v", action="store_true", help="Print detailed candidate resolution for each note")
     parser.add_argument("--anki-url", default="http://localhost:8765", help="AnkiConnect URL (default: http://localhost:8765)")
 
@@ -472,6 +486,7 @@ def main():
         limit=args.limit,
         delay=args.delay,
         allow_tier2=not args.disable_tier2,
+        allow_bilingual=not args.disable_bilingual,
         backend=args.backend,
         verbose=args.verbose,
         anki_url=args.anki_url,

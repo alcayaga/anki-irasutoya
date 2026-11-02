@@ -169,6 +169,145 @@ class TestSynonyms(unittest.TestCase):
             self.assertEqual(lookup_sudachi_synonyms("Cupid"), ["キューピッド"])
             self.assertEqual(lookup_sudachi_synonyms("CUPID"), ["キューピッド"])
 
+    def test_lookup_bilingual_glosses(self) -> None:
+        """Verify lookup_bilingual_glosses bridges English glosses to catalog targets."""
+        from addon.synonyms import lookup_bilingual_glosses
+
+        conn = sqlite3.connect(self.db_path)
+        write_synonyms(
+            conn,
+            source="bilingual_gloss",
+            mapping={
+                "pass away": ["亡くなる", "葬式"],
+                "die": ["死ぬ", "亡くなる"],
+                "death": ["墓", "葬式"],
+                "cupid": ["キューピッド"],
+                "sprint": ["走る", "全力疾走", "徒競走", "ランニング"],
+                "doctor": ["医者"],
+                "school": ["学校"],
+                "train": ["電車"],
+            },
+        )
+        conn.close()
+
+        # 1. Plain text definition field
+        note_plain = {"Expression": "亡くなる", "Meaning": "to pass away; to die"}
+        targets = lookup_bilingual_glosses(note_plain, store=self.test_store)
+        self.assertEqual(targets, ["亡くなる", "葬式", "死ぬ"])
+
+        # 2. Case insensitivity and normalization
+        note_cased = {"Expression": "キューピッド", "Meaning": "Cupid (god of love)"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_cased, store=self.test_store),
+            ["キューピッド"],
+        )
+
+        # 3. Up to 3 distinct targets capping
+        note_many = {"Expression": "走る", "Meaning": "sprint"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_many, store=self.test_store),
+            ["走る", "全力疾走", "徒競走"],
+        )
+
+        # 4. Note with Yomitan structured definition
+        note_yomitan = {
+            "Expression": "亡くなる",
+            "MainDefinition": '<ul data-sc-content="glossary"><li>to pass away</li></ul>',
+        }
+        self.assertEqual(
+            lookup_bilingual_glosses(note_yomitan, store=self.test_store),
+            ["亡くなる", "葬式"],
+        )
+
+        # 5. Empty or missing note
+        self.assertEqual(lookup_bilingual_glosses(None, store=self.test_store), [])
+        self.assertEqual(lookup_bilingual_glosses({}, store=self.test_store), [])
+        self.assertEqual(
+            lookup_bilingual_glosses({"Expression": "猫", "Meaning": "unknownwordxyz"}, store=self.test_store),
+            [],
+        )
+
+        # 6. Multi-word compound gloss with constituent word fallback
+        note_compound = {"Expression": "主治医", "Meaning": "family doctor"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_compound, store=self.test_store),
+            ["医者"],
+        )
+
+        # 7. Prepositional phrase prioritizes first word (e.g. "doctor in charge" -> "doctor")
+        note_prep = {"Expression": "主治医", "Meaning": "doctor in charge (of a patient)"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_prep, store=self.test_store),
+            ["医者"],
+        )
+
+        # 8. Stop-word phrase leaving a single content noun (e.g. "after school" -> "school")
+        note_after_school = {"Expression": "放課後", "Meaning": "after school"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_after_school, store=self.test_store),
+            ["学校"],
+        )
+
+        # 9. Morphological noun variant "death"
+        note_death = {"Expression": "死亡推定時刻", "Meaning": "estimated time of death"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_death, store=self.test_store),
+            ["墓", "葬式"],
+        )
+
+        # 10. Verb POS gating suppresses noun-only polysemic collisions (e.g. "train" -> "電車")
+        from addon.yomitan_parser import YomitanMetadata
+        meta_verb = YomitanMetadata(verb_class="v5r", pos_tags={"v5r", "vt"})
+        note_verb_train = {"Expression": "鍛える", "Meaning": "forge; drill; train"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_verb_train, yomitan_meta=meta_verb, store=self.test_store),
+            [],
+        )
+
+        meta_noun = YomitanMetadata(pos_tags={"n"})
+        note_noun_train = {"Expression": "快速", "Meaning": "rapid train"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_noun_train, yomitan_meta=meta_noun, store=self.test_store),
+            ["電車"],
+        )
+
+        # 11. Plain-text verb note without Yomitan metadata suppresses noun-only collision
+        note_plain_verb_train = {"Expression": "鍛える", "Meaning": "to train; to drill"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_plain_verb_train, yomitan_meta=None, store=self.test_store),
+            [],
+        )
+
+        note_html_verb_train = {"Expression": "鍛える", "Meaning": "<div>to train</div>"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_html_verb_train, yomitan_meta=None, store=self.test_store),
+            [],
+        )
+
+        note_plain_verb_weather = {"Expression": "乗り切る", "Meaning": "to weather; to get through"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_plain_verb_weather, yomitan_meta=None, store=self.test_store),
+            [],
+        )
+
+        note_plain_noun_train = {"Expression": "電車", "Meaning": "train"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_plain_noun_train, yomitan_meta=None, store=self.test_store),
+            ["電車"],
+        )
+
+        # 12. Noun with authoritative "n" POS tag is not misclassified as verb by example phrases
+        from addon.synonyms import _is_verb_note
+        note_noun_with_example = {
+            "Expression": "電車",
+            "Meaning": "train <div class='example'>I have to run to catch the train</div>",
+        }
+        self.assertFalse(_is_verb_note(meta_noun, note_noun_with_example))
+        self.assertEqual(
+            lookup_bilingual_glosses(note_noun_with_example, yomitan_meta=meta_noun, store=self.test_store),
+            ["電車"],
+        )
+
     def test_write_image_keywords_and_meta_stamp(self) -> None:
         """Verify write_image_keywords stores image keywords and stamps keyword_sources in meta."""
         conn = sqlite3.connect(self.db_path)
