@@ -186,6 +186,14 @@ class TestSynonyms(unittest.TestCase):
                 "doctor": ["医者"],
                 "school": ["学校"],
                 "train": ["電車"],
+                "house": ["家"],
+                "help": ["手伝う"],
+                "run": ["走る"],
+                "swim": ["水泳"],
+                "bird": ["鳥"],
+                "rest": ["休憩"],
+                "work": ["仕事"],
+                "room": ["部屋"],
             },
         )
         conn.close()
@@ -307,6 +315,116 @@ class TestSynonyms(unittest.TestCase):
             lookup_bilingual_glosses(note_noun_with_example, yomitan_meta=meta_noun, store=self.test_store),
             ["電車"],
         )
+
+        # 13. Verb note with "doctor" suppresses "医者" (entity noun not in BILINGUAL_ACTION_TARGETS)
+        note_verb_doctor = {"Expression": "誤魔化す", "Meaning": "to doctor; to fudge"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_verb_doctor, store=self.test_store),
+            [],
+        )
+
+        # 14. Verb note with "house" suppresses "家" (entity noun not in BILINGUAL_ACTION_TARGETS)
+        note_verb_house = {"Expression": "宿す", "Meaning": "to house; to contain"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_verb_house, store=self.test_store),
+            [],
+        )
+
+        # 15. Transitive-only verb note with "run" suppresses physical locomotion targets
+        meta_vt = YomitanMetadata(verb_class="v5m", pos_tags={"v5m", "vt"})
+        note_vt_run = {"Expression": "営む", "Meaning": "to run a business"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_vt_run, yomitan_meta=meta_vt, store=self.test_store),
+            [],
+        )
+
+        meta_vi = YomitanMetadata(verb_class="v5r", pos_tags={"v5r", "vi"})
+        note_vi_run = {"Expression": "走る", "Meaning": "run; sprint"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_vi_run, yomitan_meta=meta_vi, store=self.test_store),
+            ["走る", "全力疾走", "徒競走"],
+        )
+
+        # 16. Spatial margin "room" suppression (e.g. 隙 has room/space/gap)
+        note_gap_room = {"Expression": "隙", "Meaning": "crevice; opening; gap; space; room"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_gap_room, store=self.test_store),
+            [],
+        )
+
+        note_real_room = {"Expression": "部屋", "Meaning": "room; chamber"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_real_room, store=self.test_store),
+            ["部屋"],
+        )
+
+        # 17. Pass 2 negation guard suppresses false matches (e.g. "cannot be helped" -> "help")
+        meta_exp = YomitanMetadata(pos_tags={"exp", "adj-i"})
+        note_cannot_help = {"Expression": "仕方ない", "Meaning": "cannot be helped; unavoidable"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_cannot_help, yomitan_meta=meta_exp, store=self.test_store),
+            [],
+        )
+
+        # 18. Pass 2 coordinate idiom " or " guard suppresses rhetorical pairings (e.g. "sink or swim" -> "swim")
+        note_sink_swim = {"Expression": "一か八か", "Meaning": "sink or swim; all-or-nothing"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_sink_swim, store=self.test_store),
+            [],
+        )
+
+        # 19. Pass 2 blocked prefixes (e.g. "early bird", "rest of", "work of", "school of")
+        note_early_bird = {"Expression": "早起き", "Meaning": "early bird; early riser"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_early_bird, store=self.test_store),
+            [],
+        )
+
+        note_rest_of = {"Expression": "以下", "Meaning": "the rest of; remainder"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_rest_of, store=self.test_store),
+            [],
+        )
+
+        note_work_of = {"Expression": "芸術品", "Meaning": "work of art; masterpiece"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_work_of, store=self.test_store),
+            [],
+        )
+
+        note_school_of = {"Expression": "流儀", "Meaning": "school of thought; style"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_school_of, store=self.test_store),
+            [],
+        )
+
+        # 20. Style/manner "school" suppression (e.g. "school of thought", martial arts style)
+        note_style_school = {"Expression": "流儀", "Meaning": "way; method; style; school; system"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_style_school, store=self.test_store),
+            [],
+        )
+
+    def test_is_noun_note(self) -> None:
+        """Verify _is_noun_note distinguishes nouns from verbs and discourse expressions."""
+        from addon.synonyms import _is_noun_note
+        from addon.yomitan_parser import YomitanMetadata
+
+        meta_noun = YomitanMetadata(pos_tags={"n"})
+        self.assertTrue(_is_noun_note(meta_noun))
+
+        meta_adj_no = YomitanMetadata(pos_tags={"adj-no"})
+        self.assertTrue(_is_noun_note(meta_adj_no))
+
+        meta_verb = YomitanMetadata(verb_class="v5r", pos_tags={"v5r", "vi"})
+        self.assertFalse(_is_noun_note(meta_verb))
+
+        meta_exp = YomitanMetadata(pos_tags={"exp", "int"})
+        self.assertFalse(_is_noun_note(meta_exp))
+
+        # Note without Yomitan metadata: check plain text
+        self.assertTrue(_is_noun_note(None, {"Expression": "林檎", "Meaning": "apple"}))
+        self.assertFalse(_is_noun_note(None, {"Expression": "走る", "Meaning": "to run"}))
 
     def test_write_image_keywords_and_meta_stamp(self) -> None:
         """Verify write_image_keywords stores image keywords and stamps keyword_sources in meta."""

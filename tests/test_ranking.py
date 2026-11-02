@@ -278,6 +278,12 @@ class TestRanking(unittest.TestCase):
         # Mixed-script direct query ending in Japanese followed by Latin title text
         self.assertEqual(classify_match_boundary("AIを使うPCのイラスト", "AIを使う"), "standalone")
 
+        # Turkish dotted capital I (İ -> i\u0307 under casefold) boundary check (#44)
+        self.assertEqual(classify_match_boundary("İSTANBULのイラスト", "İ"), "none")
+        self.assertEqual(classify_match_boundary("ISTİKLALのイラスト", "İ"), "none")
+        self.assertEqual(classify_match_boundary("İのイラスト", "İ"), "exact_quoted")
+        self.assertEqual(classify_match_boundary("美しいİのイラスト", "İ"), "standalone")
+
     def test_score_callout_text_heavy_penalty(self):
         """Test that illustrated text callouts receive heavy penalty instead of hard rejection."""
         img_callout = IrasutoyaImage(

@@ -466,6 +466,103 @@ class TestYomitanParser(unittest.TestCase):
         }
         self.assertEqual(extract_english_glosses_from_note(note), ["doctor"])
 
+    def test_sense_capping_to_first_two_senses(self) -> None:
+        """Verify YomitanHTMLParser only extracts glosses from senses 1 and 2."""
+        html_multi_sense = (
+            '<div class="yomitan-glossary"><ol>'
+            '<li data-dictionary="JMdict [2026-08-20]"><i>(1, n, JMdict)</i> '
+            '<span><ul data-sc-content="glossary"><li>circumstances</li><li>condition</li></ul></span></li>'
+            '<li data-dictionary="JMdict [2026-08-20]"><i>(2, n, JMdict)</i> '
+            '<span><ul data-sc-content="glossary"><li>arranging</li></ul></span></li>'
+            '<li data-dictionary="JMdict [2026-08-20]"><i>(3, n, JMdict)</i> '
+            '<span><ul data-sc-content="glossary"><li>lending money</li></ul></span></li>'
+            '<li data-dictionary="JMdict [2026-08-20]"><i>(4, n, JMdict)</i> '
+            '<span><ul data-sc-content="glossary"><li>in all</li></ul></span></li>'
+            '</ol></div>'
+        )
+        meta = parse_yomitan_html(html_multi_sense)
+        self.assertIsNotNone(meta)
+        self.assertEqual(meta.english_glosses, ["circumstances", "condition", "arranging"])
+        self.assertNotIn("lending money", meta.english_glosses)
+        self.assertNotIn("in all", meta.english_glosses)
+
+    def test_secondary_dictionary_reset_ignored_for_glosses(self) -> None:
+        """Verify secondary dictionary resetting to sense 1 does not pollute primary glosses."""
+        html_two_dicts = (
+            '<div class="yomitan-glossary"><ol>'
+            '<li data-dictionary="JMdict [2026-08-20]"><i>(1, n, JMdict)</i> '
+            '<span><ul data-sc-content="glossary"><li>apple</li></ul></span></li>'
+            '<li data-dictionary="Daijisen"><i>(1, 名)</i> '
+            '<span><ul data-sc-content="glossary"><li>ringo fruit tree</li></ul></span></li>'
+            '</ol></div>'
+        )
+        meta = parse_yomitan_html(html_two_dicts)
+        self.assertIsNotNone(meta)
+        self.assertEqual(meta.english_glosses, ["apple"])
+        self.assertNotIn("ringo fruit tree", meta.english_glosses)
+
+    def test_grammar_dictionary_excluded_from_glosses_and_stripper(self) -> None:
+        """Verify grammar encyclopedias are completely excluded from definition extraction."""
+        from addon.yomitan_parser import strip_html_excluded_containers
+
+        html_grammar = (
+            '<div class="yomitan-glossary"><ol>'
+            '<li data-dictionary="日本語文法辞典(全集)">'
+            '<span>pasokon means personal computer</span></li>'
+            '</ol></div>'
+        )
+        meta = parse_yomitan_html(html_grammar)
+        # Even if parsed, english_glosses must be empty because dictionary is marked as grammar
+        self.assertTrue(meta is None or not meta.english_glosses)
+
+        cleaned = strip_html_excluded_containers(html_grammar)
+        self.assertNotIn("personal computer", cleaned)
+        self.assertNotIn("pasokon", cleaned)
+
+        # Basic Japanese Grammar (DOJG) test
+        html_dojg = (
+            '<div class="yomitan-glossary">'
+            '<div data-dictionary="A Dictionary of Basic Japanese Grammar">'
+            '<span>example of telephone call</span></div></div>'
+        )
+        cleaned_dojg = strip_html_excluded_containers(html_dojg)
+        self.assertNotIn("telephone call", cleaned_dojg)
+
+    def test_plain_text_sense_3_truncation(self) -> None:
+        """Verify plain text definition extraction truncates at sense 3."""
+        note_numbered = {"Expression": "単語", "Meaning": "1. apple; 2. fruit; 3. slang"}
+        self.assertEqual(extract_english_glosses_from_note(note_numbered), ["apple", "fruit"])
+
+        note_parentheses = {"Expression": "単語", "Meaning": "1) dog; 2) hound; 3) canine"}
+        self.assertEqual(extract_english_glosses_from_note(note_parentheses), ["dog", "hound"])
+
+        note_circled = {"Expression": "単語", "Meaning": "① cat ② feline ③ pet"}
+        self.assertEqual(extract_english_glosses_from_note(note_circled), ["cat", "feline"])
+
+        note_bracketed = {"Expression": "単語", "Meaning": "1. start; 2. begin; 3〔rare〕 drink"}
+        self.assertEqual(extract_english_glosses_from_note(note_bracketed), ["start", "begin"])
+
+    def test_normalize_english_gloss_the_rest(self) -> None:
+        """Verify normalize_english_gloss preserves 'the rest' while stripping other leading articles."""
+        self.assertEqual(normalize_english_gloss("the rest"), "the rest")
+        self.assertEqual(normalize_english_gloss("the rest of"), "rest of")
+        self.assertEqual(normalize_english_gloss("the dog"), "dog")
+        self.assertEqual(normalize_english_gloss("a car"), "car")
+
+    def test_merge_metadata_preserves_target_english_glosses(self) -> None:
+        """Verify _merge_metadata preserves primary field glosses and does not overwrite with secondary."""
+        from addon.yomitan_parser import YomitanMetadata, _merge_metadata
+
+        target = YomitanMetadata(pos_tags={"n"}, english_glosses=["doctor"])
+        source = YomitanMetadata(pos_tags={"n"}, english_glosses=["physician"])
+        _merge_metadata(target, source)
+        self.assertEqual(target.english_glosses, ["doctor"])
+
+        # If target has no glosses, it accepts source's glosses
+        empty_target = YomitanMetadata(pos_tags={"n"})
+        _merge_metadata(empty_target, source)
+        self.assertEqual(empty_target.english_glosses, ["physician"])
+
 
 if __name__ == "__main__":
     unittest.main()
