@@ -283,6 +283,7 @@ def run_evaluation(
     live_client = _LiveBloggerSearchClient()
 
     legacy_hits = 0
+    cat_legacy_hits = 0
     t1_hits = 0
     t2_no_bi_hits = 0
     live_hits = 0
@@ -309,6 +310,7 @@ def run_evaluation(
         # --- 1. LEGACY SEARCH SIMULATION ---
         leg_query = legacy_clean_query(raw_source)
         leg_results: List[IrasutoyaImage] = []
+        cat_leg_results: List[IrasutoyaImage] = []
         leg_error = False
         if leg_query:
             if backend in ("live", "both"):
@@ -320,13 +322,13 @@ def run_evaluation(
                     leg_results = []
                 if delay > 0:
                     time.sleep(delay)
-            elif backend == "catalog":
+            if backend in ("catalog", "both"):
                 try:
-                    leg_results = cat_client.search(leg_query, max_results=5)
+                    cat_leg_results = cat_client.search(leg_query, max_results=5)
                 except Exception as e:
                     print(f"      [WARNING] Legacy catalog search failed for '{leg_query}': {e}")
                     leg_error = True
-                    leg_results = []
+                    cat_leg_results = []
 
         # --- 2. EVALUATED SEARCH MECHANISMS ---
         candidates = generate_search_candidates(
@@ -339,29 +341,33 @@ def run_evaluation(
         )
 
         # Optional Stage 2 & 3 baseline calculation for catalog backend
+        note_t1_hit = False
+        note_t2_hit = False
         if track_stages and backend in ("catalog", "both"):
-            cands_t1 = generate_search_candidates(
-                raw_source,
-                note=fields,
-                allow_tier2=False,
-                store=cat_store,
-                bilingual_lookup=lambda note, yomitan_meta=None: [],
-            )
-            t1_res, _, _ = cat_client.search_with_fallbacks(cands_t1, max_results=1, pos_type=pos_type)
-            if t1_res:
-                t1_hits += 1
+            try:
+                cands_t1 = generate_search_candidates(
+                    raw_source,
+                    note=fields,
+                    allow_tier2=False,
+                    store=cat_store,
+                    bilingual_lookup=lambda note, yomitan_meta=None: [],
+                )
+                t1_res, _, _ = cat_client.search_with_fallbacks(cands_t1, max_results=1, pos_type=pos_type)
+                note_t1_hit = bool(t1_res)
 
-            cands_t2 = generate_search_candidates(
-                raw_source,
-                note=fields,
-                allow_tier2=True,
-                allow_deinflection=True,
-                store=cat_store,
-                bilingual_lookup=lambda note, yomitan_meta=None: [],
-            )
-            t2_res, _, _ = cat_client.search_with_fallbacks(cands_t2, max_results=1, pos_type=pos_type)
-            if t2_res:
-                t2_no_bi_hits += 1
+                cands_t2 = generate_search_candidates(
+                    raw_source,
+                    note=fields,
+                    allow_tier2=allow_tier2,
+                    allow_deinflection=True,
+                    store=cat_store,
+                    bilingual_lookup=lambda note, yomitan_meta=None: [],
+                )
+                t2_res, _, _ = cat_client.search_with_fallbacks(cands_t2, max_results=1, pos_type=pos_type)
+                note_t2_hit = bool(t2_res)
+            except Exception as e:
+                print(f"      [WARNING] Stage baseline search failed for '{raw_source}': {e}")
+                eval_error = True
 
         live_res, live_cand, live_best = [], None, None
         cat_res, cat_cand, cat_best = [], None, None
@@ -417,11 +423,23 @@ def run_evaluation(
             leg_found = False
             new_found = False
         else:
+            chosen_leg = cat_leg_results if backend == "catalog" else leg_results
             valid_leg_results = [
-                img for img in leg_results
+                img for img in chosen_leg
+                if not is_decorative_asset(img, leg_query) and is_image_relevant(img, leg_query)
+            ]
+            valid_cat_leg_results = [
+                img for img in cat_leg_results
                 if not is_decorative_asset(img, leg_query) and is_image_relevant(img, leg_query)
             ]
             leg_found = len(valid_leg_results) > 0
+            if len(valid_cat_leg_results) > 0:
+                cat_legacy_hits += 1
+            if note_t1_hit:
+                t1_hits += 1
+            if note_t2_hit:
+                t2_no_bi_hits += 1
+
             new_found = len(new_results) > 0
 
             if leg_found:
@@ -528,7 +546,8 @@ def run_evaluation(
 
     # --- INCREMENTAL STRATEGY PROGRESSION TABLE ---
     if track_stages and backend in ("catalog", "both") and valid_total:
-        leg_pct = (legacy_hits / valid_total * 100)
+        cat_leg_baseline = cat_legacy_hits if backend == "both" else legacy_hits
+        leg_pct = (cat_leg_baseline / valid_total * 100)
         t1_pct = (t1_hits / valid_total * 100)
         t2_pct = (t2_no_bi_hits / valid_total * 100)
         full_pct = (cat_hits / valid_total * 100)
@@ -543,12 +562,12 @@ def run_evaluation(
         print("=" * 72)
         print(f"{'Stage':<38s} | {'Hits / Total':<12s} | {'Recall %':<8s} | {'Incremental Gain'}")
         print("-" * 72)
-        print(f"{'1. Legacy (Naive Direct Query)':<38s} | {legacy_hits:4d} / {valid_total:<5d} | {leg_pct:6.2f}% | —")
-        print(f"{'2. Tier 1 (Syntactic & Script Norm)':<38s} | {t1_hits:4d} / {valid_total:<5d} | {t1_pct:6.2f}% | {delta_t1:+5.2f}% ({t1_hits - legacy_hits:+d} cards)")
+        print(f"{'1. Legacy (Naive Direct Query)':<38s} | {cat_leg_baseline:4d} / {valid_total:<5d} | {leg_pct:6.2f}% | —")
+        print(f"{'2. Tier 1 (Syntactic & Script Norm)':<38s} | {t1_hits:4d} / {valid_total:<5d} | {t1_pct:6.2f}% | {delta_t1:+5.2f}% ({t1_hits - cat_leg_baseline:+d} cards)")
         print(f"{'3. Tier 2 (Japanese Readings/Deinf)':<38s} | {t2_no_bi_hits:4d} / {valid_total:<5d} | {t2_pct:6.2f}% | {delta_t2:+5.2f}% ({t2_no_bi_hits - t1_hits:+d} cards)")
         print(f"{'4. Bilingual Gloss (Definition Bridge)':<38s} | {cat_hits:4d} / {valid_total:<5d} | {full_pct:6.2f}% | {delta_bi:+5.2f}% ({cat_hits - t2_no_bi_hits:+d} cards)")
         print("-" * 72)
-        print(f"Net Improvement: {cat_hits - legacy_hits:+d} cards ({net_delta:+5.2f}% recall gain over Legacy)")
+        print(f"Net Improvement: {cat_hits - cat_leg_baseline:+d} cards ({net_delta:+5.2f}% recall gain over Legacy)")
 
     # --- BILINGUAL GLOSS MATCH AUDIT TABLE ---
     if show_bilingual_hits and bilingual_matches:

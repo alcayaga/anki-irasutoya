@@ -198,6 +198,7 @@ class YomitanHTMLParser(HTMLParser):
         # Sense tracking state for capping definitions to senses 1-2 and primary dictionary
         self._current_sense_number: int = 1
         self._has_seen_sense_1: bool = False
+        self._has_collected_gloss: bool = False
         self._primary_dict_completed: bool = False
         self._current_dictionary: Optional[str] = None
 
@@ -215,7 +216,7 @@ class YomitanHTMLParser(HTMLParser):
         if is_excluded_container or self._excluded_ancestors:
             self._excluded_ancestors.append(tag)
         elif data_dict:
-            if not self.metadata.english_glosses:
+            if not self._has_collected_gloss:
                 self._current_dictionary = data_dict
             elif data_dict != self._current_dictionary:
                 self._primary_dict_completed = True
@@ -323,14 +324,14 @@ class YomitanHTMLParser(HTMLParser):
                 if parts and parts[0].isdigit():
                     sense_num = int(parts[0])
                     is_first_sense = (sense_num == 1)
-                    if is_first_sense and self._has_seen_sense_1 and self.metadata.english_glosses:
+                    if is_first_sense and self._has_seen_sense_1 and self._has_collected_gloss:
                         self._primary_dict_completed = True
                     if is_first_sense:
                         self._has_seen_sense_1 = True
                     self._current_sense_number = sense_num
                 else:
                     is_first_sense = not self._sense_tags
-                    if is_first_sense and self._has_seen_sense_1 and self.metadata.english_glosses:
+                    if is_first_sense and self._has_seen_sense_1 and self._has_collected_gloss:
                         self._primary_dict_completed = True
                     if is_first_sense:
                         self._has_seen_sense_1 = True
@@ -480,6 +481,7 @@ class YomitanHTMLParser(HTMLParser):
                     for norm in _split_and_normalize_glosses(raw_gloss):
                         if norm not in self.metadata.english_glosses:
                             self.metadata.english_glosses.append(norm)
+                            self._has_collected_gloss = True
             elif tag in ("ul", "ol"):
                 self._glossary_ul_depth -= 1
                 if self._glossary_ul_depth <= 0:
@@ -492,7 +494,9 @@ class YomitanHTMLParser(HTMLParser):
             if self._legacy_span_depth == 0:
                 raw_span = "".join(self._current_span_text).strip()
                 if raw_span:
-                    self._legacy_spans.append(raw_span)
+                    if _split_and_normalize_glosses(raw_span):
+                        self._legacy_spans.append(raw_span)
+                        self._has_collected_gloss = True
 
     def handle_data(self, data: str) -> None:
         if self._in_i:

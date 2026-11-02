@@ -280,7 +280,7 @@ def lookup_bilingual_glosses(
                 continue
             if " or " in gloss:
                 continue
-            if gloss == "the rest" or gloss.startswith(PASS2_BLOCKED_PREFIXES):
+            if any(f"{gloss} ".startswith(f"{p} ") for p in PASS2_BLOCKED_PREFIXES):
                 continue
 
             raw_words = gloss.split()

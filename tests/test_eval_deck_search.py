@@ -56,6 +56,29 @@ class TestEvalDeckSearch(unittest.TestCase):
         self.assertEqual(notes[1]["noteId"], 1001)
 
     @patch("scripts.eval_deck_search.anki_invoke")
+    def test_fetch_deck_notes_501_chunk_boundary(self, mock_invoke: MagicMock) -> None:
+        """Verify fetch_deck_notes splits 501 note IDs into chunks of 500 and 1."""
+        cards = list(range(1, 502))
+        cards_info = [{"cardId": cid, "note": cid, "fields": {"FreqSort": {"value": str(cid)}}} for cid in cards]
+        chunk_1 = [{"noteId": nid, "fields": {"Expression": {"value": f"Word{nid}"}}} for nid in range(1, 501)]
+        chunk_2 = [{"noteId": 501, "fields": {"Expression": {"value": "Word501"}}}]
+
+        mock_invoke.side_effect = [
+            cards,       # findCards
+            cards_info,  # cardsInfo
+            chunk_1,     # notesInfo batch 1 (500)
+            chunk_2,     # notesInfo batch 2 (1)
+        ]
+
+        notes = fetch_deck_notes("BigDeck", sort_field="FreqSort", limit=600)
+        self.assertEqual(len(notes), 501)
+        self.assertEqual(notes[0]["noteId"], 1)
+        self.assertEqual(notes[500]["noteId"], 501)
+        self.assertEqual(mock_invoke.call_count, 4)
+        self.assertEqual(len(mock_invoke.call_args_list[2][1]["notes"]), 500)
+        self.assertEqual(len(mock_invoke.call_args_list[3][1]["notes"]), 1)
+
+    @patch("scripts.eval_deck_search.anki_invoke")
     @patch("sys.stdout", new_callable=io.StringIO)
     def test_run_evaluation_catalog_stages(self, mock_stdout: io.StringIO, mock_invoke: MagicMock) -> None:
         """Verify run_evaluation executes in-memory catalog benchmarking and prints incremental stages."""

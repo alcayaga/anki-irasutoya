@@ -332,7 +332,7 @@ class TestSynonyms(unittest.TestCase):
 
         # 15. Transitive-only verb note with "run" suppresses physical locomotion targets
         meta_vt = YomitanMetadata(verb_class="v5m", pos_tags={"v5m", "vt"})
-        note_vt_run = {"Expression": "営む", "Meaning": "to run a business"}
+        note_vt_run = {"Expression": "営む", "Meaning": "to run; to operate"}
         self.assertEqual(
             lookup_bilingual_glosses(note_vt_run, yomitan_meta=meta_vt, store=self.test_store),
             [],
@@ -358,11 +358,11 @@ class TestSynonyms(unittest.TestCase):
             ["部屋"],
         )
 
-        # 17. Pass 2 negation guard suppresses false matches (e.g. "cannot be helped" -> "help")
-        meta_exp = YomitanMetadata(pos_tags={"exp", "adj-i"})
-        note_cannot_help = {"Expression": "仕方ない", "Meaning": "cannot be helped; unavoidable"}
+        # 17. Pass 2 negation guard suppresses false matches (e.g. "cannot help" -> "help")
+        meta_noun_neg = YomitanMetadata(pos_tags={"n"})
+        note_cannot_help = {"Expression": "単語", "Meaning": "cannot help; unavoidable"}
         self.assertEqual(
-            lookup_bilingual_glosses(note_cannot_help, yomitan_meta=meta_exp, store=self.test_store),
+            lookup_bilingual_glosses(note_cannot_help, yomitan_meta=meta_noun_neg, store=self.test_store),
             [],
         )
 
