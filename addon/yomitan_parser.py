@@ -64,7 +64,14 @@ def normalize_english_gloss(text: str) -> str:
     if not text or not isinstance(text, str):
         return ""
 
-    s = unicodedata.normalize("NFKC", text).strip()
+    s = text.strip()
+    if not s:
+        return ""
+
+    # Strip circled number list markers (①-⑳) before NFKC decomposes them to ASCII digits
+    s = re.sub(r"^[①-⑳]\s*", "", s)
+
+    s = unicodedata.normalize("NFKC", s).strip()
     if not s:
         return ""
 
@@ -78,8 +85,8 @@ def normalize_english_gloss(text: str) -> str:
     # Lowercase
     s = s.casefold().strip()
 
-    # Strip leading list numbers / bullet markers (e.g. "1.", "1)", "(1)", "①", "1〔rare〕")
-    s = re.sub(r"^(?:[\d]+[\.、\)\]]|[\(（]?[\d]+[\)）]|[①-⑳]|\d+\s*〔[^〕]*〕)\s*", "", s)
+    # Strip leading list numbers / bullet markers (e.g. "1.", "1)", "(1)", "1〔rare〕")
+    s = re.sub(r"^(?:[\d]+\.(?!\d)|[\d]+[、\)\]]|[\(（]?[\d]+[\)）]|\d+\s*〔[^〕]*〕)\s*", "", s)
 
     # Repeatedly strip leading articles, infinitive, and copula markers
     while True:
@@ -208,9 +215,9 @@ class YomitanHTMLParser(HTMLParser):
         if is_excluded_container or self._excluded_ancestors:
             self._excluded_ancestors.append(tag)
         elif data_dict:
-            if self._current_dictionary is None:
+            if not self.metadata.english_glosses:
                 self._current_dictionary = data_dict
-            elif data_dict != self._current_dictionary and self.metadata.english_glosses:
+            elif data_dict != self._current_dictionary:
                 self._primary_dict_completed = True
 
         if tag == "i":
@@ -809,11 +816,11 @@ def extract_english_glosses_from_note(
             # Plain-text extraction
             clean_val = strip_html_excluded_containers(val)
             clean_val = html.unescape(clean_val).strip()
-            m_sense3 = re.search(r"(?:^|[\n;,\s])(?:3[\.、\)]|3\s*〔|③|\([3３]\)|（[3３]）)", clean_val)
+            m_sense3 = re.search(r"(?:^|[\n;,\s])(?:3\.(?!\d)|3[、\)]|3\s*〔|③|\([3３]\)|（[3３]）)", clean_val)
             if m_sense3:
                 clean_val = clean_val[:m_sense3.start()]
             clean_val = re.sub(
-                r"(?:^|[\n;,\s])(?:[①-⑳]|[\d]+[\.\)、\]]|[\(（][\d]+[\)）]|\d+\s*〔[^〕]*〕)\s*",
+                r"(?:^|[\n;,\s])(?:[①-⑳]|[\d]+\.(?!\d)|[\d]+[、\)\]]|[\(（][\d]+[\)）]|\d+\s*〔[^〕]*〕)\s*",
                 "; ",
                 clean_val,
             )

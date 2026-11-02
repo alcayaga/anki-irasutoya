@@ -552,6 +552,33 @@ class TestYomitanParser(unittest.TestCase):
         note_times = {"Expression": "単語", "Meaning": "done 3 times daily"}
         self.assertEqual(extract_english_glosses_from_note(note_times), ["done 3 times daily"])
 
+    def test_decimal_quantity_not_truncated_as_sense_3(self) -> None:
+        """Verify decimal quantities like '3.5 liter' are not truncated as sense 3 or split."""
+        note_decimal = {"Expression": "単語", "Meaning": "a 3.5 liter bottle"}
+        self.assertEqual(extract_english_glosses_from_note(note_decimal), ["3.5 liter bottle"])
+
+    def test_japanese_only_dict_before_jmdict_preserves_jmdict_senses(self) -> None:
+        """Verify Japanese-only dict with no glosses appearing first does not drop JMdict secondary senses."""
+        html_ja_first = (
+            '<div class="yomitan-glossary"><ol>'
+            '<li data-dictionary="KireiCake"><i>(名)</i> '
+            '<span>リンゴの木</span></li>'
+            '<li data-dictionary="JMdict [2026-08-20]"><i>(1, n, JMdict)</i> '
+            '<span><ul data-sc-content="glossary"><li>apple</li></ul></span></li>'
+            '<li data-dictionary="JMdict [2026-08-20]"><i>(2, n, JMdict)</i> '
+            '<span><ul data-sc-content="glossary"><li>apple tree</li></ul></span></li>'
+            '</ol></div>'
+        )
+        meta = parse_yomitan_html(html_ja_first)
+        self.assertIsNotNone(meta)
+        self.assertEqual(meta.english_glosses, ["apple", "apple tree"])
+
+    def test_circled_number_gloss_normalization(self) -> None:
+        """Verify circled number markers are stripped before NFKC so search keys remain clean."""
+        self.assertEqual(normalize_english_gloss("① pass away"), "pass away")
+        self.assertEqual(normalize_english_gloss("① cat"), "cat")
+        self.assertEqual(normalize_english_gloss("② dog"), "dog")
+
     def test_plain_text_sense_3_truncation(self) -> None:
         """Verify plain text definition extraction truncates at sense 3."""
         note_numbered = {"Expression": "単語", "Meaning": "1. apple; 2. fruit; 3. slang"}
