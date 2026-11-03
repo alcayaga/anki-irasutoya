@@ -25,6 +25,14 @@ VERB_POS_PATTERN = re.compile(
     r"^(v1(-s)?|v5[a-z]+(-[a-z]+)?|vs|vs-i|vs-s|vs-c|vk)$"
 )
 
+GRAMMAR_DICTIONARY_MARKERS = frozenset({
+    "文法",
+    "grammar",
+    "dojg",
+    "どんなときどう使う",
+    "毎日のんびり日本語教師",
+})
+
 
 @dataclass
 class YomitanMetadata:
@@ -56,7 +64,14 @@ def normalize_english_gloss(text: str) -> str:
     if not text or not isinstance(text, str):
         return ""
 
-    s = unicodedata.normalize("NFKC", text).strip()
+    s = text.strip()
+    if not s:
+        return ""
+
+    # Strip circled number list markers (①-⑳) before NFKC decomposes them to ASCII digits
+    s = re.sub(r"^[①-⑳]\s*", "", s)
+
+    s = unicodedata.normalize("NFKC", s).strip()
     if not s:
         return ""
 
@@ -70,9 +85,14 @@ def normalize_english_gloss(text: str) -> str:
     # Lowercase
     s = s.casefold().strip()
 
+    # Strip leading list numbers / bullet markers (e.g. "1.", "1)", "(1)", "1〔rare〕")
+    s = re.sub(r"^(?:[\d]+\.(?!\d)|[\d]+[、\)\]]|[\(（]?[\d]+[\)）]|\d+\s*〔[^〕]*〕)\s*", "", s)
+
     # Repeatedly strip leading articles, infinitive, and copula markers
     while True:
         prev = s
+        if s == "the rest":
+            break
         s = re.sub(r"^(?:to|be|a|an|the)\s+", "", s)
         if s == prev:
             break
@@ -175,14 +195,31 @@ class YomitanHTMLParser(HTMLParser):
         # Ancestor container tracking for blocks to exclude (examples, antonyms)
         self._excluded_ancestors: List[str] = []
 
+        # Sense tracking state for capping definitions to senses 1-2 and primary dictionary
+        self._current_sense_number: int = 1
+        self._has_seen_sense_1: bool = False
+        self._has_collected_gloss: bool = False
+        self._primary_dict_completed: bool = False
+        self._current_dictionary: Optional[str] = None
+
     def handle_starttag(self, tag: str, attrs: Sequence[Tuple[str, Optional[str]]]) -> None:
         attr_dict = dict(attrs)
         sc_content = attr_dict.get("data-sc-content", "") or ""
+        data_dict = (attr_dict.get("data-dictionary", "") or "").strip()
+        data_dict_lower = data_dict.lower()
 
-        # Track containers explicitly excluded from definition glosses (e.g. examples, antonyms)
-        is_excluded_container = sc_content in ("examples", "antonyms")
+        # Track containers explicitly excluded from definition glosses (e.g. examples, antonyms, grammar dicts)
+        is_excluded_container = (
+            sc_content in ("examples", "antonyms")
+            or any(m in data_dict_lower for m in GRAMMAR_DICTIONARY_MARKERS)
+        )
         if is_excluded_container or self._excluded_ancestors:
             self._excluded_ancestors.append(tag)
+        elif data_dict:
+            if not self._has_collected_gloss or self._current_dictionary is None:
+                self._current_dictionary = data_dict
+            elif data_dict != self._current_dictionary:
+                self._primary_dict_completed = True
 
         if tag == "i":
             self._in_i = True
@@ -237,8 +274,9 @@ class YomitanHTMLParser(HTMLParser):
 
         if self._in_glossary_ul and tag == "li" and not self._excluded_ancestors:
             if self._glossary_ul_depth == 1:
-                self._in_glossary_li = True
-                self._current_gloss_text = []
+                if self._current_sense_number <= 2 and not self._primary_dict_completed:
+                    self._in_glossary_li = True
+                    self._current_gloss_text = []
 
         # Legacy definition span detection: <span>gloss text</span>
         if (
@@ -251,6 +289,8 @@ class YomitanHTMLParser(HTMLParser):
             and not self._in_glossary_ul
             and not self._excluded_ancestors
             and sc_content not in ("references", "refGlosses", "notes", "formsTable", "antonyms", "examples", "glossary")
+            and self._current_sense_number <= 2
+            and not self._primary_dict_completed
         ):
             self._legacy_span_depth += 1
             if self._legacy_span_depth == 1:
@@ -271,28 +311,40 @@ class YomitanHTMLParser(HTMLParser):
 
         if tag == "i" and self._in_i:
             self._in_i = False
-            raw = "".join(self._current_i_text).strip()
-            m = re.match(r"^\((.*)\)$", raw)
-            if m:
-                inner = m.group(1)
-                inner = re.sub(r"JMdict(\s*\[.*?\])?", "", inner, flags=re.IGNORECASE)
-                parts = [p.strip() for p in inner.split(",") if p.strip()]
-                # Check for (forms...) entry indicator
-                if "forms" in parts:
-                    self._in_forms_entry = True
-                sense_tags = {p for p in parts if not p.isdigit()}
-                if parts and parts[0].isdigit():
-                    is_first_sense = (parts[0] == "1")
-                else:
-                    is_first_sense = not self._sense_tags
-                if sense_tags and "forms" not in sense_tags:
-                    self._sense_tags.append(sense_tags)
-                for p in dict.fromkeys(x for x in parts if not x.isdigit()):
-                    self.metadata.pos_tags.add(p)
-                    if p == "uk" and is_first_sense:
-                        self.metadata.is_uk = True
-                    if not self.metadata.verb_class and VERB_POS_PATTERN.match(p):
-                        self.metadata.verb_class = p
+            if not was_excluded and not self._excluded_ancestors:
+                raw = "".join(self._current_i_text).strip()
+                m = re.match(r"^\((.*)\)$", raw)
+                if m:
+                    inner = m.group(1)
+                    inner = re.sub(r"JMdict(\s*\[.*?\])?", "", inner, flags=re.IGNORECASE)
+                    parts = [p.strip() for p in inner.split(",") if p.strip()]
+                    # Check for (forms...) entry indicator
+                    if "forms" in parts:
+                        self._in_forms_entry = True
+                    sense_tags = {p for p in parts if not p.isdigit()}
+                    if parts and parts[0].isdigit():
+                        sense_num = int(parts[0])
+                        is_first_sense = (sense_num == 1)
+                        if is_first_sense and self._has_seen_sense_1 and self._has_collected_gloss:
+                            self._primary_dict_completed = True
+                        if is_first_sense:
+                            self._has_seen_sense_1 = True
+                        self._current_sense_number = sense_num
+                    else:
+                        is_first_sense = not self._sense_tags
+                        if is_first_sense and self._has_seen_sense_1 and self._has_collected_gloss:
+                            self._primary_dict_completed = True
+                        if is_first_sense:
+                            self._has_seen_sense_1 = True
+                        self._current_sense_number = 1
+                    if sense_tags and "forms" not in sense_tags:
+                        self._sense_tags.append(sense_tags)
+                    for p in dict.fromkeys(x for x in parts if not x.isdigit()):
+                        self.metadata.pos_tags.add(p)
+                        if p == "uk" and is_first_sense:
+                            self.metadata.is_uk = True
+                        if not self.metadata.verb_class and VERB_POS_PATTERN.match(p):
+                            self.metadata.verb_class = p
 
         # Handle formsTable
         if self._in_forms_table:
@@ -430,6 +482,7 @@ class YomitanHTMLParser(HTMLParser):
                     for norm in _split_and_normalize_glosses(raw_gloss):
                         if norm not in self.metadata.english_glosses:
                             self.metadata.english_glosses.append(norm)
+                            self._has_collected_gloss = True
             elif tag in ("ul", "ol"):
                 self._glossary_ul_depth -= 1
                 if self._glossary_ul_depth <= 0:
@@ -442,7 +495,10 @@ class YomitanHTMLParser(HTMLParser):
             if self._legacy_span_depth == 0:
                 raw_span = "".join(self._current_span_text).strip()
                 if raw_span:
-                    self._legacy_spans.append(raw_span)
+                    if _split_and_normalize_glosses(raw_span):
+                        self._legacy_spans.append(raw_span)
+                        if self._has_seen_sense_1 or bool(self._sense_tags) or self._current_dictionary is not None:
+                            self._has_collected_gloss = True
 
     def handle_data(self, data: str) -> None:
         if self._in_i:
@@ -558,9 +614,8 @@ def _merge_metadata(target: YomitanMetadata, source: YomitanMetadata) -> None:
     for k in source.sense_kanji:
         if k not in target.sense_kanji:
             target.sense_kanji.append(k)
-    for g in source.english_glosses:
-        if g not in target.english_glosses:
-            target.english_glosses.append(g)
+    if not target.english_glosses and source.english_glosses:
+        target.english_glosses.extend(source.english_glosses)
 
 
 def extract_yomitan_metadata_from_note(note: Any) -> Optional[YomitanMetadata]:
@@ -655,9 +710,11 @@ class ExcludedContainersStripper(HTMLParser):
         attr_dict = dict(attrs)
         sc_content = attr_dict.get("data-sc-content", "") or ""
         cls = attr_dict.get("class", "") or ""
+        data_dict = (attr_dict.get("data-dictionary", "") or "").lower()
         is_excluded = (
             sc_content in ("examples", "notes", "references", "antonyms")
             or "example" in cls.lower()
+            or any(m in data_dict for m in GRAMMAR_DICTIONARY_MARKERS)
         )
         if (is_excluded or self._excluded_ancestors) and tag_lower not in HTML_VOID_TAGS:
             self._excluded_ancestors.append(tag_lower)
@@ -746,7 +803,7 @@ def extract_english_glosses_from_note(
     if not note or not hasattr(note, "__getitem__"):
         return []
 
-    fields_to_check = NOTE_DEFINITION_FIELDS + ("English",)
+    fields_to_check = NOTE_DEFINITION_FIELDS + ("English", "SelectionText")
     glosses: List[str] = []
     seen: Set[str] = set()
 
@@ -765,7 +822,18 @@ def extract_english_glosses_from_note(
             # Plain-text extraction
             clean_val = strip_html_excluded_containers(val)
             clean_val = html.unescape(clean_val).strip()
-            clean_val = re.sub(r"\([^)]*\)|\[[^\]]*\]", " ", clean_val)
+            m_sense3 = re.search(
+                r"(?:^|[\n;,\s])(?:[3３]\.(?!\d)|[3３][、\)]|[3３]\s*〔|③)|[\(（][3３](?:\s*[,、]|[\)）])",
+                clean_val,
+            )
+            if m_sense3:
+                clean_val = clean_val[:m_sense3.start()]
+            clean_val = re.sub(
+                r"(?:^|[\n;,\s])(?:[①-⑳]|[\d０-９]+\.(?!\d)|[\d０-９]+[、\)\]]|\d+\s*〔[^〕]*〕)\s*|[\(（][\d０-９]+(?:[、,][^\)）]*)?[\)）]\s*",
+                "; ",
+                clean_val,
+            )
+            clean_val = re.sub(r"\([^)]*\)|\[[^\]]*\]|（[^）]*）", " ", clean_val)
             parts = re.split(r"[;,/\n、，]", clean_val)
             for part in parts:
                 norm = normalize_english_gloss(part)
