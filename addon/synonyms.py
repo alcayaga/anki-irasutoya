@@ -241,7 +241,7 @@ def _is_verb_note(yomitan_meta: Optional[Any], note: Any = None) -> bool:
                 pattern = (
                     r"(?i)(?:^|[;\n,(])\s*(?:to\s+[a-z]+|\(v(?:erb|[15ktsz])?\))"
                     if f in NOTE_DEFINITION_FIELDS
-                    else r"(?i)^\s*to\s+[a-z]+"
+                    else r"(?i)^[\s;]*to\s+[a-z]+"
                 )
                 if re.search(pattern, val):
                     return True
@@ -349,8 +349,6 @@ def lookup_bilingual_glosses(
                 if has_spatial_margin and w == "room":
                     continue
                 if has_style_school and w == "school":
-                    continue
-                if (is_suru_transitive or is_transitive_only) and w in ENGLISH_NOUN_ONLY_COLLISIONS:
                     continue
                 for t in lookup_synonyms(w, source="bilingual_gloss", store=store):
                     if is_transitive_only and t in LOCOMOTION_ACTION_TARGETS:

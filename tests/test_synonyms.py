@@ -544,6 +544,28 @@ class TestSynonyms(unittest.TestCase):
             [],
         )
 
+        # 30. Mixed-POS n + vs + vt entry with noun gloss "commuter train" preserves train -> 電車 lookup
+        meta_commuter_train = YomitanMetadata(
+            verb_class="vs",
+            pos_tags={"n", "vs", "vt"},
+            english_glosses=["commuter train"],
+        )
+        note_commuter_train = {
+            "Expression": "通勤電車",
+            "Meaning": "commuter train",
+        }
+        self.assertEqual(
+            lookup_bilingual_glosses(note_commuter_train, yomitan_meta=meta_commuter_train, store=self.test_store),
+            ["電車"],
+        )
+
+        # 31. Secondary definition field with leading semicolon before infinitive triggers verb note classification
+        note_delimited_english = {
+            "Expression": "指導",
+            "English": "; to train",
+        }
+        self.assertTrue(_is_verb_note(None, note_delimited_english))
+
     def test_is_action_target(self) -> None:
         """Verify _is_action_target accepts verb morphology and allowlisted event actions."""
         from addon.synonyms import _is_action_target
