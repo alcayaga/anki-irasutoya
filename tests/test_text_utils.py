@@ -9,7 +9,12 @@ from unittest.mock import patch
 
 from addon.catalog import CatalogStore, create_schema, write_synonyms
 from addon.synonyms import lookup_sudachi_synonyms
-from addon.text_utils import clean_search_query, generate_search_candidates
+from addon.text_utils import (
+    HONORIFIC_STRIP_BLOCKLIST,
+    clean_search_query,
+    generate_search_candidates,
+    strip_honorific_affixes,
+)
 
 
 class TestTextUtils(unittest.TestCase):
@@ -975,6 +980,188 @@ class TestTextUtils(unittest.TestCase):
         )
         b_cands = [c for c in cands if c[1] == "bilingual_gloss"]
         self.assertEqual(len(b_cands), 0)
+
+
+    def test_strip_honorific_affixes_polite_prefixes(self) -> None:
+        """Verify strip_honorific_affixes correctly normalizes leading polite お/ご prefixes."""
+        self.assertEqual(strip_honorific_affixes("ご挨拶"), ["挨拶"])
+        self.assertEqual(strip_honorific_affixes("お帰り"), ["帰り"])
+        self.assertEqual(strip_honorific_affixes("お泊まり"), ["泊まり"])
+        self.assertEqual(strip_honorific_affixes("ご主人"), ["主人"])
+
+        # Short stems (less than 2 characters) must not be stripped
+        for short_word in ("お茶", "お肉", "お酒", "お湯", "お皿", "お箸", "お肌", "お米"):
+            self.assertEqual(strip_honorific_affixes(short_word), [], f"Expected {short_word} not to be stripped")
+
+        # Kana-only stems must not be stripped
+        self.assertEqual(strip_honorific_affixes("おもちゃ"), [])
+
+    def test_strip_honorific_affixes_kinship_and_titles(self) -> None:
+        """Verify strip_honorific_affixes normalizes kinship and title suffixes."""
+        # Kinship 〜上 archaic honorific suffix
+        self.assertEqual(strip_honorific_affixes("父上"), ["父"])
+        self.assertEqual(strip_honorific_affixes("母上"), ["母"])
+        self.assertEqual(strip_honorific_affixes("兄上"), ["兄"])
+        self.assertEqual(strip_honorific_affixes("姉上"), ["姉"])
+
+        # Non-kinship words ending in 上 must never be stripped
+        for non_kinship in ("屋上", "海上", "陸上", "炎上", "頂上", "身上", "向上"):
+            self.assertEqual(strip_honorific_affixes(non_kinship), [], f"Expected {non_kinship} not to be stripped")
+
+        # Kinship/title suffixes (さん, ちゃん, 様, さま)
+        self.assertEqual(strip_honorific_affixes("息子さん"), ["息子"])
+        self.assertEqual(strip_honorific_affixes("娘さん"), ["娘"])
+        self.assertEqual(strip_honorific_affixes("弟さん"), ["弟"])
+        self.assertEqual(strip_honorific_affixes("妹さん"), ["妹"])
+        # 奥さん and 奥様 are blocklisted (奥 means interior/depths, not wife)
+        self.assertEqual(strip_honorific_affixes("奥さん"), [])
+        self.assertEqual(strip_honorific_affixes("奥様"), [])
+        self.assertEqual(strip_honorific_affixes("坊ちゃん"), ["坊"])
+        self.assertEqual(strip_honorific_affixes("お姫様"), ["お姫", "姫", "姫様"])
+
+        # Non-honorific words ending in 様 must never be stripped (including compound patterns)
+        for non_honorific_sama in (
+            "模様", "同様", "多様", "一様", "仕様", "異様", "文様",
+            "死に様", "生き様", "無様", "水玉模様", "花模様",
+        ):
+            self.assertEqual(
+                strip_honorific_affixes(non_honorific_sama),
+                [],
+                f"Expected {non_honorific_sama} not to be stripped",
+            )
+
+        # Combined prefix and suffix stripping
+        self.assertIn("主人", strip_honorific_affixes("ご主人様"))
+        self.assertIn("父", strip_honorific_affixes("お父さん"))
+        self.assertEqual(strip_honorific_affixes("お父上"), ["父上", "父"])
+        self.assertEqual(strip_honorific_affixes("お母上"), ["母上", "母"])
+
+    def test_strip_honorific_affixes_org_and_scene_suffixes(self) -> None:
+        """Verify strip_honorific_affixes normalizes productive organizational and scene suffixes."""
+        self.assertEqual(strip_honorific_affixes("鑑識課"), ["鑑識"])
+        self.assertEqual(strip_honorific_affixes("印刷局"), ["印刷"])
+        self.assertEqual(strip_honorific_affixes("捜査本部"), ["捜査"])
+        self.assertEqual(strip_honorific_affixes("捜査一課"), ["捜査"])
+        self.assertEqual(strip_honorific_affixes("捜査二課"), ["捜査"])
+        self.assertEqual(strip_honorific_affixes("捜査三課"), ["捜査"])
+        self.assertEqual(strip_honorific_affixes("公安9課"), ["公安"])
+        self.assertEqual(strip_honorific_affixes("花嫁姿"), ["花嫁"])
+        self.assertEqual(strip_honorific_affixes("着物姿"), ["着物"])
+
+        # 1-Kanji stems must not be stripped to avoid semantic destruction
+        for single_kanji in ("日課", "薬局", "結局", "容姿"):
+            self.assertEqual(strip_honorific_affixes(single_kanji), [], f"Expected {single_kanji} not to be stripped")
+
+    def test_strip_honorific_affixes_blocklist(self) -> None:
+        """Verify lexicalized お/ご words in HONORIFIC_STRIP_BLOCKLIST are never stripped."""
+        self.assertGreater(len(HONORIFIC_STRIP_BLOCKLIST), 10)
+        self.assertIn("お嬢ちゃん", HONORIFIC_STRIP_BLOCKLIST)
+        self.assertIn("お嬢さま", HONORIFIC_STRIP_BLOCKLIST)
+        self.assertIn("奥さん", HONORIFIC_STRIP_BLOCKLIST)
+        self.assertIn("奥様", HONORIFIC_STRIP_BLOCKLIST)
+        self.assertIn("お陰様", HONORIFIC_STRIP_BLOCKLIST)
+        self.assertIn("お陰さま", HONORIFIC_STRIP_BLOCKLIST)
+        self.assertIn("おかげ様", HONORIFIC_STRIP_BLOCKLIST)
+        self.assertIn("おかげさま", HONORIFIC_STRIP_BLOCKLIST)
+        self.assertIn("お陰", HONORIFIC_STRIP_BLOCKLIST)
+        self.assertIn("お疲れ様", HONORIFIC_STRIP_BLOCKLIST)
+        self.assertIn("お疲れさま", HONORIFIC_STRIP_BLOCKLIST)
+        self.assertIn("ご苦労様", HONORIFIC_STRIP_BLOCKLIST)
+        self.assertIn("ご馳走様", HONORIFIC_STRIP_BLOCKLIST)
+        self.assertIn("ご利益", HONORIFIC_STRIP_BLOCKLIST)
+        self.assertIn("お大事", HONORIFIC_STRIP_BLOCKLIST)
+        self.assertIn("お大事に", HONORIFIC_STRIP_BLOCKLIST)
+        for block_word in HONORIFIC_STRIP_BLOCKLIST:
+            self.assertEqual(
+                strip_honorific_affixes(block_word),
+                [],
+                f"Blocklisted word {block_word} must return empty candidate list",
+            )
+        self.assertNotIn("嬢", strip_honorific_affixes("お嬢ちゃん"))
+        self.assertNotIn("嬢", strip_honorific_affixes("お嬢さま"))
+        self.assertNotIn("奥", strip_honorific_affixes("奥さん"))
+        self.assertNotIn("奥", strip_honorific_affixes("奥様"))
+        self.assertNotIn("陰", strip_honorific_affixes("お陰様"))
+        self.assertNotIn("陰", strip_honorific_affixes("お陰さま"))
+        self.assertNotIn("疲れ", strip_honorific_affixes("お疲れ様"))
+        self.assertNotIn("疲れ", strip_honorific_affixes("お疲れさま"))
+        self.assertNotIn("利益", strip_honorific_affixes("ご利益"))
+        self.assertNotIn("大事", strip_honorific_affixes("お大事"))
+        self.assertNotIn("大事", strip_honorific_affixes("お大事に"))
+
+    def test_generate_search_candidates_affix_stems_concept_resolution(self) -> None:
+        """Verify _resolve_source_targets evaluates affix stems sequentially until lookup matches."""
+        # When surface is "ご主人様", affix stems are ["ご主人", "主人", "主人様"].
+        # If lookup only matches "主人" (the second stem), it should still successfully resolve.
+        def mock_sudachi(term: str) -> List[str]:
+            """Return mock Sudachi synonym expansion for target term '主人'."""
+            return ["夫", "旦那"] if term == "主人" else []
+
+        cands = generate_search_candidates(
+            "ご主人様",
+            allow_tier2=True,
+            sudachi_lookup=mock_sudachi,
+        )
+        cand_map = {term: reason for term, reason, _ in cands}
+        self.assertIn("夫", cand_map)
+        self.assertEqual(cand_map["夫"], "sudachi_synonym")
+        self.assertIn("旦那", cand_map)
+        self.assertEqual(cand_map["旦那"], "sudachi_synonym")
+
+    def test_generate_search_candidates_emits_honorific_affix(self) -> None:
+        """Verify generate_search_candidates emits Tier 2 honorific_affix candidates."""
+        # Polite prefix
+        cands_aisatsu = generate_search_candidates("ご挨拶", allow_tier2=True)
+        affix_aisatsu = [c for c in cands_aisatsu if c[1] == "honorific_affix"]
+        self.assertEqual(len(affix_aisatsu), 1)
+        self.assertEqual(affix_aisatsu[0], ("挨拶", "honorific_affix", 2))
+
+        # Kinship suffix
+        cands_chichi = generate_search_candidates("父上", allow_tier2=True)
+        affix_chichi = [c for c in cands_chichi if c[1] == "honorific_affix"]
+        self.assertEqual(len(affix_chichi), 1)
+        self.assertEqual(affix_chichi[0], ("父", "honorific_affix", 2))
+
+        # Organizational suffix
+        cands_kanshiki = generate_search_candidates("鑑識課", allow_tier2=True)
+        affix_kanshiki = [c for c in cands_kanshiki if c[1] == "honorific_affix"]
+        self.assertEqual(len(affix_kanshiki), 1)
+        self.assertEqual(affix_kanshiki[0], ("鑑識", "honorific_affix", 2))
+
+        # Scene suffix
+        cands_hanayome = generate_search_candidates("花嫁姿", allow_tier2=True)
+        affix_hanayome = [c for c in cands_hanayome if c[1] == "honorific_affix"]
+        self.assertEqual(len(affix_hanayome), 1)
+        self.assertEqual(affix_hanayome[0], ("花嫁", "honorific_affix", 2))
+
+        # Blocklist words do not emit honorific_affix candidates
+        cands_okashi = generate_search_candidates("お菓子", allow_tier2=True)
+        affix_okashi = [c for c in cands_okashi if c[1] == "honorific_affix"]
+        self.assertEqual(len(affix_okashi), 0)
+
+        # Tier 2 disabled suppresses honorific_affix
+        cands_tier2_disabled = generate_search_candidates("ご挨拶", allow_tier2=False)
+        affix_disabled = [c for c in cands_tier2_disabled if c[1] == "honorific_affix"]
+        self.assertEqual(len(affix_disabled), 0)
+
+    def test_candidate_ordering_tier2_hierarchy_with_affix(self) -> None:
+        """Verify candidate ordering puts honorific_affix ahead of phonetic readings and bilingual glosses."""
+        mock_note = {"Reading": "ごあいさつ"}
+        cands = generate_search_candidates(
+            "ご挨拶",
+            note=mock_note,
+            allow_tier2=True,
+            bilingual_lookup=lambda note, meta: ["葬式"],
+        )
+        reasons = [c[1] for c in cands]
+        self.assertIn("honorific_affix", reasons)
+        self.assertIn("note_reading_Reading", reasons)
+        self.assertIn("bilingual_gloss", reasons)
+        idx_affix = reasons.index("honorific_affix")
+        idx_reading = reasons.index("note_reading_Reading")
+        idx_bilingual = reasons.index("bilingual_gloss")
+        self.assertLess(idx_affix, idx_reading)
+        self.assertLess(idx_affix, idx_bilingual)
 
 
 if __name__ == "__main__":

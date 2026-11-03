@@ -35,7 +35,13 @@ from addon.ranking import (
     is_image_relevant,
     rank_relevant_images,
 )
-from addon.text_utils import generate_search_candidates
+from addon.synonyms import lookup_concept_map, lookup_kaishi_concept, lookup_sudachi_synonyms
+from addon.text_utils import (
+    deinflect_japanese,
+    extract_furigana_terms,
+    generate_search_candidates,
+    strip_honorific_affixes,
+)
 
 
 def legacy_clean_query(raw_text: Optional[str]) -> str:
@@ -292,6 +298,7 @@ def run_evaluation(
 
     reasons_count: Dict[str, int] = {}
     bilingual_matches: List[Dict[str, Any]] = []
+    affix_matches: List[Dict[str, Any]] = []
 
     results = []
     diff_table = []
@@ -463,6 +470,39 @@ def run_evaluation(
                     "title": best_img.title,
                 })
 
+            # Determine if winning match originated from an affix stem (directly or via concept/Kaishi/Sudachi fallback)
+            is_affix_hit = (matched_reason == "honorific_affix")
+            if not is_affix_hit and matched_reason in ("concept_map", "kaishi_concept", "sudachi_synonym"):
+                clean_surface, _ = extract_furigana_terms(raw_source)
+                affix_stems = strip_honorific_affixes(clean_surface)
+                if affix_stems:
+                    deinfs = deinflect_japanese(clean_surface)
+                    first_deinf = deinfs[0] if deinfs else ""
+                    direct_targets = set()
+                    if matched_reason == "sudachi_synonym" and cat_store:
+                        direct_targets = set(lookup_sudachi_synonyms(clean_surface, store=cat_store))
+                        if first_deinf:
+                            direct_targets.update(lookup_sudachi_synonyms(first_deinf, store=cat_store))
+                    elif matched_reason == "kaishi_concept" and cat_store:
+                        direct_targets = set(lookup_kaishi_concept(clean_surface, store=cat_store))
+                        if first_deinf:
+                            direct_targets.update(lookup_kaishi_concept(first_deinf, store=cat_store))
+                    elif matched_reason == "concept_map":
+                        direct_targets = set(lookup_concept_map(clean_surface))
+                        if first_deinf:
+                            direct_targets.update(lookup_concept_map(first_deinf))
+                    if matched_term not in direct_targets:
+                        is_affix_hit = True
+
+            if not leg_found and is_affix_hit and best_img:
+                affix_matches.append({
+                    "index": idx,
+                    "sort_val": sort_val,
+                    "expr": raw_source,
+                    "target": matched_term,
+                    "title": best_img.title,
+                })
+
             if leg_found and new_found:
                 status = "BOTH_HIT"
                 status_marker = " ✓"
@@ -470,6 +510,9 @@ def run_evaluation(
                 if matched_reason == "primary":
                     status = "NEW_HIT_PRIMARY"
                     status_marker = "★P"
+                elif is_affix_hit:
+                    status = "NEW_HIT_AFFIX"
+                    status_marker = "★A"
                 elif matched_reason == "bilingual_gloss":
                     status = "NEW_HIT_BILINGUAL"
                     status_marker = "★B"
@@ -578,6 +621,19 @@ def run_evaluation(
         print(f"{'#':<4s} | {'Freq':<5s} | {'Expression':<12s} | {'Target':<10s} | {'Matched Image Title'}")
         print("-" * 72)
         for m in bilingual_matches:
+            print(
+                f"{m['index']:<4d} | {str(m['sort_val']):>5s} | {m['expr'][:12]:<12s} | "
+                f"{m['target'][:10]:<10s} | {m['title'][:32]}"
+            )
+
+    # --- HONORIFIC AFFIX MATCH AUDIT TABLE ---
+    if affix_matches:
+        print("\n" + "-" * 72)
+        print(f"  HONORIFIC AFFIX NEW HITS (TOTAL: {len(affix_matches)})")
+        print("-" * 72)
+        print(f"{'#':<4s} | {'Freq':<5s} | {'Expression':<12s} | {'Target':<10s} | {'Matched Image Title'}")
+        print("-" * 72)
+        for m in affix_matches:
             print(
                 f"{m['index']:<4d} | {str(m['sort_val']):>5s} | {m['expr'][:12]:<12s} | "
                 f"{m['target'][:10]:<10s} | {m['title'][:32]}"
