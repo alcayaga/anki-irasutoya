@@ -36,7 +36,12 @@ from addon.ranking import (
     rank_relevant_images,
 )
 from addon.synonyms import lookup_concept_map, lookup_kaishi_concept, lookup_sudachi_synonyms
-from addon.text_utils import generate_search_candidates, strip_honorific_affixes
+from addon.text_utils import (
+    deinflect_japanese,
+    extract_furigana_terms,
+    generate_search_candidates,
+    strip_honorific_affixes,
+)
 
 
 def legacy_clean_query(raw_text: Optional[str]) -> str:
@@ -468,15 +473,24 @@ def run_evaluation(
             # Determine if winning match originated from an affix stem (directly or via concept/Kaishi/Sudachi fallback)
             is_affix_hit = (matched_reason == "honorific_affix")
             if not is_affix_hit and matched_reason in ("concept_map", "kaishi_concept", "sudachi_synonym"):
-                affix_stems = strip_honorific_affixes(raw_source)
+                clean_surface, _ = extract_furigana_terms(raw_source)
+                affix_stems = strip_honorific_affixes(clean_surface)
                 if affix_stems:
+                    deinfs = deinflect_japanese(clean_surface)
+                    first_deinf = deinfs[0] if deinfs else ""
                     direct_targets = set()
                     if matched_reason == "sudachi_synonym" and cat_store:
-                        direct_targets = set(lookup_sudachi_synonyms(raw_source, store=cat_store))
+                        direct_targets = set(lookup_sudachi_synonyms(clean_surface, store=cat_store))
+                        if first_deinf:
+                            direct_targets.update(lookup_sudachi_synonyms(first_deinf, store=cat_store))
                     elif matched_reason == "kaishi_concept" and cat_store:
-                        direct_targets = set(lookup_kaishi_concept(raw_source, store=cat_store))
+                        direct_targets = set(lookup_kaishi_concept(clean_surface, store=cat_store))
+                        if first_deinf:
+                            direct_targets.update(lookup_kaishi_concept(first_deinf, store=cat_store))
                     elif matched_reason == "concept_map":
-                        direct_targets = set(lookup_concept_map(raw_source))
+                        direct_targets = set(lookup_concept_map(clean_surface))
+                        if first_deinf:
+                            direct_targets.update(lookup_concept_map(first_deinf))
                     if matched_term not in direct_targets:
                         is_affix_hit = True
 
