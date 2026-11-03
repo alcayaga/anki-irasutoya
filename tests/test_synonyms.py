@@ -479,6 +479,41 @@ class TestSynonyms(unittest.TestCase):
             [],
         )
 
+        # 25. Suru-noun (n + vs + vt) with verbal gloss excludes verbal constituent splitting in Pass 2
+        meta_suru_run = YomitanMetadata(
+            verb_class="vs",
+            pos_tags={"n", "vs", "vt"},
+            english_glosses=["run a business"],
+        )
+        note_suru_run = {"Expression": "経営", "Meaning": "to run a business"}
+        self.assertEqual(
+            lookup_bilingual_glosses(note_suru_run, yomitan_meta=meta_suru_run, store=self.test_store),
+            [],
+        )
+
+        # 26. Suru-noun (n + vs + vt) with mixed noun and verbal glosses preserves noun constituent matching
+        meta_suru_mixed = YomitanMetadata(
+            verb_class="vs",
+            pos_tags={"n", "vs", "vt"},
+            english_glosses=["head office", "run a business"],
+        )
+        note_suru_mixed = {
+            "Expression": "経営",
+            "Meaning": "head office; to run a business",
+        }
+        self.assertEqual(
+            lookup_bilingual_glosses(note_suru_mixed, yomitan_meta=meta_suru_mixed, store=self.test_store),
+            ["事務所"],
+        )
+
+        # 27. POS classification for n + vs + vt entries
+        from addon.synonyms import _is_noun_note, _is_verb_note
+
+        self.assertTrue(_is_verb_note(meta_suru_run, note_suru_run))
+        self.assertFalse(_is_noun_note(meta_suru_run, note_suru_run))
+        self.assertFalse(_is_verb_note(meta_suru_mixed, note_suru_mixed))
+        self.assertTrue(_is_noun_note(meta_suru_mixed, note_suru_mixed))
+
     def test_is_action_target(self) -> None:
         """Verify _is_action_target accepts verb morphology and allowlisted event actions."""
         from addon.synonyms import _is_action_target

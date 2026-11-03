@@ -156,6 +156,68 @@ PASS2_BLOCKED_PREFIXES = (
     "early bird",
 )
 
+LOCOMOTION_ACTION_WORDS = frozenset({"run", "walk", "swim", "fly"})
+
+
+def _is_verbal_gloss_phrase(gloss: str, note: Any = None) -> bool:
+    """Return True if a gloss phrase represents a verbal or infinitive action.
+
+    Args:
+        gloss: Normalized or raw English gloss string.
+        note: Optional Anki note or field dictionary.
+
+    Returns:
+        True if the gloss phrase or definition markup indicates an infinitive verb.
+    """
+    if not gloss:
+        return False
+    g_str = gloss.strip().lower()
+    if g_str.startswith("to "):
+        return True
+    first_word = g_str.split()[0]
+    if first_word in LOCOMOTION_ACTION_WORDS:
+        return True
+    if note and hasattr(note, "__getitem__"):
+        from .yomitan_parser import NOTE_DEFINITION_FIELDS, strip_html_excluded_containers
+
+        for f in NOTE_DEFINITION_FIELDS + ("English", "SelectionText"):
+            if f in note and note[f]:
+                val = strip_html_excluded_containers(str(note[f]))
+                if re.search(rf"(?i)(?:^|[;\n,(])\s*to\s+{re.escape(first_word)}\b", val):
+                    return True
+    return False
+
+
+def _has_verbal_gloss(yomitan_meta: Optional[Any] = None, note: Any = None) -> bool:
+    """Check whether Yomitan metadata or note definition fields contain verbal glosses or infinitive markers.
+
+    Args:
+        yomitan_meta: Optional pre-parsed YomitanMetadata.
+        note: Optional Anki note or field dictionary.
+
+    Returns:
+        True if infinitive 'to <verb>' markers or verbal glosses are detected, False otherwise.
+    """
+    if yomitan_meta is not None:
+        glosses = getattr(yomitan_meta, "english_glosses", None) or []
+        for g in glosses:
+            if _is_verbal_gloss_phrase(str(g), note):
+                return True
+    if note and hasattr(note, "__getitem__"):
+        from .yomitan_parser import NOTE_DEFINITION_FIELDS, strip_html_excluded_containers
+
+        for f in NOTE_DEFINITION_FIELDS + ("English", "SelectionText"):
+            if f in note and note[f]:
+                val = strip_html_excluded_containers(str(note[f]))
+                pattern = (
+                    r"(?i)(?:^|[;\n,(])\s*(?:to\s+[a-z]+|\(v(?:erb|[15ktsz])?\))"
+                    if f in NOTE_DEFINITION_FIELDS
+                    else r"(?i)^\s*to\s+[a-z]+"
+                )
+                if re.search(pattern, val):
+                    return True
+    return False
+
 
 def _is_noun_note(yomitan_meta: Optional[Any], note: Any = None) -> bool:
     """Determine whether the note represents a noun from Yomitan metadata or note definition fields.
@@ -170,6 +232,10 @@ def _is_noun_note(yomitan_meta: Optional[Any], note: Any = None) -> bool:
     if yomitan_meta is not None:
         tags = getattr(yomitan_meta, "pos_tags", None) or set()
         if any(t == "n" or t.startswith(("n-", "adj-no")) for t in tags):
+            if any(t.startswith("vs") for t in tags) and "vt" in tags and _has_verbal_gloss(yomitan_meta, note):
+                glosses = getattr(yomitan_meta, "english_glosses", None) or []
+                if glosses and all(_is_verbal_gloss_phrase(g, note) for g in glosses):
+                    return False
             return True
         if tags:
             return False
@@ -188,30 +254,23 @@ def _is_verb_note(yomitan_meta: Optional[Any], note: Any = None) -> bool:
     """
     if yomitan_meta is not None:
         tags = getattr(yomitan_meta, "pos_tags", None) or set()
-        # If the note has noun classification 'n', suru-nouns ('vs') remain noun-eligible
+        # If the note has noun classification 'n', suru-nouns ('vs') remain noun-eligible,
+        # unless transitive ('vt') with purely verbal glosses
         if "n" in tags and any(t.startswith("vs") for t in tags):
-            if not any(t == "v" or t.startswith(("v1", "v5", "vk", "vz")) for t in tags):
-                return False
+            if any(t == "v" or t.startswith(("v1", "v5", "vk", "vz")) for t in tags):
+                return True
+            if "vt" in tags and _has_verbal_gloss(yomitan_meta, note):
+                glosses = getattr(yomitan_meta, "english_glosses", None) or []
+                if glosses and all(_is_verbal_gloss_phrase(g, note) for g in glosses):
+                    return True
+            return False
         if getattr(yomitan_meta, "verb_class", None):
             return True
         if any(t == "v" or t.startswith(("v1", "v5", "vs", "vk", "vz", "vi", "vt")) for t in tags):
             return True
         if "n" in tags:
             return False
-    if note and hasattr(note, "__getitem__"):
-        from .yomitan_parser import NOTE_DEFINITION_FIELDS, strip_html_excluded_containers
-
-        for f in NOTE_DEFINITION_FIELDS + ("English", "SelectionText"):
-            if f in note and note[f]:
-                val = strip_html_excluded_containers(str(note[f]))
-                pattern = (
-                    r"(?i)(?:^|[;\n,(])\s*(?:to\s+[a-z]+|\(v(?:erb|[15ktsz])?\))"
-                    if f in NOTE_DEFINITION_FIELDS
-                    else r"(?i)^\s*to\s+[a-z]+"
-                )
-                if re.search(pattern, val):
-                    return True
-    return False
+    return _has_verbal_gloss(None, note)
 
 
 def _is_action_target(target: str) -> bool:
@@ -260,6 +319,9 @@ def lookup_bilingual_glosses(
     is_verb = _is_verb_note(yomitan_meta, note)
     pos_tags = getattr(yomitan_meta, "pos_tags", set()) if yomitan_meta is not None else set()
     is_transitive_only = ("vt" in pos_tags) and ("vi" not in pos_tags)
+    is_suru_transitive = bool(
+        pos_tags and "n" in pos_tags and any(t.startswith("vs") for t in pos_tags) and "vt" in pos_tags
+    )
     has_spatial_margin = any(g in ("gap", "space", "opening", "margin", "clearance") for g in glosses)
     has_style_school = any(g in ("style", "manner", "doctrine", "method", "tradition") for g in glosses)
 
@@ -284,6 +346,8 @@ def lookup_bilingual_glosses(
     # Restricted to noun notes to prevent verb/expression constituent splitting collisions
     if not is_verb and _is_noun_note(yomitan_meta, note):
         for gloss in glosses:
+            if (is_suru_transitive or is_transitive_only) and _is_verbal_gloss_phrase(gloss, note):
+                continue
             # Skip glosses containing negation/politeness, coordinate 'or', or partitive/idiomatic prefixes
             if any(tok in gloss.split() for tok in NEGATION_OR_IDIOM_TOKENS):
                 continue
@@ -312,6 +376,8 @@ def lookup_bilingual_glosses(
                 if has_style_school and w == "school":
                     continue
                 for t in lookup_synonyms(w, source="bilingual_gloss", store=store):
+                    if is_transitive_only and t in LOCOMOTION_ACTION_TARGETS:
+                        continue
                     if t not in seen:
                         seen.add(t)
                         targets.append(t)
