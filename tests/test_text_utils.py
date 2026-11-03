@@ -1033,6 +1033,8 @@ class TestTextUtils(unittest.TestCase):
         # Combined prefix and suffix stripping
         self.assertIn("主人", strip_honorific_affixes("ご主人様"))
         self.assertIn("父", strip_honorific_affixes("お父さん"))
+        self.assertEqual(strip_honorific_affixes("お父上"), ["父上", "父"])
+        self.assertEqual(strip_honorific_affixes("お母上"), ["母上", "母"])
 
     def test_strip_honorific_affixes_org_and_scene_suffixes(self) -> None:
         """Verify strip_honorific_affixes normalizes productive organizational and scene suffixes."""
@@ -1067,6 +1069,8 @@ class TestTextUtils(unittest.TestCase):
         self.assertIn("ご苦労様", HONORIFIC_STRIP_BLOCKLIST)
         self.assertIn("ご馳走様", HONORIFIC_STRIP_BLOCKLIST)
         self.assertIn("ご利益", HONORIFIC_STRIP_BLOCKLIST)
+        self.assertIn("お大事", HONORIFIC_STRIP_BLOCKLIST)
+        self.assertIn("お大事に", HONORIFIC_STRIP_BLOCKLIST)
         for block_word in HONORIFIC_STRIP_BLOCKLIST:
             self.assertEqual(
                 strip_honorific_affixes(block_word),
@@ -1082,6 +1086,8 @@ class TestTextUtils(unittest.TestCase):
         self.assertNotIn("疲れ", strip_honorific_affixes("お疲れ様"))
         self.assertNotIn("疲れ", strip_honorific_affixes("お疲れさま"))
         self.assertNotIn("利益", strip_honorific_affixes("ご利益"))
+        self.assertNotIn("大事", strip_honorific_affixes("お大事"))
+        self.assertNotIn("大事", strip_honorific_affixes("お大事に"))
 
     def test_generate_search_candidates_affix_stems_concept_resolution(self) -> None:
         """Verify _resolve_source_targets evaluates affix stems sequentially until lookup matches."""
@@ -1141,13 +1147,21 @@ class TestTextUtils(unittest.TestCase):
     def test_candidate_ordering_tier2_hierarchy_with_affix(self) -> None:
         """Verify candidate ordering puts honorific_affix ahead of phonetic readings and bilingual glosses."""
         mock_note = {"Reading": "ごあいさつ"}
-        cands = generate_search_candidates("ご挨拶", note=mock_note, allow_tier2=True)
+        cands = generate_search_candidates(
+            "ご挨拶",
+            note=mock_note,
+            allow_tier2=True,
+            bilingual_lookup=lambda note, meta: ["葬式"],
+        )
         reasons = [c[1] for c in cands]
         self.assertIn("honorific_affix", reasons)
         self.assertIn("note_reading_Reading", reasons)
+        self.assertIn("bilingual_gloss", reasons)
         idx_affix = reasons.index("honorific_affix")
         idx_reading = reasons.index("note_reading_Reading")
+        idx_bilingual = reasons.index("bilingual_gloss")
         self.assertLess(idx_affix, idx_reading)
+        self.assertLess(idx_affix, idx_bilingual)
 
 
 if __name__ == "__main__":

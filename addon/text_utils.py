@@ -393,7 +393,7 @@ HONORIFIC_STRIP_BLOCKLIST: FrozenSet[str] = frozenset({
     "ご馳走様", "ご馳走さま", "ごちそう様", "ごちそうさま",
     "お粗末様", "お粗末さま", "おそまつ様", "おそまつさま",
     "お互い様", "お互いさま", "おたがい様", "おたがいさま",
-    "お世話", "お世話様", "お世話さま", "ご利益",
+    "お世話", "お世話様", "お世話さま", "ご利益", "お大事", "お大事に",
 })
 
 # Common non-honorific words ending in 様 (state, condition, pattern, or '-zama' manner)
@@ -450,6 +450,7 @@ def strip_honorific_affixes(text: str) -> List[str]:
     seen = set()
 
     def add(cand: str) -> None:
+        """Append a valid, unseen candidate stem to ``stems``."""
         if (
             cand
             and cand != text
@@ -506,6 +507,9 @@ def strip_honorific_affixes(text: str) -> List[str]:
         p_stem = text[1:]
         if len(p_stem) >= 2 and KANJI_RE.search(p_stem):
             add(p_stem)
+            # If the stripped stem ends with kinship 上 (e.g. お父上 -> 父上 -> 父), strip suffix too
+            if p_stem.endswith("上") and len(p_stem) > 1 and p_stem[:-1] in KINSHIP_UE_STEMS:
+                add(p_stem[:-1])
 
     return stems
 

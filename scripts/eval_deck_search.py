@@ -35,7 +35,8 @@ from addon.ranking import (
     is_image_relevant,
     rank_relevant_images,
 )
-from addon.text_utils import generate_search_candidates
+from addon.synonyms import lookup_concept_map, lookup_kaishi_concept, lookup_sudachi_synonyms
+from addon.text_utils import generate_search_candidates, strip_honorific_affixes
 
 
 def legacy_clean_query(raw_text: Optional[str]) -> str:
@@ -464,7 +465,22 @@ def run_evaluation(
                     "title": best_img.title,
                 })
 
-            if not leg_found and matched_reason == "honorific_affix" and best_img:
+            # Determine if winning match originated from an affix stem (directly or via concept/Kaishi/Sudachi fallback)
+            is_affix_hit = (matched_reason == "honorific_affix")
+            if not is_affix_hit and matched_reason in ("concept_map", "kaishi_concept", "sudachi_synonym"):
+                affix_stems = strip_honorific_affixes(raw_source)
+                if affix_stems:
+                    direct_targets = set()
+                    if matched_reason == "sudachi_synonym" and cat_store:
+                        direct_targets = set(lookup_sudachi_synonyms(raw_source, store=cat_store))
+                    elif matched_reason == "kaishi_concept" and cat_store:
+                        direct_targets = set(lookup_kaishi_concept(raw_source, store=cat_store))
+                    elif matched_reason == "concept_map":
+                        direct_targets = set(lookup_concept_map(raw_source))
+                    if matched_term not in direct_targets:
+                        is_affix_hit = True
+
+            if not leg_found and is_affix_hit and best_img:
                 affix_matches.append({
                     "index": idx,
                     "sort_val": sort_val,
@@ -480,7 +496,7 @@ def run_evaluation(
                 if matched_reason == "primary":
                     status = "NEW_HIT_PRIMARY"
                     status_marker = "★P"
-                elif matched_reason == "honorific_affix":
+                elif is_affix_hit:
                     status = "NEW_HIT_AFFIX"
                     status_marker = "★A"
                 elif matched_reason == "bilingual_gloss":
