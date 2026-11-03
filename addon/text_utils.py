@@ -8,6 +8,7 @@ from .synonyms import (
     lookup_bilingual_glosses,
     lookup_concept_map,
     lookup_kaishi_concept,
+    lookup_llm_concept,
     lookup_sudachi_synonyms,
 )
 from .yomitan_parser import (
@@ -329,8 +330,11 @@ GRAMMAR_FUNCTION_WORDS = {
     "なら", "だが", "けど", "けれど", "ても", "でも", "とか", "たり", "だり", "やら", "なり",
     "こそ", "さえ", "すら", "しか", "ばかり", "だけ", "ほど", "くらい", "ぐらい", "など", "なん",
     "なんて", "とは", "にも", "には", "では", "へと", "かも", "かな", "かしら", "っけ", "もん",
-    "もの", "こと", "とき", "ところ", "わけ", "はず", "つもり", "よう", "そう", "らしい", "みたい",
+    "もの", "こと", "とき", "ところ", "あと", "わけ", "はず", "つもり", "よう", "そう", "らしい", "みたい",
     "べき", "まい", "たい", "ない", "ぬ", "ん", "れる", "られる", "せる", "させる",
+    "だ", "です", "である", "だった", "でした", "だろう", "でしょう", "ではない", "じゃない", "じゃありません", "ではありません", "でしたら",
+    "ます", "ました", "ません", "ませんでした", "んだ", "んです", "のだ", "のです", "なの", "なのだ", "なのです",
+    "かもしれない", "かもしれん", "ような", "ように", "のように", "こんな", "そんな", "あんな", "どんな", "ですか",
     "これ", "それ", "あれ", "どれ", "この", "その", "あの", "どの", "ここ", "そこ", "あそこ", "どこ",
     "こう", "そう", "ああ", "どう", "こちら", "そちら", "あちら", "どちら", "こいつ", "そいつ", "あいつ",
     "する", "なる", "ある", "いる", "おる", "くる", "いく", "ゆく", "やる", "くれる", "あげる", "もらう",
@@ -656,6 +660,7 @@ def generate_search_candidates(
     concept_lookup: Optional[Callable[[str], List[str]]] = None,
     kaishi_lookup: Optional[Callable[[str], List[str]]] = None,
     sudachi_lookup: Optional[Callable[[str], List[str]]] = None,
+    llm_lookup: Optional[Callable[[str], List[str]]] = None,
     bilingual_lookup: Optional[Callable[[Any, Optional[Any]], List[str]]] = None,
 ) -> List[Tuple[str, str, int]]:
     """Generate prioritized search candidate queries with confidence tiers.
@@ -668,7 +673,7 @@ def generate_search_candidates(
                        same-field furigana, verb masu-stems, Katakana chōonpu expansion, heuristic compound deinflection,
                        Yomitan sense-specific kanji (esp.), Yomitan cross-references (see:),
                        curated visual concept maps, Kaishi 1.5k concept bridges, SudachiDict synonym bridges,
-                       bilingual English definition gloss bridges.
+                       LLM-curated visual concept maps, bilingual English definition gloss bridges.
     
     Args:
         raw_source: Raw text or HTML from the source field.
@@ -679,6 +684,7 @@ def generate_search_candidates(
         concept_lookup: Optional callable mapping a headword to a list of target concept strings.
         kaishi_lookup: Optional callable mapping a headword to a list of Kaishi 1.5k target strings.
         sudachi_lookup: Optional callable mapping a headword to a list of Sudachi synonym target strings.
+        llm_lookup: Optional callable mapping a headword to a list of LLM-curated visual concept target strings.
         bilingual_lookup: Optional callable mapping a note and optional Yomitan metadata to bilingual concept target strings.
 
     Returns:
@@ -859,6 +865,10 @@ def generate_search_candidates(
         # Sudachi synonym dictionary lookup (e.g. 就寝 -> 寝る, 購入 -> 買う, 飲料 -> 飲み物)
         for s_target in _resolve_source_targets(sudachi_lookup, lookup_sudachi_synonyms):
             add(s_target, "sudachi_synonym", 2)
+
+        # LLM-curated visual concept mapping (e.g. concrete idioms, post-topic scenes)
+        for l_target in _resolve_source_targets(llm_lookup, lookup_llm_concept):
+            add(l_target, "llm_concept", 2)
 
         # Katakana elongation mark expansion (メンバ -> メンバー, サーバ -> サーバー)
         for chouon_variant in expand_katakana_chouon(surface):

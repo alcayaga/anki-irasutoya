@@ -1,0 +1,7 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: "en-US"
+reviews:
+  path_filters:
+    - "!scripts/sources/llm_concepts.json"
+    - "!addon/data/catalog.sqlite"
+    - "!addon/data/catalog.sqlite.sha256"

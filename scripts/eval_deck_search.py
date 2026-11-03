@@ -35,7 +35,12 @@ from addon.ranking import (
     is_image_relevant,
     rank_relevant_images,
 )
-from addon.synonyms import lookup_concept_map, lookup_kaishi_concept, lookup_sudachi_synonyms
+from addon.synonyms import (
+    lookup_concept_map,
+    lookup_kaishi_concept,
+    lookup_llm_concept,
+    lookup_sudachi_synonyms,
+)
 from addon.text_utils import (
     deinflect_japanese,
     extract_furigana_terms,
@@ -470,16 +475,20 @@ def run_evaluation(
                     "title": best_img.title,
                 })
 
-            # Determine if winning match originated from an affix stem (directly or via concept/Kaishi/Sudachi fallback)
+            # Determine if winning match originated from an affix stem (directly or via concept/Kaishi/Sudachi/LLM fallback)
             is_affix_hit = (matched_reason == "honorific_affix")
-            if not is_affix_hit and matched_reason in ("concept_map", "kaishi_concept", "sudachi_synonym"):
+            if not is_affix_hit and matched_reason in ("concept_map", "kaishi_concept", "sudachi_synonym", "llm_concept"):
                 clean_surface, _ = extract_furigana_terms(raw_source)
                 affix_stems = strip_honorific_affixes(clean_surface)
                 if affix_stems:
                     deinfs = deinflect_japanese(clean_surface)
                     first_deinf = deinfs[0] if deinfs else ""
                     direct_targets = set()
-                    if matched_reason == "sudachi_synonym" and cat_store:
+                    if matched_reason == "llm_concept" and cat_store:
+                        direct_targets = set(lookup_llm_concept(clean_surface, store=cat_store))
+                        if first_deinf:
+                            direct_targets.update(lookup_llm_concept(first_deinf, store=cat_store))
+                    elif matched_reason == "sudachi_synonym" and cat_store:
                         direct_targets = set(lookup_sudachi_synonyms(clean_surface, store=cat_store))
                         if first_deinf:
                             direct_targets.update(lookup_sudachi_synonyms(first_deinf, store=cat_store))

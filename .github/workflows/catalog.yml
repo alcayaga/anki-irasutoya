@@ -59,6 +59,20 @@ jobs:
             --catalog addon/data/catalog.sqlite \
             --manual scripts/sources/manual_concepts.json \
             --bilingual scripts/sources/bilingual_concepts.json
+          if ! python scripts/build_synonyms.py \
+            --catalog addon/data/catalog.sqlite \
+            --llm scripts/sources/llm_concepts.json \
+            --non-strict; then
+            LLM_SYNS=$(sqlite3 addon/data/catalog.sqlite "SELECT count(*) FROM synonyms WHERE source = 'llm_concept'")
+            if [ "$LLM_SYNS" -gt 0 ]; then
+              sqlite3 addon/data/catalog.sqlite "DELETE FROM synonyms WHERE source = 'llm_concept'"
+              sqlite3 addon/data/catalog.sqlite "INSERT OR REPLACE INTO meta (key, value) SELECT 'synonym_sources', COALESCE(group_concat(source, ','), '') FROM (SELECT DISTINCT source FROM synonyms ORDER BY source)"
+              (cd addon/data && sha256sum catalog.sqlite > catalog.sqlite.sha256)
+              echo "::warning::LLM concept refresh failed; removed carried-over LLM data ($LLM_SYNS synonyms)."
+            else
+              echo "::warning::LLM concept population failed validation; continuing without llm_concept rows."
+            fi
+          fi
           if ! python scripts/build_synonyms.py --catalog addon/data/catalog.sqlite --kaishi-github --min-matched 1000; then
             KAISHI_SYNS=$(sqlite3 addon/data/catalog.sqlite "SELECT count(*) FROM synonyms WHERE source = 'donkuri/kaishi'")
             KAISHI_KWS=$(sqlite3 addon/data/catalog.sqlite "SELECT count(*) FROM image_keywords WHERE source = 'donkuri/kaishi'")

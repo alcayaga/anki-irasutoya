@@ -82,6 +82,26 @@ class TestYomitanParser(unittest.TestCase):
         self.assertEqual(meta_miru.verb_class, "v1")
         self.assertFalse(meta_miru.is_particle_or_aux)
 
+    def test_mixed_noun_and_affix_sense_not_marked_as_particle_or_aux(self):
+        """Test that a noun with a secondary or concurrent affix tag (e.g. n, suf) is NOT marked grammar."""
+        html_hito = (
+            '<div><ol>'
+            '<li><i>(1, n, suf, JMdict [2025-11-01])</i> <span>person</span></li>'
+            '</ol></div>'
+        )
+        meta_hito = parse_yomitan_html(html_hito)
+        self.assertIsNotNone(meta_hito)
+        self.assertFalse(meta_hito.is_particle_or_aux)
+
+        html_pure_suf = (
+            '<div><ol>'
+            '<li><i>(1, suf, uk, JMdict [2025-11-01])</i> <span>pluralizing suffix</span></li>'
+            '</ol></div>'
+        )
+        meta_pure_suf = parse_yomitan_html(html_pure_suf)
+        self.assertIsNotNone(meta_pure_suf)
+        self.assertTrue(meta_pure_suf.is_particle_or_aux)
+
     def test_forms_table(self):
         """Test extracting canonical ★ Kanji forms from formsTable and ignoring rare ones."""
         html_table = (

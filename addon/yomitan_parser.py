@@ -18,8 +18,28 @@ NOTE_DEFINITION_FIELDS = (
 )
 
 GRAMMAR_POS_TAGS = frozenset({
-    "prt", "conj", "aux", "aux-v", "aux-adj"
+    "prt", "conj", "aux", "aux-v", "aux-adj", "cop", "suf", "pref"
 })
+AFFIX_POS_TAGS = frozenset({"suf", "pref"})
+
+
+def is_grammar_sense(tags: Set[str]) -> bool:
+    """Return True if sense is purely grammatical (particles, conjunctions, copulas, or standalone affixes).
+
+    Args:
+        tags: Set of JMdict POS and dictionary tags for a single definition sense.
+
+    Returns:
+        True if the sense represents a purely grammatical particle, auxiliary, or affix without content POS.
+    """
+    grammar = tags & GRAMMAR_POS_TAGS
+    if not grammar:
+        return False
+    # If the only grammar tags are affixes (suf, pref), check if any content POS is present
+    if grammar <= AFFIX_POS_TAGS:
+        content = {t for t in (tags - GRAMMAR_POS_TAGS) if t == "n" or t.startswith(("n-", "v", "adj", "adv"))}
+        return not bool(content)
+    return True
 
 VERB_POS_PATTERN = re.compile(
     r"^(v1(-s)?|v5[a-z]+(-[a-z]+)?|vs|vs-i|vs-s|vs-c|vk)$"
@@ -534,7 +554,7 @@ def parse_yomitan_html(html_text: Optional[str]) -> Optional[YomitanMetadata]:
         parser.feed(html_text)
         meta = parser.metadata
         meta.is_particle_or_aux = bool(parser._sense_tags) and all(
-            bool(tags & GRAMMAR_POS_TAGS) for tags in parser._sense_tags
+            is_grammar_sense(tags) for tags in parser._sense_tags
         )
         # If no structured glossary entries were found, populate from legacy spans
         if not meta.english_glosses and parser._legacy_spans:
