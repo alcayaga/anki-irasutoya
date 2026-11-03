@@ -2,7 +2,7 @@
 import html
 import re
 import unicodedata
-from typing import Any, Callable, List, Optional, Tuple
+from typing import Any, Callable, FrozenSet, List, Optional, Tuple
 
 from .synonyms import (
     lookup_bilingual_glosses,
@@ -382,6 +382,134 @@ def expand_bikago_prefix(text: str) -> Optional[str]:
     return None
 
 
+# Words whose leading お / ご must NEVER be stripped (lexicalized nouns or homophone collisions)
+HONORIFIC_STRIP_BLOCKLIST: FrozenSet[str] = frozenset({
+    "お前", "お金", "ご飯", "お菓子", "お弁当", "お祭り", "お土産",
+    "お年玉", "お礼", "お見舞い", "お供え", "お嬢", "お嬢様", "お嬢さん",
+    "お嬢ちゃん", "お嬢さま", "お化け", "お手洗い", "奥さん", "奥様",
+    "お陰", "お陰様", "お陰さま", "おかげ様", "おかげさま",
+    "お疲れ", "お疲れ様", "お疲れさま", "おつかれ様", "おつかれさま",
+    "ご苦労", "ご苦労様", "ご苦労さま",
+    "ご馳走様", "ご馳走さま", "ごちそう様", "ごちそうさま",
+    "お粗末様", "お粗末さま", "おそまつ様", "おそまつさま",
+    "お互い様", "お互いさま", "おたがい様", "おたがいさま",
+    "お世話", "お世話様", "お世話さま", "ご利益",
+})
+
+# Common non-honorific words ending in 様 (state, condition, pattern, or '-zama' manner)
+NON_HONORIFIC_SAMA_WORDS: Tuple[str, ...] = (
+    "模様", "同様", "多様", "一様", "仕様", "異様", "文様", "態様", "体様", "逆様", "有様",
+    "生き様", "死に様", "無様",
+)
+
+# Kinship stems permitted to strip archaic honorific 〜上
+KINSHIP_UE_STEMS: FrozenSet[str] = frozenset({
+    "父", "母", "兄", "姉", "伯父", "叔父", "伯母", "叔母", "祖父", "祖母",
+})
+
+# Unambiguous 1-Kanji kinship and title stems allowed to drop kinship suffixes (さん, ちゃん, 様, さま)
+VALID_1KANJI_KINSHIP_STEMS: FrozenSet[str] = frozenset({
+    "父", "母", "兄", "姉", "弟", "妹", "娘", "爺", "婆", "坊", "姫",
+})
+
+# Productive organizational/scene suffixes preceded by 2+ Kanji stem
+ORG_SCENE_SUFFIXES: Tuple[str, ...] = (
+    "本部",
+    "一課", "二課", "三課", "四課", "五課", "六課", "七課", "八課", "九課",
+    "1課", "2課", "3課", "4課", "5課",
+    "課", "局", "姿",
+)
+
+# Kinship and title honorific suffixes preceded by a Kanji stem
+KINSHIP_TITLE_SUFFIXES: Tuple[str, ...] = ("さん", "ちゃん", "様", "さま")
+
+
+def strip_honorific_affixes(text: str) -> List[str]:
+    """Strip Japanese polite prefixes, kinship/title suffixes, and productive compound suffixes.
+
+    Rules:
+    - Productive organizational / scene suffixes (本部, 一課, 課, 局, 姿): stripped when preceded
+      by a 2+ Kanji stem (e.g. 鑑識課 -> 鑑識, 印刷局 -> 印刷, 捜査本部 -> 捜査, 花嫁姿 -> 花嫁).
+    - Kinship 上 suffix: stripped when preceded strictly by kinship stems (父上 -> 父, 母上 -> 母).
+    - Kinship / title suffixes (さん, ちゃん, 様, さま): stripped when preceded by a Kanji stem
+      (e.g. 息子さん -> 息子, 娘さん -> 娘), supporting combined prefix stripping (e.g. ご主人様 -> 主人).
+    - Polite お / ご prefix: stripped when followed by >= 2 characters containing at least
+      one Kanji (e.g. ご挨拶 -> 挨拶, お帰り -> 帰り, お泊まり -> 泊まり, ご主人 -> 主人),
+      guarded by HONORIFIC_STRIP_BLOCKLIST.
+
+    Args:
+        text: Normalized Japanese query string.
+
+    Returns:
+        Prioritized list of candidate stems without affixes.
+    """
+    if not text or text in HONORIFIC_STRIP_BLOCKLIST:
+        return []
+
+    stems: List[str] = []
+    seen = set()
+
+    def add(cand: str) -> None:
+        if (
+            cand
+            and cand != text
+            and cand not in HONORIFIC_STRIP_BLOCKLIST
+            and cand not in seen
+            and not is_grammar_function_word(cand)
+        ):
+            seen.add(cand)
+            stems.append(cand)
+
+    # 1. Productive organizational / scene suffixes preceded by 2+ Kanji stem
+    for sfx in ORG_SCENE_SUFFIXES:
+        if text.endswith(sfx) and len(text) > len(sfx):
+            stem = text[:-len(sfx)]
+            # If a generic '課' was stripped and the remaining stem ends with a division number (e.g. 捜査二 -> 捜査), strip numeral too
+            if sfx == "課" and stem and stem[-1] in "一二三四五六七八九十0123456789":
+                stem = stem[:-1]
+            if len(stem) >= 2 and all("\u4e00" <= c <= "\u9fff" or c in "々〆〇" for c in stem):
+                add(stem)
+                break
+
+    # 2. Kinship 上 suffix (archaic honorific restricted to kinship stems)
+    if text.endswith("上") and len(text) > 1:
+        stem = text[:-1]
+        if stem in KINSHIP_UE_STEMS:
+            add(stem)
+
+    # 3. Kinship / title honorific suffixes (さん, ちゃん, 様, さま) preceded by Kanji stem
+    if not text.endswith(NON_HONORIFIC_SAMA_WORDS):
+        for sfx in KINSHIP_TITLE_SUFFIXES:
+            if text.endswith(sfx) and len(text) > len(sfx):
+                stem = text[:-len(sfx)]
+                # Protect ambiguous 1-Kanji stems and lexicalized blocklisted stems
+                if (
+                    stem not in HONORIFIC_STRIP_BLOCKLIST
+                    and KANJI_RE.search(stem)
+                    and (len(stem) >= 2 or stem in VALID_1KANJI_KINSHIP_STEMS)
+                ):
+                    add(stem)
+                    # Combined prefix + suffix handling (e.g. お父さん -> お父 -> 父, ご主人様 -> ご主人 -> 主人, お姫様 -> 姫)
+                    if stem.startswith(("お", "ご")) and stem not in HONORIFIC_STRIP_BLOCKLIST:
+                        p_stem = stem[1:]
+                        if (
+                            p_stem
+                            and p_stem not in HONORIFIC_STRIP_BLOCKLIST
+                            and KANJI_RE.search(p_stem)
+                            and (len(p_stem) >= 2 or p_stem in VALID_1KANJI_KINSHIP_STEMS)
+                        ):
+                            add(p_stem)
+                    break
+
+    # 4. Leading polite お / ご followed by >= 2 characters containing at least one Kanji
+    if text.startswith(("お", "ご")):
+        p_stem = text[1:]
+        if len(p_stem) >= 2 and KANJI_RE.search(p_stem):
+            add(p_stem)
+
+    return stems
+
+
 SINGLE_KANJI_ICHIDAN = {
     "見る", "観る", "診る", "看る", "視る",
     "着る", "寝る", "出る", "似る", "煮る", "居る", "得る", "経る", "射る", "干る",
@@ -645,6 +773,12 @@ def generate_search_candidates(
             if not inflected.endswith(("た", "だ", "う")):
                 add(inflected, "verb_stem", 2)
 
+        # Honorific and compound affix stripping (e.g. ご挨拶 -> 挨拶, 父上 -> 父, 息子さん -> 息子, 鑑識課 -> 鑑識, 花嫁姿 -> 花嫁)
+        # Preserves core lexical Kanji stem with zero homophone risk ahead of cross-references and phonetic readings
+        affix_stems = strip_honorific_affixes(surface)
+        for a_stem in affix_stems:
+            add(a_stem, "honorific_affix", 2)
+
         # Yomitan sense-specific Kanji splits from notes (e.g. 止める -> esp. 停める, 留める)
         if yomitan_meta and yomitan_meta.sense_kanji:
             added_sense = 0
@@ -691,6 +825,11 @@ def generate_search_candidates(
             targets = _lookup(surface)
             if not targets and deinflections:
                 targets = _lookup(deinflections[0])
+            if not targets and affix_stems:
+                for a_s in affix_stems:
+                    targets = _lookup(a_s)
+                    if targets:
+                        break
             return targets
 
         for c_target in _resolve_source_targets(concept_lookup, lookup_concept_map):

@@ -292,6 +292,7 @@ def run_evaluation(
 
     reasons_count: Dict[str, int] = {}
     bilingual_matches: List[Dict[str, Any]] = []
+    affix_matches: List[Dict[str, Any]] = []
 
     results = []
     diff_table = []
@@ -463,6 +464,15 @@ def run_evaluation(
                     "title": best_img.title,
                 })
 
+            if not leg_found and matched_reason == "honorific_affix" and best_img:
+                affix_matches.append({
+                    "index": idx,
+                    "sort_val": sort_val,
+                    "expr": raw_source,
+                    "target": matched_term,
+                    "title": best_img.title,
+                })
+
             if leg_found and new_found:
                 status = "BOTH_HIT"
                 status_marker = " ✓"
@@ -470,6 +480,9 @@ def run_evaluation(
                 if matched_reason == "primary":
                     status = "NEW_HIT_PRIMARY"
                     status_marker = "★P"
+                elif matched_reason == "honorific_affix":
+                    status = "NEW_HIT_AFFIX"
+                    status_marker = "★A"
                 elif matched_reason == "bilingual_gloss":
                     status = "NEW_HIT_BILINGUAL"
                     status_marker = "★B"
@@ -578,6 +591,19 @@ def run_evaluation(
         print(f"{'#':<4s} | {'Freq':<5s} | {'Expression':<12s} | {'Target':<10s} | {'Matched Image Title'}")
         print("-" * 72)
         for m in bilingual_matches:
+            print(
+                f"{m['index']:<4d} | {str(m['sort_val']):>5s} | {m['expr'][:12]:<12s} | "
+                f"{m['target'][:10]:<10s} | {m['title'][:32]}"
+            )
+
+    # --- HONORIFIC AFFIX MATCH AUDIT TABLE ---
+    if affix_matches:
+        print("\n" + "-" * 72)
+        print(f"  HONORIFIC AFFIX NEW HITS (TOTAL: {len(affix_matches)})")
+        print("-" * 72)
+        print(f"{'#':<4s} | {'Freq':<5s} | {'Expression':<12s} | {'Target':<10s} | {'Matched Image Title'}")
+        print("-" * 72)
+        for m in affix_matches:
             print(
                 f"{m['index']:<4d} | {str(m['sort_val']):>5s} | {m['expr'][:12]:<12s} | "
                 f"{m['target'][:10]:<10s} | {m['title'][:32]}"
