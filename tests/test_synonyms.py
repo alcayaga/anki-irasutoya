@@ -514,6 +514,36 @@ class TestSynonyms(unittest.TestCase):
         self.assertFalse(_is_verb_note(meta_suru_mixed, note_suru_mixed))
         self.assertTrue(_is_noun_note(meta_suru_mixed, note_suru_mixed))
 
+        # 28. Polysemous n + vs + vt entry with Sense 1 noun ("train") and Sense 2 verb ("to train") preserves noun target
+        meta_train_poly = YomitanMetadata(
+            verb_class="vs",
+            pos_tags={"n", "vs", "vt"},
+            english_glosses=["train"],
+        )
+        note_train_poly = {
+            "Expression": "列車",
+            "MainDefinition": "<ol><li>train</li><li>to train workers</li></ol>",
+        }
+        self.assertEqual(
+            lookup_bilingual_glosses(note_train_poly, yomitan_meta=meta_train_poly, store=self.test_store),
+            ["電車"],
+        )
+
+        # 29. Transitive suru note with unmarked verbal phrase in Pass 2 excludes noun-only collision ("train" -> 電車)
+        meta_unmarked_verb = YomitanMetadata(
+            verb_class="vs",
+            pos_tags={"n", "vs", "vt"},
+            english_glosses=["train workers"],
+        )
+        note_unmarked_verb = {
+            "Expression": "指導",
+            "Meaning": "train workers",
+        }
+        self.assertEqual(
+            lookup_bilingual_glosses(note_unmarked_verb, yomitan_meta=meta_unmarked_verb, store=self.test_store),
+            [],
+        )
+
     def test_is_action_target(self) -> None:
         """Verify _is_action_target accepts verb morphology and allowlisted event actions."""
         from addon.synonyms import _is_action_target
