@@ -2584,6 +2584,24 @@ class TestBuildSynonyms(unittest.TestCase):
             )
             self.assertFalse(ok)
 
+    def test_run_ollama_compile_terms_handles_null_headwords(self) -> None:
+        """Verify run_ollama_compile handles Yomitan entries where headwords is null without raising TypeError."""
+        llm_out = os.path.join(self.temp_dir.name, "null_hw_out.json")
+        mock_entries = [{"headwords": None, "definitions": []}]
+
+        with (
+            patch("scripts.build_synonyms._fetch_yomitan_term_entries", return_value=(mock_entries, "ok")),
+            patch("scripts.build_synonyms.check_ollama_availability", return_value=(True, None)),
+            patch("scripts.build_synonyms.run_ollama_agent_batch", return_value=({"猫": ["猫"]}, 0)),
+        ):
+            ok = run_ollama_compile(
+                catalog_path=self.db_path,
+                llm_out_path=llm_out,
+                terms=["猫"],
+                cache_dir=self.temp_dir.name,
+            )
+            self.assertTrue(ok)
+
 
 if __name__ == "__main__":
     unittest.main()

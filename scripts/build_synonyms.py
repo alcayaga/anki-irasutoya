@@ -2183,7 +2183,10 @@ def run_ollama_compile(
             if entries:
                 for entry in entries:
                     if isinstance(entry, dict):
-                        for hw in entry.get("headwords", []):
+                        hws = entry.get("headwords")
+                        if not isinstance(hws, list):
+                            continue
+                        for hw in hws:
                             if isinstance(hw, dict) and hw.get("term") == term and hw.get("reading"):
                                 reading = str(hw["reading"])
                                 break
