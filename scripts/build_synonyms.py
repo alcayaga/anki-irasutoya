@@ -1214,11 +1214,14 @@ def _fetch_yomitan_term_entries(
     if not isinstance(data, dict):
         logger.debug("Yomitan returned non-object JSON for '%s': %r", term, type(data).__name__)
         return None, "term_error"
-    raw_entries = data.get("dictionaryEntries", [])
-    if raw_entries is not None and not isinstance(raw_entries, list):
+    if "dictionaryEntries" not in data:
+        logger.debug("Yomitan response missing 'dictionaryEntries' key for '%s'", term)
+        return None, "term_error"
+    raw_entries = data.get("dictionaryEntries")
+    if not isinstance(raw_entries, list):
         logger.debug("Yomitan returned non-list dictionaryEntries for '%s': %r", term, raw_entries)
         return None, "term_error"
-    return raw_entries if raw_entries is not None else [], "ok"
+    return raw_entries, "ok"
 
 
 def _parse_yomitan_metadata(
@@ -1361,6 +1364,8 @@ def _parse_yomitan_metadata(
 
     if not best_entry:
         target_read = reading or term
+        reading_matches: List[Dict[str, Any]] = []
+        matched_terms: Set[str] = set()
         for entry in dictionary_entries:
             if not isinstance(entry, dict):
                 continue
@@ -1374,10 +1379,13 @@ def _parse_yomitan_metadata(
                 if not isinstance(hw, dict):
                     continue
                 if hw.get("reading") == target_read:
-                    best_entry = entry
+                    reading_matches.append(entry)
+                    matched_terms.add(str(hw.get("term", "")))
                     break
-            if best_entry:
-                break
+
+        # Only accept an unambiguous reading match (single distinct headword term)
+        if reading_matches and len(matched_terms) == 1:
+            best_entry = reading_matches[0]
 
     if not best_entry:
         return None
@@ -1590,12 +1598,14 @@ def load_jpdb_candidates(
             if cache_key in yomitan_cache and (yomitan_cache[cache_key] is None or isinstance(yomitan_cache[cache_key], dict)):
                 c_val = yomitan_cache[cache_key]
                 if isinstance(c_val, dict):
+                    pos_tags_raw = c_val.get("pos_tags") or []
+                    glosses_raw = c_val.get("english_glosses") or []
                     yomitan_meta = YomitanMetadata(
-                        pos_tags=set(c_val.get("pos_tags", [])),
-                        is_uk=c_val.get("is_uk", False),
-                        is_particle_or_aux=c_val.get("is_particle_or_aux", False),
+                        pos_tags=set(pos_tags_raw),
+                        is_uk=bool(c_val.get("is_uk", False)),
+                        is_particle_or_aux=bool(c_val.get("is_particle_or_aux", False)),
                         verb_class=c_val.get("verb_class"),
-                        english_glosses=c_val.get("english_glosses", []),
+                        english_glosses=list(glosses_raw),
                     )
             else:
                 if consecutive_yomitan_failures >= max_consecutive_yomitan_failures:
@@ -1802,7 +1812,9 @@ def check_ollama_availability(
     """
     parsed = urllib.parse.urlparse(ollama_url)
     base_url = f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else "http://localhost:11434"
-    tags_url = f"{base_url.rstrip('/')}/api/tags"
+    path = parsed.path or ""
+    path_prefix = path[:-len("/api/chat")] if path.endswith("/api/chat") else (path[:-len("/chat")] if path.endswith("/chat") else "")
+    tags_url = f"{base_url.rstrip('/')}{path_prefix.rstrip('/')}/api/tags"
 
     req = urllib.request.Request(
         tags_url,
@@ -1812,12 +1824,14 @@ def check_ollama_availability(
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except urllib.error.URLError as exc:
-        root_url = f"{base_url.rstrip('/')}/"
+        root_url = f"{base_url.rstrip('/')}{path_prefix.rstrip('/')}/"
         try:
             req_root = urllib.request.Request(root_url, headers={"User-Agent": "anki-irasutoya/1.0"})
             with urllib.request.urlopen(req_root, timeout=timeout) as resp:
                 if resp.status == 200:
-                    return True, None
+                    body = resp.read().decode("utf-8", errors="replace").strip()
+                    if "Ollama is running" in body:
+                        return True, None
         except Exception:
             pass
         err_detail = exc.reason if hasattr(exc, "reason") else exc
@@ -2283,7 +2297,11 @@ def run_ollama_compile(
                     stale_map=_pending_stale(),
                 )
             except Exception as exc:
-                logger.warning("Failed to persist revalidated concepts on empty candidates exit to %s: %s", llm_out_path, exc)
+                logger.error("Failed to persist revalidated concepts on empty candidates exit to %s: %s", llm_out_path, exc)
+                return False
+        if not os.path.isfile(llm_out_path):
+            logger.error("No candidates compiled and no output artifact exists at %s; aborting", llm_out_path)
+            return False
         return True
 
     remaining_candidates: List[Dict[str, Any]] = []
@@ -2318,7 +2336,8 @@ def run_ollama_compile(
                     stale_map=_pending_stale(),
                 )
             except Exception as exc:
-                logger.warning("Failed to persist revalidated concepts on early exit to %s: %s", llm_out_path, exc)
+                logger.error("Failed to persist revalidated concepts on early exit to %s: %s", llm_out_path, exc)
+                return False
         return True
 
     evaluated_count = 0

@@ -1000,6 +1000,45 @@ class TestBuildSynonyms(unittest.TestCase):
         self.assertTrue(res_kana.is_particle_or_aux)
         self.assertEqual(res_kana.english_glosses, ["pluralizing suffix"])
 
+        # 3. Ambiguous kana homophones without uk: 'はし' matching both '橋' and '箸'
+        hashi_bridge_entry = {
+            "headwords": [{"term": "橋", "reading": "はし"}],
+            "definitions": [
+                {
+                    "dictionary": "JMdict (English)",
+                    "tags": [{"name": "n", "category": "partOfSpeech"}],
+                    "entries": ["bridge"],
+                }
+            ],
+        }
+        hashi_chopsticks_entry = {
+            "headwords": [{"term": "箸", "reading": "はし"}],
+            "definitions": [
+                {
+                    "dictionary": "JMdict (English)",
+                    "tags": [{"name": "n", "category": "partOfSpeech"}],
+                    "entries": ["chopsticks"],
+                }
+            ],
+        }
+        # Ambiguous homophones without uk -> rejected as None to prevent homophone trap
+        res_ambiguous = _parse_yomitan_metadata(
+            [hashi_bridge_entry, hashi_chopsticks_entry],
+            term="はし",
+            reading="はし",
+        )
+        self.assertIsNone(res_ambiguous)
+
+        # 4. Unambiguous reading match: single distinct headword term
+        res_unambiguous = _parse_yomitan_metadata(
+            [hashi_bridge_entry],
+            term="はし",
+            reading="はし",
+        )
+        self.assertIsNotNone(res_unambiguous)
+        assert res_unambiguous is not None
+        self.assertEqual(res_unambiguous.english_glosses, ["bridge"])
+
     def test_load_jpdb_candidates(self) -> None:
         """Verify load_jpdb_candidates filters non-tier1, unmatched, and all modes."""
         tsv_path = os.path.join(self.temp_dir.name, "sample_jpdb.tsv")
@@ -2295,6 +2334,13 @@ class TestBuildSynonyms(unittest.TestCase):
             self.assertEqual(status, "term_error")
             self.assertIsNone(entries)
 
+        # 6. Response missing dictionaryEntries key
+        missing_key_json = json.dumps({"otherField": []}).encode("utf-8")
+        with patch("urllib.request.urlopen", return_value=MockHttpResponse(missing_key_json)):
+            entries, status = _fetch_yomitan_term_entries("犬")
+            self.assertEqual(status, "term_error")
+            self.assertIsNone(entries)
+
     def test_load_jpdb_candidates_skips_term_error_without_deferral(self) -> None:
         """Verify load_jpdb_candidates skips per-term error without caching or incrementing deferred_count."""
         tsv_path = os.path.join(self.temp_dir.name, "single_term.tsv")
@@ -2337,6 +2383,150 @@ class TestBuildSynonyms(unittest.TestCase):
         with open(cache_path, "r", encoding="utf-8") as f:
             data = json.load(f)
         self.assertEqual(data, sample_cache)
+
+    def test_check_ollama_availability_preserves_path_prefix(self) -> None:
+        """Verify check_ollama_availability preserves path prefix when probing tags endpoint."""
+
+        class MockResp:
+            """Mock 200 HTTP response."""
+
+            status = 200
+
+            def __enter__(self) -> "MockResp":
+                """Enter context manager."""
+                return self
+
+            def __exit__(self, *args: Any) -> None:
+                """Exit context manager."""
+                pass
+
+            def read(self) -> bytes:
+                """Return response bytes."""
+                return json.dumps({"models": []}).encode("utf-8")
+
+        captured_urls: List[str] = []
+
+        def fake_open(req: Any, *args: Any, **kwargs: Any) -> MockResp:
+            """Record request URL."""
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            captured_urls.append(url)
+            return MockResp()
+
+        with patch("urllib.request.urlopen", side_effect=fake_open):
+            ok, err = check_ollama_availability("http://proxy:8080/ollama-service/api/chat")
+            self.assertTrue(ok)
+            self.assertIn("http://proxy:8080/ollama-service/api/tags", captured_urls)
+
+    def test_check_ollama_availability_root_requires_ollama_body(self) -> None:
+        """Verify root fallback probe passes only when body contains 'Ollama is running'."""
+
+        class MockResp:
+            """Mock HTTP response."""
+
+            def __init__(self, body: bytes) -> None:
+                """Initialize with response body."""
+                self._body = body
+                self.status = 200
+
+            def __enter__(self) -> "MockResp":
+                """Enter context manager."""
+                return self
+
+            def __exit__(self, *args: Any) -> None:
+                """Exit context manager."""
+                pass
+
+            def read(self) -> bytes:
+                """Return response bytes."""
+                return self._body
+
+        def make_handler(root_body: bytes) -> Callable[..., Any]:
+            """Create urlopen handler that fails /api/tags and returns root_body on root."""
+
+            def _open(req: Any, *args: Any, **kwargs: Any) -> MockResp:
+                """Open request."""
+                url = req.full_url if hasattr(req, "full_url") else str(req)
+                if "/api/tags" in url:
+                    raise urllib.error.URLError("Not found")
+                return MockResp(root_body)
+
+            return _open
+
+        # Generic landing page -> False
+        with patch("urllib.request.urlopen", side_effect=make_handler(b"<html>Nginx</html>")):
+            ok, err = check_ollama_availability("http://localhost:11434/api/chat")
+            self.assertFalse(ok)
+
+        # Genuine Ollama root response -> True
+        with patch("urllib.request.urlopen", side_effect=make_handler(b"Ollama is running")):
+            ok, err = check_ollama_availability("http://localhost:11434/api/chat")
+            self.assertTrue(ok)
+
+    def test_yomitan_cache_handles_null_pos_tags(self) -> None:
+        """Verify load_jpdb_candidates loads cached entries where pos_tags or glosses are null."""
+        tsv_path = os.path.join(self.temp_dir.name, "null_tags.tsv")
+        with open(tsv_path, "w", encoding="utf-8") as f:
+            f.write("単語\tたんご\t1\n")
+
+        cache_path = os.path.join(self.temp_dir.name, "yomitan_api_cache.json")
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "http://127.0.0.1:19633\t単語\tたんご": {
+                    "pos_tags": None,
+                    "english_glosses": None,
+                    "is_uk": None,
+                    "is_particle_or_aux": False,
+                    "verb_class": None,
+                }
+            }, f)
+
+        cands, deferred = load_jpdb_candidates(
+            catalog_path=self.db_path,
+            jpdb_path=tsv_path,
+            mode="all",
+            cache_dir=self.temp_dir.name,
+        )
+        self.assertEqual(deferred, 0)
+        self.assertEqual(len(cands), 1)
+        self.assertEqual(cands[0]["term"], "単語")
+        self.assertEqual(cands[0]["pos_tags"], [])
+
+    def test_run_ollama_compile_aborts_when_empty_candidates_and_missing_file(self) -> None:
+        """Verify run_ollama_compile returns False when candidates are empty and artifact does not exist."""
+        empty_tsv = os.path.join(self.temp_dir.name, "no_candidates.tsv")
+        with open(empty_tsv, "w", encoding="utf-8") as f:
+            f.write("")
+
+        non_existent_out = os.path.join(self.temp_dir.name, "does_not_exist.json")
+        ok = run_ollama_compile(
+            catalog_path=self.db_path,
+            llm_out_path=non_existent_out,
+            jpdb_path=empty_tsv,
+            cache_dir=self.temp_dir.name,
+        )
+        self.assertFalse(ok)
+
+    def test_run_ollama_compile_fails_when_early_exit_flush_raises(self) -> None:
+        """Verify run_ollama_compile returns False when early-exit concept flush raises an error."""
+        llm_out = os.path.join(self.temp_dir.name, "early_exit_fail.json")
+        with open(llm_out, "w", encoding="utf-8") as f:
+            json.dump({
+                "concepts": {"猫": ["存在しない架空のイラスト123"]},
+                "rejected": {},
+            }, f)
+
+        empty_tsv = os.path.join(self.temp_dir.name, "empty.tsv")
+        with open(empty_tsv, "w", encoding="utf-8") as f:
+            f.write("")
+
+        with patch("scripts.build_synonyms._flush_llm_concepts", side_effect=OSError("Disk full")):
+            ok = run_ollama_compile(
+                catalog_path=self.db_path,
+                llm_out_path=llm_out,
+                jpdb_path=empty_tsv,
+                cache_dir=self.temp_dir.name,
+            )
+            self.assertFalse(ok)
 
 
 if __name__ == "__main__":
