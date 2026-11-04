@@ -100,6 +100,7 @@ def _populate_concept_json_mapping(
     # Pre-validate all target keywords against catalog titles
     validation_failures: List[Tuple[str, str]] = []
     headword_failures = 0
+    valid_target_count = 0
     clean_mapping: Dict[str, List[str]] = {}
     for headword, targets in sorted(raw_concepts.items()):
         clean_hw = headword.strip()
@@ -131,6 +132,7 @@ def _populate_concept_json_mapping(
             else:
                 valid_targets.append(clean_tgt)
         if valid_targets:
+            valid_target_count += len(valid_targets)
             merged = clean_mapping.setdefault(clean_hw, [])
             merged.extend(t for t in valid_targets if t not in merged)
 
@@ -149,8 +151,7 @@ def _populate_concept_json_mapping(
             )
             return False
     else:
-        valid_count = sum(len(tgts) for tgts in clean_mapping.values())
-        valid_ratio = (valid_count / total_targets) if total_targets > 0 else 0.0
+        valid_ratio = (valid_target_count / total_targets) if total_targets > 0 else 0.0
         if valid_ratio >= CONCEPT_MIN_VALID_RATIO and len(clean_mapping) >= min_matched and headword_failures == 0:
             for hw, tgt in validation_failures:
                 logger.warning(

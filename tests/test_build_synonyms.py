@@ -1056,6 +1056,26 @@ class TestBuildSynonyms(unittest.TestCase):
         )
         self.assertFalse(ok_non_strict)
 
+    def test_populate_concept_json_mapping_duplicate_targets_valid_ratio_non_strict(self) -> None:
+        """Verify non-strict valid ratio counts all valid targets before clean_mapping deduplication."""
+        # 18 single valid targets + 2 duplicate valid targets = 22 total targets, 20 unique mappings
+        concepts: Dict[str, List[str]] = {f"word_{i}": ["猫"] for i in range(18)}
+        concepts["dup_1"] = ["猫", "猫"]
+        concepts["dup_2"] = ["猫", "猫"]
+
+        json_path = os.path.join(self.temp_dir.name, "dup_targets.json")
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump({"concepts": concepts}, f)
+
+        ok = _populate_concept_json_mapping(
+            catalog_path=self.db_path,
+            json_path=json_path,
+            source="test_dup_source",
+            min_matched=1,
+            strict=False,
+        )
+        self.assertTrue(ok)
+
     def test_populate_kaishi_concepts_distinct_keyword_threshold(self) -> None:
         """Verify Kaishi import checks distinct (img_id, kw) pairs against keyword count threshold."""
         target_db = os.path.join(self.temp_dir.name, "kaishi_threshold.sqlite")
