@@ -1597,17 +1597,24 @@ def load_jpdb_candidates(
             cache_key = f"{yomitan_url}\t{term}\t{reading}"
             cached_val = yomitan_cache.get(cache_key)
             pos_tags_val = cached_val.get("pos_tags") if isinstance(cached_val, dict) else None
-            is_valid_pos_tags = isinstance(pos_tags_val, list) and all(isinstance(tag, str) for tag in pos_tags_val)
+            is_valid_cache_entry = (
+                isinstance(cached_val, dict)
+                and isinstance(pos_tags_val, list)
+                and all(isinstance(tag, str) for tag in pos_tags_val)
+                and isinstance(cached_val.get("is_particle_or_aux"), bool)
+            )
             if cache_key in yomitan_cache and cached_val is None:
                 yomitan_meta = None
-            elif isinstance(cached_val, dict) and is_valid_pos_tags:
+            elif is_valid_cache_entry:
+                assert isinstance(cached_val, dict)
+                assert isinstance(pos_tags_val, list)
                 pos_tags_raw = pos_tags_val
                 glosses_raw = cached_val.get("english_glosses")
                 gloss_list = [str(g) for g in glosses_raw if isinstance(g, str)] if isinstance(glosses_raw, (list, tuple)) else []
                 yomitan_meta = YomitanMetadata(
                     pos_tags=set(pos_tags_raw),
                     is_uk=bool(cached_val.get("is_uk", False)),
-                    is_particle_or_aux=bool(cached_val.get("is_particle_or_aux", False)),
+                    is_particle_or_aux=cached_val["is_particle_or_aux"],
                     verb_class=cached_val.get("verb_class"),
                     english_glosses=gloss_list,
                 )

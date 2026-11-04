@@ -2463,15 +2463,15 @@ class TestBuildSynonyms(unittest.TestCase):
             self.assertTrue(ok)
 
     def test_yomitan_cache_handles_valid_and_malformed_pos_tags(self) -> None:
-        """Verify load_jpdb_candidates loads valid cached lists and refetches on malformed pos_tags."""
+        """Verify load_jpdb_candidates loads valid cached lists and refetches on malformed tags or non-bool flags."""
         tsv_path = os.path.join(self.temp_dir.name, "cache_tags.tsv")
         with open(tsv_path, "w", encoding="utf-8") as f:
-            f.write("有効\tゆうこう\t1\n無効\tむこう\t2\n未定\tみてい\t3\n")
+            f.write("有効\tゆうこう\t1\n無効\tむこう\t2\n未定\tみてい\t3\n保留\tほりゅう\t4\n")
 
         cache_path = os.path.join(self.temp_dir.name, "yomitan_api_cache.json")
         with open(cache_path, "w", encoding="utf-8") as f:
             json.dump({
-                # Valid cached entry with list of strings
+                # Valid cached entry with list of strings and bool flag
                 "http://127.0.0.1:19633\t有効\tゆうこう": {
                     "pos_tags": ["n"],
                     "english_glosses": ["effective"],
@@ -2493,6 +2493,14 @@ class TestBuildSynonyms(unittest.TestCase):
                     "english_glosses": None,
                     "is_uk": None,
                     "is_particle_or_aux": False,
+                    "verb_class": None,
+                },
+                # Malformed entry with string is_particle_or_aux instead of bool
+                "http://127.0.0.1:19633\t保留\tほりゅう": {
+                    "pos_tags": ["n"],
+                    "english_glosses": ["pending"],
+                    "is_uk": False,
+                    "is_particle_or_aux": "false",
                     "verb_class": None,
                 },
             }, f)
@@ -2522,6 +2530,18 @@ class TestBuildSynonyms(unittest.TestCase):
                     ],
                 }
             ],
+            "保留": [
+                {
+                    "headwords": [{"term": "保留", "reading": "ほりゅう"}],
+                    "definitions": [
+                        {
+                            "dictionary": "JMdict (English)",
+                            "tags": [{"name": "n", "category": "partOfSpeech"}],
+                            "entries": ["pending"],
+                        }
+                    ],
+                }
+            ],
         }
 
         def fake_fetch(t: str, yomitan_url: str = "") -> Tuple[Any, str]:
@@ -2536,16 +2556,18 @@ class TestBuildSynonyms(unittest.TestCase):
                 cache_dir=self.temp_dir.name,
             )
             self.assertEqual(deferred, 0)
-            self.assertEqual(len(cands), 3)
+            self.assertEqual(len(cands), 4)
             # 有効 loaded from cache without API call
             self.assertEqual(cands[0]["term"], "有効")
             self.assertEqual(cands[0]["pos_tags"], ["n"])
-            # 無効 and 未定 had malformed pos_tags (5 and [dict]) -> treated as cache misses and refetched
-            self.assertEqual(mock_fetch.call_count, 2)
+            # 無効 (int pos_tags), 未定 (dict in pos_tags), and 保留 (string is_particle_or_aux) are refetched
+            self.assertEqual(mock_fetch.call_count, 3)
             self.assertEqual(cands[1]["term"], "無効")
             self.assertEqual(cands[1]["pos_tags"], ["n"])
             self.assertEqual(cands[2]["term"], "未定")
             self.assertEqual(cands[2]["pos_tags"], ["n"])
+            self.assertEqual(cands[3]["term"], "保留")
+            self.assertEqual(cands[3]["pos_tags"], ["n"])
 
     def test_run_ollama_compile_aborts_when_empty_candidates_and_missing_file(self) -> None:
         """Verify run_ollama_compile returns False when candidates are empty and artifact does not exist."""
