@@ -8,6 +8,7 @@ import itertools
 import json
 import logging
 import os
+import posixpath
 import re
 import sqlite3
 import struct
@@ -15,6 +16,7 @@ import sys
 import time
 import unicodedata
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 from collections import defaultdict
@@ -73,6 +75,7 @@ JPDB_FREQ_RAW_URL = (
     "https://raw.githubusercontent.com/Kuuuube/yomitan-dictionaries/main/data/jpdb_v2.2_freq_list_2024-10-13.csv"
 )
 CONCEPT_MIN_VALID_RATIO = 0.95
+JAPANESE_CHAR_RE = re.compile(r"[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9fff\u3400-\u4dbf々〆〇]")
 
 SEARCH_CATALOG_TOOL = {
     "type": "function",
@@ -183,7 +186,14 @@ def _populate_concept_json_mapping(
     with open(json_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
+    if not isinstance(data, dict):
+        logger.error("Root JSON value in %s is not an object", json_path)
+        return False
+
     raw_concepts: Dict[str, List[str]] = data.get("concepts") or data.get("mappings") or {}
+    if not isinstance(raw_concepts, dict):
+        logger.error("Invalid 'concepts' structure in %s: expected object", json_path)
+        return False
     if not raw_concepts or len(raw_concepts) < min_matched:
         logger.error(
             "Too few concepts (%d < %d) found in %s",
@@ -200,7 +210,17 @@ def _populate_concept_json_mapping(
         logger.error("Catalog index is unavailable at %s", catalog_path)
         return False
 
-    total_targets = sum(len(tgts) for tgts in raw_concepts.values() if isinstance(tgts, (list, tuple)))
+    for hw, tgts in raw_concepts.items():
+        if not isinstance(tgts, (list, tuple)):
+            logger.error(
+                "Invalid concept value for '%s' in %s: expected list, got %s",
+                hw,
+                source,
+                type(tgts).__name__,
+            )
+            return False
+
+    total_targets = sum(len(tgts) for tgts in raw_concepts.values())
 
     # Pre-validate all target keywords against catalog titles
     validation_failures: List[Tuple[str, str]] = []
@@ -1102,7 +1122,9 @@ def fetch_jpdb_freq_github(
         Absolute filesystem path to the downloaded/cached file.
     """
     os.makedirs(cache_dir, exist_ok=True)
-    target_path = os.path.join(cache_dir, "jpdb_v2.2_freq_list_2024-10-13.csv")
+    parsed_path = urllib.parse.urlparse(url).path
+    filename = posixpath.basename(parsed_path) or "jpdb_v2.2_freq_list_2024-10-13.csv"
+    target_path = os.path.join(cache_dir, filename)
     if os.path.isfile(target_path) and os.path.getsize(target_path) > 1000:
         logger.info("Using cached JPDB frequency list at %s", target_path)
         return os.path.abspath(target_path)
@@ -1149,7 +1171,11 @@ def _fetch_yomitan_term_entries(
 
     if not isinstance(data, dict):
         return None, True
-    return data.get("dictionaryEntries", []), True
+    raw_entries = data.get("dictionaryEntries", [])
+    if raw_entries is not None and not isinstance(raw_entries, list):
+        logger.debug("Yomitan returned non-list dictionaryEntries for '%s': %r", term, raw_entries)
+        return None, False
+    return raw_entries if raw_entries is not None else [], True
 
 
 def _parse_yomitan_metadata(
@@ -1167,13 +1193,28 @@ def _parse_yomitan_metadata(
     Returns:
         YomitanMetadata instance if valid entry found, None otherwise.
     """
-    if not dictionary_entries:
+    if not isinstance(dictionary_entries, list) or not dictionary_entries:
         return None
 
     def _is_english_jmdict(d: Dict[str, Any]) -> bool:
         """Return True when the definition comes from an English JMdict dictionary."""
-        dict_name = str(d.get("dictionary", ""))
-        return "JMdict" in dict_name and "Spanish" not in dict_name
+        dict_name = str(d.get("dictionary", "")).strip()
+        if "JMdict" not in dict_name:
+            return False
+        if dict_name in ("JMdict", "JMdict (English)", "JMdict [en]", "JMdict (eng)"):
+            return True
+        non_english = (
+            "Spanish", "French", "German", "Russian", "Dutch", "Hungarian",
+            "Swedish", "Italian", "Portuguese", "Español", "Français", "Deutsch",
+        )
+        if any(lang.lower() in dict_name.lower() for lang in non_english):
+            return False
+        if "english" in dict_name.lower() or dict_name == "JMdict":
+            return True
+        m = re.search(r"\(([^)]+)\)", dict_name)
+        if m and "english" not in m.group(1).lower():
+            return False
+        return True
 
     def _collect_strings(node: Any, out: List[str]) -> None:
         """Append each non-empty trimmed string under a node's content to out."""
@@ -1343,6 +1384,7 @@ def load_jpdb_candidates(
     mode: str = "non-tier1",
     yomitan_url: str = "http://127.0.0.1:19633",
     cache_dir: str = ".catalog_cache",
+    clear_yomitan_cache: bool = False,
 ) -> List[Dict[str, Any]]:
     """Load, filter, and enrich candidates from JPDB v2.2 frequency list.
 
@@ -1353,6 +1395,7 @@ def load_jpdb_candidates(
         mode: Filtering mode: 'non-tier1' (default), 'unmatched', or 'all'.
         yomitan_url: Local Yomitan HTTP API URL.
         cache_dir: Directory to cache Yomitan API responses.
+        clear_yomitan_cache: If True, discards existing cached Yomitan lookups.
 
     Returns:
         List of enriched candidate dictionaries.
@@ -1366,7 +1409,7 @@ def load_jpdb_candidates(
     os.makedirs(cache_dir, exist_ok=True)
     yomitan_cache_path = os.path.join(cache_dir, "yomitan_api_cache.json")
     yomitan_cache: Dict[str, Any] = {}
-    if os.path.isfile(yomitan_cache_path):
+    if not clear_yomitan_cache and os.path.isfile(yomitan_cache_path):
         try:
             with open(yomitan_cache_path, "r", encoding="utf-8") as f:
                 yomitan_cache = json.load(f)
@@ -1390,9 +1433,20 @@ def load_jpdb_candidates(
 
     candidates: List[Dict[str, Any]] = []
     cache_dirty = False
+    consecutive_yomitan_failures = 0
+    max_consecutive_yomitan_failures = 5
 
     with open(jpdb_path, "r", encoding="utf-8") as f:
-        reader: Any = csv.reader(f, delimiter="\t")
+        sample = f.read(4096)
+        f.seek(0)
+        delimiter = "\t"
+        if sample:
+            first_line = sample.splitlines()[0] if sample.splitlines() else ""
+            if "\t" in first_line:
+                delimiter = "\t"
+            elif "," in first_line:
+                delimiter = ","
+        reader: Any = csv.reader(f, delimiter=delimiter)
         first_row = next(reader, None)
         if first_row is not None and first_row[:1] != ["term"]:
             reader = itertools.chain([first_row], reader)
@@ -1427,23 +1481,34 @@ def load_jpdb_candidates(
                         english_glosses=c_val.get("english_glosses", []),
                     )
             else:
-                entries, ok = _fetch_yomitan_term_entries(term, yomitan_url=yomitan_url)
-                if ok:
-                    if entries:
-                        yomitan_meta = _parse_yomitan_metadata(entries, term=term, reading=reading)
-                        if yomitan_meta:
-                            yomitan_cache[cache_key] = {
-                                "pos_tags": sorted(yomitan_meta.pos_tags),
-                                "is_uk": yomitan_meta.is_uk,
-                                "is_particle_or_aux": yomitan_meta.is_particle_or_aux,
-                                "verb_class": yomitan_meta.verb_class,
-                                "english_glosses": yomitan_meta.english_glosses,
-                            }
+                if consecutive_yomitan_failures >= max_consecutive_yomitan_failures:
+                    yomitan_meta = None
+                else:
+                    entries, ok = _fetch_yomitan_term_entries(term, yomitan_url=yomitan_url)
+                    if ok:
+                        consecutive_yomitan_failures = 0
+                        if entries:
+                            yomitan_meta = _parse_yomitan_metadata(entries, term=term, reading=reading)
+                            if yomitan_meta:
+                                yomitan_cache[cache_key] = {
+                                    "pos_tags": sorted(yomitan_meta.pos_tags),
+                                    "is_uk": yomitan_meta.is_uk,
+                                    "is_particle_or_aux": yomitan_meta.is_particle_or_aux,
+                                    "verb_class": yomitan_meta.verb_class,
+                                    "english_glosses": yomitan_meta.english_glosses,
+                                }
+                            else:
+                                yomitan_cache[cache_key] = None
                         else:
                             yomitan_cache[cache_key] = None
+                        cache_dirty = True
                     else:
-                        yomitan_cache[cache_key] = None
-                    cache_dirty = True
+                        consecutive_yomitan_failures += 1
+                        if consecutive_yomitan_failures >= max_consecutive_yomitan_failures:
+                            logger.warning(
+                                "Yomitan API reached %d consecutive failures; skipping further Yomitan lookups for this run.",
+                                max_consecutive_yomitan_failures,
+                            )
 
             if yomitan_meta and yomitan_meta.is_particle_or_aux:
                 continue
@@ -1512,9 +1577,14 @@ def search_catalog_for_agent(
 
     try:
         cur = conn.cursor()
+        escaped_q = (
+            clean_q.replace("\\", "\\\\")
+            .replace("%", "\\%")
+            .replace("_", "\\_")
+        )
         cur.execute(
-            "SELECT id, title, description FROM posts WHERE title LIKE ? OR description LIKE ? LIMIT ?",
-            (f"%{clean_q}%", f"%{clean_q}%", limit),
+            "SELECT id, title, description FROM posts WHERE title LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\' LIMIT ?",
+            (f"%{escaped_q}%", f"%{escaped_q}%", limit),
         )
         posts = []
         for pid, ptitle, pdesc in cur.fetchall():
@@ -1585,7 +1655,7 @@ def run_ollama_agent_batch(
     store: Optional[CatalogStore] = None,
     on_match: Optional[Callable[[str, List[str]], None]] = None,
     on_reject: Optional[Callable[[str, str], None]] = None,
-) -> Dict[str, List[str]]:
+) -> Tuple[Dict[str, List[str]], int]:
     """Run interactive agentic search loop via Ollama /api/chat with search_catalog tool.
 
     Args:
@@ -1600,16 +1670,17 @@ def run_ollama_agent_batch(
         on_reject: Optional callback invoked with (term, reason) when a candidate is rejected or unverified.
 
     Returns:
-        Dict mapping validated Japanese terms to list of catalog-verified Japanese targets.
+        Tuple of (mappings_dict, failed_candidates_count).
     """
     active_store = store or CatalogStore(catalog_path)
     index = active_store.get_index()
     if index is None:
         logger.error("Catalog index is unavailable at %s", catalog_path)
-        return {}
+        return {}, 0
 
     conn = sqlite3.connect(_readonly_catalog_uri(catalog_path), uri=True)
     mappings: Dict[str, List[str]] = {}
+    failed_candidates = 0
 
     try:
         total = len(candidates)
@@ -1657,15 +1728,18 @@ def run_ollama_agent_batch(
                             resp_data = json.loads(resp.read().decode("utf-8"))
                     except Exception as exc:
                         logger.warning("Ollama API request failed for '%s': %s", term, exc)
+                        failed_candidates += 1
                         break
 
                     if not isinstance(resp_data, dict):
                         logger.warning("Malformed Ollama response for '%s' (not a dict); skipping", term)
+                        failed_candidates += 1
                         break
 
                     msg = resp_data.get("message")
                     if not isinstance(msg, dict):
                         logger.warning("Malformed Ollama response for '%s' (message missing or not a dict); skipping", term)
+                        failed_candidates += 1
                         break
 
                     messages.append(msg)
@@ -1691,7 +1765,7 @@ def run_ollama_agent_batch(
                                 raw_queries = [raw_queries]
                             elif not isinstance(raw_queries, list):
                                 raw_queries = []
-                            queries = [str(q).strip() for q in raw_queries if str(q).strip()]
+                            queries = [str(q).strip() for q in raw_queries if str(q).strip()][:3]
                             tool_results = []
                             for q in queries:
                                 tool_results.append(
@@ -1723,7 +1797,7 @@ def run_ollama_agent_batch(
                             valid_targets = []
                             for t in targets:
                                 clean_t = str(t).strip()
-                                if not clean_t:
+                                if not clean_t or not JAPANESE_CHAR_RE.search(clean_t):
                                     continue
                                 results = filter_relevant_illustrations(index.search(clean_t), clean_t)
                                 if has_title_illustration_match(results, clean_t):
@@ -1741,17 +1815,21 @@ def run_ollama_agent_batch(
                                     term,
                                 )
                             else:
-                                reason = parsed.get("reason", "non-visualizable or unverified in catalog")
+                                if parsed.get("visualizable"):
+                                    reason = f"unverified in catalog: proposed targets {parsed.get('targets', [])!r}"
+                                else:
+                                    reason = str(parsed.get("reason", "non-visualizable"))
                                 logger.info("Rejected '%s' (%s)", term, reason)
                                 if on_reject:
                                     on_reject(term, reason)
                         break
             except Exception as cand_err:
                 logger.warning("Unexpected error compiling candidate '%s': %s", term, cand_err)
+                failed_candidates += 1
     finally:
         conn.close()
 
-    return mappings
+    return mappings, failed_candidates
 
 
 def _flush_llm_concepts(
@@ -1797,6 +1875,7 @@ def run_ollama_compile(
     llm_out_path: str = DEFAULT_LLM_CONCEPTS_PATH,
     cache_dir: str = ".catalog_cache",
     terms: Optional[str] = None,
+    clear_yomitan_cache: bool = False,
 ) -> bool:
     """Run the complete build-time JPDB + Yomitan + Ollama visual concept compilation pipeline.
 
@@ -1811,10 +1890,16 @@ def run_ollama_compile(
         llm_out_path: Output JSON path to save compiled concepts.
         cache_dir: Directory for cached files.
         terms: Optional comma-separated explicit terms to compile instead of JPDB list.
+        clear_yomitan_cache: If True, discards existing cached Yomitan lookups.
 
     Returns:
         True if concepts were compiled and saved successfully, False otherwise.
     """
+    store = CatalogStore(catalog_path)
+    if store.get_index() is None:
+        logger.error("Catalog index unavailable at %s; aborting Ollama compilation", catalog_path)
+        return False
+
     if terms:
         raw_list = [t.strip() for t in terms.split(",") if t.strip()]
         candidates: List[Dict[str, Any]] = []
@@ -1844,6 +1929,7 @@ def run_ollama_compile(
             mode=mode,
             yomitan_url=yomitan_url,
             cache_dir=cache_dir,
+            clear_yomitan_cache=clear_yomitan_cache,
         )
         logger.info("Loaded %d %s candidates from JPDB v2.2 for compilation", len(candidates), mode)
     if not candidates:
@@ -1856,14 +1942,26 @@ def run_ollama_compile(
         try:
             with open(llm_out_path, "r", encoding="utf-8") as f:
                 prev_data = json.load(f)
-                existing_concepts = prev_data.get("concepts") or prev_data.get("mappings") or {}
-                raw_rej = prev_data.get("rejected", {})
-                if isinstance(raw_rej, dict):
-                    existing_rejected = raw_rej
-                elif isinstance(raw_rej, list):
-                    existing_rejected = {k: "rejected" for k in raw_rej}
+            if not isinstance(prev_data, dict):
+                logger.error("Root JSON value in %s is not an object; refusing to overwrite", llm_out_path)
+                return False
+            raw_concepts = prev_data.get("concepts") or prev_data.get("mappings") or {}
+            if not isinstance(raw_concepts, dict):
+                logger.error("Invalid 'concepts' structure in %s; refusing to overwrite", llm_out_path)
+                return False
+            existing_concepts = raw_concepts
+            raw_rej = prev_data.get("rejected", {})
+            if isinstance(raw_rej, dict):
+                existing_rejected = raw_rej
+            elif isinstance(raw_rej, list):
+                existing_rejected = {k: "rejected" for k in raw_rej}
         except Exception as exc:
-            logger.warning("Could not read previous LLM concepts from %s: %s", llm_out_path, exc)
+            logger.error(
+                "Could not read previous LLM concepts from %s: %s; refusing to overwrite",
+                llm_out_path,
+                exc,
+            )
+            return False
 
     remaining_candidates = [
         c for c in candidates
@@ -1884,7 +1982,10 @@ def run_ollama_compile(
     def _handle_match(term: str, targets: List[str]) -> None:
         """Persist newly compiled concept mapping immediately to disk."""
         existing_concepts[term] = targets
-        _flush_llm_concepts(existing_concepts, llm_out_path, ollama_model, rejected_map=existing_rejected)
+        try:
+            _flush_llm_concepts(existing_concepts, llm_out_path, ollama_model, rejected_map=existing_rejected)
+        except Exception as exc:
+            logger.warning("Interim write failed for '%s': %s", term, exc)
         logger.info(
             "Saved concept '%s' -> %s to %s (total: %d concepts)",
             term,
@@ -1896,10 +1997,13 @@ def run_ollama_compile(
     def _handle_reject(term: str, reason: str) -> None:
         """Persist rejected term immediately to disk."""
         existing_rejected[term] = reason
-        _flush_llm_concepts(existing_concepts, llm_out_path, ollama_model, rejected_map=existing_rejected)
+        try:
+            _flush_llm_concepts(existing_concepts, llm_out_path, ollama_model, rejected_map=existing_rejected)
+        except Exception as exc:
+            logger.warning("Interim write failed for rejection '%s': %s", term, exc)
 
     prev_rej_count = len(existing_rejected)
-    compiled = run_ollama_agent_batch(
+    compiled, failed_count = run_ollama_agent_batch(
         candidates=remaining_candidates,
         catalog_path=catalog_path,
         ollama_url=ollama_url,
@@ -1907,12 +2011,25 @@ def run_ollama_compile(
         on_match=_handle_match,
         on_reject=_handle_reject,
     )
+    if failed_count > 0:
+        logger.error(
+            "Ollama compilation incomplete: %d candidates encountered request or network failures",
+            failed_count,
+        )
+        return False
+
     if not compiled and len(existing_rejected) == prev_rej_count:
         logger.error(
             "Ollama compilation produced 0 new mappings or rejections for %d candidates; keeping previous %s",
             len(remaining_candidates),
             llm_out_path,
         )
+        return False
+
+    try:
+        _flush_llm_concepts(existing_concepts, llm_out_path, ollama_model, rejected_map=existing_rejected)
+    except Exception as exc:
+        logger.error("Failed to write final compiled concepts artifact to %s: %s", llm_out_path, exc)
         return False
 
     logger.info(
@@ -1993,6 +2110,74 @@ def validate_catalog_synonyms(catalog_path: Optional[str] = None) -> bool:
         )
 
     return all_valid
+
+
+def prune_stale_synonyms(
+    catalog_path: Optional[str] = None,
+    source: str = "llm_concept",
+) -> int:
+    """Prune stale rows for a source whose target has 0 title illustration matches in catalog.
+
+    Args:
+        catalog_path: Filesystem path to catalog.sqlite.
+        source: Synonym source name to prune (e.g. 'llm_concept').
+
+    Returns:
+        Number of stale rows removed from the synonyms table, or -1 if index unavailable.
+    """
+    target_catalog = catalog_path or DEFAULT_CATALOG_PATH
+    store = CatalogStore(target_catalog) if catalog_path else default_store()
+    index = store.get_index()
+    if index is None:
+        logger.error("Catalog index unavailable for pruning at %s", target_catalog)
+        return -1
+
+    conn = sqlite3.connect(target_catalog)
+    pruned_count = 0
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='synonyms'")
+        if cur.fetchone() is None:
+            logger.info("No synonyms table found in %s; nothing to prune.", target_catalog)
+            return 0
+
+        cur.execute("SELECT DISTINCT target FROM synonyms WHERE source = ?", (source,))
+        distinct_targets = [row[0] for row in cur.fetchall()]
+        stale_targets: List[str] = []
+        for tgt in distinct_targets:
+            results = filter_relevant_illustrations(index.search(tgt), tgt)
+            if not has_title_illustration_match(results, tgt):
+                stale_targets.append(tgt)
+
+        if not stale_targets:
+            logger.info("No stale %s synonyms found to prune in %s.", source, target_catalog)
+            return 0
+
+        logger.info(
+            "Pruning %d stale targets (%s) from %s...",
+            len(stale_targets),
+            source,
+            target_catalog,
+        )
+        cur.executemany(
+            "DELETE FROM synonyms WHERE source = ? AND target = ?",
+            [(source, tgt) for tgt in stale_targets],
+        )
+        pruned_count = cur.rowcount
+        cur.execute(
+            "INSERT OR REPLACE INTO meta (key, value) "
+            "SELECT 'synonym_sources', COALESCE(group_concat(source, ','), '') "
+            "FROM (SELECT DISTINCT source FROM synonyms ORDER BY source)"
+        )
+        conn.commit()
+        logger.info("Pruned %d stale %s rows from %s", pruned_count, source, target_catalog)
+    finally:
+        conn.close()
+
+    if pruned_count > 0:
+        update_catalog_sha256(target_catalog)
+
+    return pruned_count
 
 
 def main(argv: Sequence[str]) -> int:
@@ -2111,8 +2296,25 @@ def main(argv: Sequence[str]) -> int:
         action="store_true",
         help="Validate all synonyms in catalog.sqlite against illustration titles",
     )
+    parser.add_argument(
+        "--clear-yomitan-cache",
+        action="store_true",
+        help="Clear/discard local cached Yomitan term lookups and re-fetch from API",
+    )
+    parser.add_argument(
+        "--prune-stale",
+        metavar="SOURCE",
+        help="Prune stale synonym rows for specified source that lack catalog title matches",
+    )
 
     args = parser.parse_args(argv)
+
+    if args.prune_stale:
+        pruned = prune_stale_synonyms(catalog_path=args.catalog, source=args.prune_stale)
+        if pruned < 0:
+            logger.error("Failed to prune stale synonyms for source '%s'.", args.prune_stale)
+            return 1
+        logger.info("Pruned %d stale rows for source '%s'.", pruned, args.prune_stale)
 
     if args.manual:
         ok = populate_manual_concepts(
@@ -2132,15 +2334,6 @@ def main(argv: Sequence[str]) -> int:
         if not ok:
             return 1
 
-    if args.llm:
-        ok = populate_llm_concepts(
-            catalog_path=args.catalog,
-            llm_json_path=args.llm,
-            strict=args.strict,
-        )
-        if not ok:
-            return 1
-
     if args.ollama_compile:
         ok = run_ollama_compile(
             catalog_path=args.catalog,
@@ -2153,6 +2346,16 @@ def main(argv: Sequence[str]) -> int:
             llm_out_path=args.llm_out,
             cache_dir=args.cache_dir,
             terms=args.terms,
+            clear_yomitan_cache=args.clear_yomitan_cache,
+        )
+        if not ok:
+            return 1
+
+    if args.llm:
+        ok = populate_llm_concepts(
+            catalog_path=args.catalog,
+            llm_json_path=args.llm,
+            strict=args.strict,
         )
         if not ok:
             return 1
@@ -2215,6 +2418,7 @@ def main(argv: Sequence[str]) -> int:
         and not args.llm
         and not args.ollama_compile
         and not args.validate
+        and not args.prune_stale
     ):
         parser.print_help()
 

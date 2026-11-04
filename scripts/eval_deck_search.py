@@ -617,7 +617,7 @@ def run_evaluation(
         print("-" * 72)
         print(f"{'1. Legacy (Naive Direct Query)':<38s} | {cat_leg_baseline:4d} / {valid_total:<5d} | {leg_pct:6.2f}% | —")
         print(f"{'2. Tier 1 (Syntactic & Script Norm)':<38s} | {t1_hits:4d} / {valid_total:<5d} | {t1_pct:6.2f}% | {delta_t1:+5.2f}% ({t1_hits - cat_leg_baseline:+d} cards)")
-        print(f"{'3. Tier 2 (Japanese Readings/Deinf)':<38s} | {t2_no_bi_hits:4d} / {valid_total:<5d} | {t2_pct:6.2f}% | {delta_t2:+5.2f}% ({t2_no_bi_hits - t1_hits:+d} cards)")
+        print(f"{'3. Tier 2 (Readings/Deinf/Concepts)':<38s} | {t2_no_bi_hits:4d} / {valid_total:<5d} | {t2_pct:6.2f}% | {delta_t2:+5.2f}% ({t2_no_bi_hits - t1_hits:+d} cards)")
         print(f"{'4. Bilingual Gloss (Definition Bridge)':<38s} | {cat_hits:4d} / {valid_total:<5d} | {full_pct:6.2f}% | {delta_bi:+5.2f}% ({cat_hits - t2_no_bi_hits:+d} cards)")
         print("-" * 72)
         print(f"Net Improvement: {cat_hits - cat_leg_baseline:+d} cards ({net_delta:+5.2f}% recall gain over Legacy)")

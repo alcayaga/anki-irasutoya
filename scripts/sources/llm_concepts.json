@@ -4,6 +4,14 @@
   "model": "gemma4:31b",
   "generated_at": "2026-11-03",
   "concepts": {
+    "いう": [
+      "会話",
+      "話す"
+    ],
+    "いけない": [
+      "「ダメ」のポーズをする人のイラスト",
+      "叱られる部下"
+    ],
     "傷薬": [
       "薬のイラスト「塗り薬」",
       "万能薬"
@@ -20,5 +28,27 @@
       "保安林の看板"
     ]
   },
-  "rejected": {}
+  "rejected": {
+    "いや": "The term 'いや' in this context is an interjection expressing surprise or admiration. As a functional discourse marker/exclamation, it does not have a concrete visual representation of its own, and mapping it to general 'surprise' illustrations would be too broad and imprecise.",
+    "こういう": "The term 'こういう' (such, this sort of) is a demonstrative adjective used to refer to things previously mentioned or currently being shown. It is a functional linguistic pointer and does not have a concrete, singular visual representation.",
+    "ことがある": "The term 'ことがある' is a grammatical construction used to express experience or occurrence. It is a functional linguistic pattern and does not have a concrete, singular visual representation in the Irasutoya catalog.",
+    "ことができる": "The term 'ことができる' is a grammatical construction indicating ability or possibility. It is a functional phrase and does not have a concrete, singular visual representation in the Irasutoya catalog.",
+    "ことになる": "The term 'ことになる' is a grammatical construction indicating that something has been decided or arranged. It is a functional expression of result or decision and does not have a concrete, singular visual representation.",
+    "このまま": "The term 'このまま' (as is / like this) is a functional/abstract adverbial phrase describing a state of continuity or manner. It does not have a concrete, singular visual representation in the Irasutoya catalog.",
+    "すぐに": "The term 'すぐに' (immediately/right away) is a temporal adverb describing the timing of an action. It is an abstract functional concept that cannot be represented by a single, concrete visual object or a consistent scene without specific context (e.g., 'hurrying' or 'running').",
+    "そういう": "The term 'そういう' (such, like that) is a demonstrative adjective used to refer to previously mentioned things or qualities. It is a functional linguistic pointer and does not have a concrete, singular visual representation.",
+    "そのまま": "The term 'そのまま' (as is, without change) is a functional adverb/noun describing a state or manner of action. It does not have a concrete, singular visual representation. While it appears in descriptions of other illustrations (e.g., falling asleep 'as is'), it is not a visual concept itself.",
+    "でもない": "The term 'でもない' is a grammatical expression of negation or exclusion ('is not... either', 'neither... nor'). It is a functional linguistic element and does not have a concrete, singular visual representation.",
+    "となる": "The term 'となる' is a functional verb meaning 'to become' or 'to be'. It describes a state of change or a result, which is a purely abstract grammatical concept and cannot be represented by a single, concrete visual image in the Irasutoya style.",
+    "どういう": "The term 'どういう' is an interrogative adjective meaning 'what kind of' or 'what sort of'. It is a functional linguistic expression used to ask for clarification or description and does not have a concrete, singular visual representation.",
+    "どこか": "The term 'どこか' (somewhere/anywhere) is a functional adverb/pronoun indicating an unspecified location. It is an abstract spatial concept that cannot be represented by a single concrete image without relying on a specific context (like searching for something or being lost), which would change the meaning to those specific actions rather than the word 'somewhere' itself.",
+    "やめる": "The term 'やめる' (to stop/quit) is a general functional verb describing the cessation of an action. It is too abstract to be represented by a single, concrete illustration without a specific object or context (e.g., quitting smoking, quitting a job).",
+    "ようにする": "The term 'ようにする' is a grammatical construction expressing effort, intention, or a goal to make something happen. It is a functional/abstract concept and does not have a specific, concrete visual representation.",
+    "ようになる": "The term 'ようになる' is a grammatical construction indicating a change in state or the acquisition of a new ability. It is a functional/abstract concept that cannot be represented by a single, concrete visual image.",
+    "よりも": "The term 'よりも' is a comparative particle used for grammar and logic; it has no concrete visual representation in an illustration dictionary.",
+    "絶対": "The term '絶対' (absolute/definitely) is an abstract adverb or adjective describing certainty or conditionality, which does not have a concrete, singular visual representation in the Irasutoya style.",
+    "自分で": "The term '自分で' (by oneself/on one's own) is a functional adverbial phrase describing the manner of an action. It is an abstract concept that cannot be represented by a single, concrete visual object or a specific scene without an accompanying action (e.g., 'cooking by oneself', 'studying by oneself').",
+    "誰も": "The term '誰も' (daremo) is a pronoun/adverb meaning 'everyone' or 'no one' depending on the context. It is a functional linguistic element used to quantify people and does not have a single, concrete visual representation. While one could illustrate 'a crowd' or 'an empty room', these are specific scenarios rather than a direct visualization of the word itself.",
+    "近づく": "The term '近づく' (to approach) is a functional verb describing a movement or a state of change. While there are specific scenarios where someone is approaching (e.g., being cornered), there is no generic, representative illustration for the abstract action of 'approaching' itself in the Irasutoya catalog."
+  }
 }

@@ -37,7 +37,7 @@ def is_grammar_sense(tags: Set[str]) -> bool:
         return False
     # If the only grammar tags are affixes (suf, pref), check if any content POS is present
     if grammar <= AFFIX_POS_TAGS:
-        content = {t for t in (tags - GRAMMAR_POS_TAGS) if t == "n" or t.startswith(("n-", "v", "adj", "adv"))}
+        content = {t for t in (tags - GRAMMAR_POS_TAGS) if t in ("n", "pn") or t.startswith(("n-", "v", "adj", "adv"))}
         return not bool(content)
     return True
 

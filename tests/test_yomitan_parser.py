@@ -669,6 +669,23 @@ class TestYomitanParser(unittest.TestCase):
         meta = parse_yomitan_html(html)
         self.assertEqual(meta.english_glosses, ["first definition", "second definition"])
 
+    def test_is_grammar_sense_with_pronoun_and_affixes(self) -> None:
+        """Verify is_grammar_sense treats pn as content POS, preserving lexical affix combinations."""
+        from addon.yomitan_parser import is_grammar_sense
+
+        # Standalone affix is grammar sense
+        self.assertTrue(is_grammar_sense({"pref"}))
+        self.assertTrue(is_grammar_sense({"suf"}))
+        # Affix with noun is content sense (not grammar sense)
+        self.assertFalse(is_grammar_sense({"pref", "n"}))
+        # Affix with pronoun is content sense (not grammar sense)
+        self.assertFalse(is_grammar_sense({"pref", "pn"}))
+        self.assertFalse(is_grammar_sense({"suf", "pn"}))
+        # Particles and copulas remain grammar senses regardless
+        self.assertTrue(is_grammar_sense({"prt", "n"}))
+        self.assertTrue(is_grammar_sense({"cop"}))
+        self.assertFalse(is_grammar_sense({"n"}))
+
 
 if __name__ == "__main__":
     unittest.main()
