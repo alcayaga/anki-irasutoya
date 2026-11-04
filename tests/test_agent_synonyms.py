@@ -120,6 +120,20 @@ class TestYomitanJpdbCandidates(unittest.TestCase):
             mock_url_again.assert_not_called()
         self.assertEqual(path_cached, os.path.abspath(cached_file))
 
+    def test_fetch_jpdb_freq_github_accepts_headerless_data_row(self) -> None:
+        """Verify fetch_jpdb_freq_github reuses cache for valid headerless frequency files."""
+        cache_dir = os.path.join(self.temp_dir.name, "cache_headerless")
+        os.makedirs(cache_dir, exist_ok=True)
+        cached_file = os.path.join(cache_dir, "jpdb_v2.2_freq_list_2024-10-13.csv")
+        # Headerless row with term, reading, rank (numeric)
+        with open(cached_file, "w", encoding="utf-8") as f:
+            f.write("猫\tねこ\t1\t1\n" * 100)
+
+        with patch("urllib.request.urlopen") as mock_url:
+            path = fetch_jpdb_freq_github(cache_dir=cache_dir)
+            mock_url.assert_not_called()
+        self.assertEqual(path, os.path.abspath(cached_file))
+
     def test_query_yomitan_term_metadata(self) -> None:
         """Verify query_yomitan_term_metadata extracts structured JMdict POS and glosses."""
         mock_resp_data = {

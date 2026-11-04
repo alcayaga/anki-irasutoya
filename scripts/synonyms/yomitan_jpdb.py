@@ -28,6 +28,26 @@ JPDB_FREQ_RAW_URL = (
 )
 
 
+def _is_valid_jpdb_header_or_row(first_line: str) -> bool:
+    """Validate whether the first line represents a valid JPDB header or data row.
+
+    Args:
+        first_line: First line from the cached JPDB frequency file.
+
+    Returns:
+        True if the line starts with a standard 'term' header or has valid delimited columns.
+    """
+    if first_line.startswith(("term\t", "term,")):
+        return True
+    delim = "\t" if "\t" in first_line else ("," if "," in first_line else None)
+    if not delim:
+        return False
+    cols = [c.strip() for c in first_line.split(delim)]
+    if len(cols) >= 3 and cols[2].isdigit():
+        return True
+    return False
+
+
 def fetch_jpdb_freq_github(
     cache_dir: str = ".catalog_cache",
     url: str = JPDB_FREQ_RAW_URL,
@@ -49,11 +69,11 @@ def fetch_jpdb_freq_github(
         try:
             with open(target_path, "r", encoding="utf-8-sig") as check_f:
                 header = check_f.readline()
-                if header.startswith(("term\t", "term,")):
+                if _is_valid_jpdb_header_or_row(header):
                     logger.info("Using cached JPDB frequency list at %s", target_path)
                     return os.path.abspath(target_path)
                 logger.warning(
-                    "Cached JPDB file at %s has invalid header %r; re-downloading...",
+                    "Cached JPDB file at %s has invalid header/row %r; re-downloading...",
                     target_path,
                     header[:50],
                 )
