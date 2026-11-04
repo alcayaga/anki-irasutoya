@@ -407,10 +407,11 @@ def populate_kaishi_concepts(
                 existing_syns,
             )
             return False
-        if existing_kws > 0 and len(image_keywords) < existing_kws * 0.8:
+        distinct_kws_count = len({(img_id, kw) for img_id, kw, _ in image_keywords})
+        if existing_kws > 0 and distinct_kws_count < existing_kws * 0.8:
             logger.error(
-                "Kaishi import produced %d keywords, which is significantly fewer than %d existing keywords; refusing replacement.",
-                len(image_keywords),
+                "Kaishi import produced %d distinct keywords, which is significantly fewer than %d existing keywords; refusing replacement.",
+                distinct_kws_count,
                 existing_kws,
             )
             return False
