@@ -2466,12 +2466,12 @@ class TestBuildSynonyms(unittest.TestCase):
         """Verify load_jpdb_candidates loads valid cached lists and refetches on malformed pos_tags."""
         tsv_path = os.path.join(self.temp_dir.name, "cache_tags.tsv")
         with open(tsv_path, "w", encoding="utf-8") as f:
-            f.write("有効\tゆうこう\t1\n無効\tむこう\t2\n")
+            f.write("有効\tゆうこう\t1\n無効\tむこう\t2\n未定\tみてい\t3\n")
 
         cache_path = os.path.join(self.temp_dir.name, "yomitan_api_cache.json")
         with open(cache_path, "w", encoding="utf-8") as f:
             json.dump({
-                # Valid cached entry with list pos_tags
+                # Valid cached entry with list of strings
                 "http://127.0.0.1:19633\t有効\tゆうこう": {
                     "pos_tags": ["n"],
                     "english_glosses": ["effective"],
@@ -2479,7 +2479,7 @@ class TestBuildSynonyms(unittest.TestCase):
                     "is_particle_or_aux": False,
                     "verb_class": None,
                 },
-                # Malformed entry with non-list pos_tags (e.g. int or None)
+                # Malformed entry with non-list pos_tags (e.g. int)
                 "http://127.0.0.1:19633\t無効\tむこう": {
                     "pos_tags": 5,
                     "english_glosses": None,
@@ -2487,22 +2487,48 @@ class TestBuildSynonyms(unittest.TestCase):
                     "is_particle_or_aux": False,
                     "verb_class": None,
                 },
+                # Malformed entry with list containing unhashable dicts
+                "http://127.0.0.1:19633\t未定\tみてい": {
+                    "pos_tags": [{"name": "n"}],
+                    "english_glosses": None,
+                    "is_uk": None,
+                    "is_particle_or_aux": False,
+                    "verb_class": None,
+                },
             }, f)
 
-        mock_entries = [
-            {
-                "headwords": [{"term": "無効", "reading": "むこう"}],
-                "definitions": [
-                    {
-                        "dictionary": "JMdict (English)",
-                        "tags": [{"name": "n", "category": "partOfSpeech"}],
-                        "entries": ["invalid"],
-                    }
-                ],
-            }
-        ]
+        mock_entries_map = {
+            "無効": [
+                {
+                    "headwords": [{"term": "無効", "reading": "むこう"}],
+                    "definitions": [
+                        {
+                            "dictionary": "JMdict (English)",
+                            "tags": [{"name": "n", "category": "partOfSpeech"}],
+                            "entries": ["invalid"],
+                        }
+                    ],
+                }
+            ],
+            "未定": [
+                {
+                    "headwords": [{"term": "未定", "reading": "みてい"}],
+                    "definitions": [
+                        {
+                            "dictionary": "JMdict (English)",
+                            "tags": [{"name": "n", "category": "partOfSpeech"}],
+                            "entries": ["undecided"],
+                        }
+                    ],
+                }
+            ],
+        }
 
-        with patch("scripts.build_synonyms._fetch_yomitan_term_entries", return_value=(mock_entries, "ok")) as mock_fetch:
+        def fake_fetch(t: str, yomitan_url: str = "") -> Tuple[Any, str]:
+            """Return mock entries per term."""
+            return mock_entries_map.get(t, []), "ok"
+
+        with patch("scripts.build_synonyms._fetch_yomitan_term_entries", side_effect=fake_fetch) as mock_fetch:
             cands, deferred = load_jpdb_candidates(
                 catalog_path=self.db_path,
                 jpdb_path=tsv_path,
@@ -2510,14 +2536,16 @@ class TestBuildSynonyms(unittest.TestCase):
                 cache_dir=self.temp_dir.name,
             )
             self.assertEqual(deferred, 0)
-            self.assertEqual(len(cands), 2)
+            self.assertEqual(len(cands), 3)
             # 有効 loaded from cache without API call
             self.assertEqual(cands[0]["term"], "有効")
             self.assertEqual(cands[0]["pos_tags"], ["n"])
-            # 無効 had malformed pos_tags=5 -> treated as cache miss and refetched via API
-            mock_fetch.assert_called_once_with("無効", yomitan_url="http://127.0.0.1:19633")
+            # 無効 and 未定 had malformed pos_tags (5 and [dict]) -> treated as cache misses and refetched
+            self.assertEqual(mock_fetch.call_count, 2)
             self.assertEqual(cands[1]["term"], "無効")
             self.assertEqual(cands[1]["pos_tags"], ["n"])
+            self.assertEqual(cands[2]["term"], "未定")
+            self.assertEqual(cands[2]["pos_tags"], ["n"])
 
     def test_run_ollama_compile_aborts_when_empty_candidates_and_missing_file(self) -> None:
         """Verify run_ollama_compile returns False when candidates are empty and artifact does not exist."""
