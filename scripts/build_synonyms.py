@@ -1547,10 +1547,10 @@ def load_jpdb_candidates(
                 continue
 
             yomitan_meta: Optional[YomitanMetadata] = None
-            cache_key = f"{term}\t{reading}"
-            if cache_key in yomitan_cache:
+            cache_key = f"{yomitan_url}\t{term}\t{reading}"
+            if cache_key in yomitan_cache and (yomitan_cache[cache_key] is None or isinstance(yomitan_cache[cache_key], dict)):
                 c_val = yomitan_cache[cache_key]
-                if c_val:
+                if isinstance(c_val, dict):
                     yomitan_meta = YomitanMetadata(
                         pos_tags=set(c_val.get("pos_tags", [])),
                         is_uk=c_val.get("is_uk", False),
@@ -1880,12 +1880,19 @@ def run_ollama_agent_batch(
                         content = msg.get("content", "")
                         parsed = _parse_llm_json_response(content)
                         matched = False
-                        if parsed and parsed.get("visualizable"):
+                        is_malformed = False
+                        if parsed and parsed.get("visualizable") is True:
                             targets = parsed.get("targets", [])
                             if isinstance(targets, str):
                                 targets = [targets]
                             elif not isinstance(targets, list):
-                                targets = []
+                                logger.warning(
+                                    "Malformed non-list targets in visualizable response for '%s': %r; skipping rejection to allow retry",
+                                    term,
+                                    targets,
+                                )
+                                is_malformed = True
+                                break
                             valid_targets = []
                             for t in targets:
                                 clean_t = str(t).strip()
@@ -1900,14 +1907,14 @@ def run_ollama_agent_batch(
                                 if on_match:
                                     on_match(term, valid_targets)
                                 matched = True
-                        if not matched:
+                        if not matched and not is_malformed:
                             if not parsed:
                                 logger.warning(
                                     "Unparsable model response for '%s'; skipping rejection to allow retry on next run",
                                     term,
                                 )
                             else:
-                                if parsed.get("visualizable"):
+                                if parsed.get("visualizable") is True:
                                     reason = f"unverified in catalog: proposed targets {parsed.get('targets', [])!r}"
                                 else:
                                     reason = str(parsed.get("reason", "non-visualizable"))
@@ -2059,9 +2066,6 @@ def run_ollama_compile(
                 deferred_count,
             )
             return False
-    if not candidates:
-        logger.warning("No candidates found to compile.")
-        return True
 
     existing_concepts: Dict[str, List[str]] = {}
     existing_rejected: Dict[str, str] = {}
@@ -2122,6 +2126,28 @@ def run_ollama_compile(
             )
             return False
 
+    def _pending_stale() -> Dict[str, Any]:
+        """Return unevaluated stale concepts outside the active 'concepts' key."""
+        return {
+            t: v for t, v in stale_raw_concepts.items()
+            if t not in existing_concepts and t not in existing_rejected
+        }
+
+    if not candidates:
+        logger.warning("No candidates found to compile.")
+        if stale_raw_concepts:
+            try:
+                _flush_llm_concepts(
+                    existing_concepts,
+                    llm_out_path,
+                    ollama_model,
+                    rejected_map=existing_rejected,
+                    stale_map=_pending_stale(),
+                )
+            except Exception as exc:
+                logger.warning("Failed to persist revalidated concepts on empty candidates exit to %s: %s", llm_out_path, exc)
+        return True
+
     remaining_candidates: List[Dict[str, Any]] = []
     seen_terms: Set[str] = set()
     force_explicit = bool(terms)
@@ -2144,16 +2170,20 @@ def run_ollama_compile(
     )
     if not remaining_candidates:
         logger.info("All %d candidates already evaluated. Nothing to do.", len(candidates))
+        if stale_raw_concepts:
+            try:
+                _flush_llm_concepts(
+                    existing_concepts,
+                    llm_out_path,
+                    ollama_model,
+                    rejected_map=existing_rejected,
+                    stale_map=_pending_stale(),
+                )
+            except Exception as exc:
+                logger.warning("Failed to persist revalidated concepts on early exit to %s: %s", llm_out_path, exc)
         return True
 
     evaluated_count = 0
-
-    def _pending_stale() -> Dict[str, Any]:
-        """Return unevaluated stale concepts outside the active 'concepts' key."""
-        return {
-            t: v for t, v in stale_raw_concepts.items()
-            if t not in existing_concepts and t not in existing_rejected
-        }
 
     def _handle_match(term: str, targets: List[str]) -> None:
         """Persist newly compiled concept mapping immediately to disk."""

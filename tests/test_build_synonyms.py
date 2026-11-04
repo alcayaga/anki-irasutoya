@@ -1636,6 +1636,34 @@ class TestBuildSynonyms(unittest.TestCase):
             )
             self.assertEqual(len(cands), 1)
 
+    def test_yomitan_cache_handles_corrupt_entry(self) -> None:
+        """Verify load_jpdb_candidates treats non-dict cached entries as cache misses."""
+        tsv_path = os.path.join(self.temp_dir.name, "sample_corrupt.tsv")
+        with open(tsv_path, "w", encoding="utf-8") as f:
+            f.write("term\treading\tfrequency\n猫\tねこ\t1\n")
+
+        cache_dir = os.path.join(self.temp_dir.name, "cache_corrupt_entry")
+        os.makedirs(cache_dir, exist_ok=True)
+        cache_file = os.path.join(cache_dir, "yomitan_api_cache.json")
+        with open(cache_file, "w", encoding="utf-8") as f:
+            json.dump({"http://127.0.0.1:19633\t猫\tねこ": ["invalid", "corrupt"]}, f)
+
+        mock_entries = [
+            {
+                "headwords": [{"term": "猫", "reading": "ねこ"}],
+                "definitions": [{"tags": [{"name": "n"}]}],
+            }
+        ]
+        with patch("scripts.build_synonyms._fetch_yomitan_term_entries", return_value=(mock_entries, True)) as mock_fetch:
+            cands, _ = load_jpdb_candidates(
+                catalog_path=self.db_path,
+                jpdb_path=tsv_path,
+                cache_dir=cache_dir,
+                mode="all",
+            )
+            self.assertEqual(len(cands), 1)
+            mock_fetch.assert_called_once()
+
     def test_load_jpdb_candidates_defers_during_outage(self) -> None:
         """Verify candidates are skipped/deferred during Yomitan API outages."""
         tsv_path = os.path.join(self.temp_dir.name, "sample_outage.tsv")
@@ -1896,8 +1924,76 @@ class TestBuildSynonyms(unittest.TestCase):
             )
             self.assertEqual(res, {})
             self.assertEqual(failed, 0)
+            self.assertEqual(len(rejections), 0)
+
+    def test_run_ollama_compile_persists_stale_on_early_exit(self) -> None:
+        """Verify run_ollama_compile persists revalidated stale concepts even when remaining candidates is empty."""
+        llm_out = os.path.join(self.temp_dir.name, "early_exit_stale.json")
+        with open(llm_out, "w", encoding="utf-8") as f:
+            json.dump({
+                "concepts": {
+                    "猫": ["存在しない架空のイラスト123"],
+                },
+                "rejected": {},
+            }, f)
+
+        tsv_path = os.path.join(self.temp_dir.name, "empty_candidates.tsv")
+        with open(tsv_path, "w", encoding="utf-8") as f:
+            f.write("")
+
+        ok = run_ollama_compile(
+            catalog_path=self.db_path,
+            llm_out_path=llm_out,
+            jpdb_path=tsv_path,
+            cache_dir=self.temp_dir.name,
+        )
+        self.assertTrue(ok)
+        with open(llm_out, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertNotIn("猫", data.get("concepts", {}))
+        self.assertEqual(data.get("stale", {}).get("猫"), ["存在しない架空のイラスト123"])
+
+    def test_run_ollama_agent_batch_strict_boolean_visualizable(self) -> None:
+        """Verify visualizable string 'false' is not treated as boolean true."""
+        cands = [{"term": "偽物", "reading": "にせもの", "frequency": 1}]
+
+        def fake_string_false_resp(req: Any, *args: Any, **kwargs: Any) -> Any:
+            """Return string 'false' for visualizable."""
+            resp_payload = {
+                "message": {
+                    "role": "assistant",
+                    "content": '{"visualizable": "false", "reason": "not boolean true"}',
+                }
+            }
+            mock_b = json.dumps(resp_payload).encode("utf-8")
+
+            class MockResp:
+                def __enter__(self) -> "MockResp":
+                    return self
+
+                def __exit__(self, *args: Any) -> None:
+                    pass
+
+                def read(self) -> bytes:
+                    return mock_b
+
+            return MockResp()
+
+        rejections: List[Tuple[str, str]] = []
+
+        def handle_reject(term: str, reason: str) -> None:
+            rejections.append((term, reason))
+
+        with patch("urllib.request.urlopen", side_effect=fake_string_false_resp):
+            res, failed = run_ollama_agent_batch(
+                cands,
+                catalog_path=self.db_path,
+                on_reject=handle_reject,
+            )
+            self.assertEqual(res, {})
+            self.assertEqual(failed, 0)
             self.assertEqual(len(rejections), 1)
-            self.assertEqual(rejections[0][0], "テスト語")
+            self.assertIn("not boolean true", rejections[0][1])
 
     def test_run_ollama_compile_terms_re_evaluates_prior_decisions(self) -> None:
         """Verify explicit terms argument forces re-evaluation even if term was previously rejected or mapped."""
