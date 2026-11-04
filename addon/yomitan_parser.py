@@ -164,6 +164,7 @@ class YomitanHTMLParser(HTMLParser):
     """Standard-library HTMLParser extracting POS, formsTable, references, and sense notes."""
 
     def __init__(self) -> None:
+        """Initialize parser state tracking POS, forms tables, and glosses."""
         super().__init__()
         self.metadata = YomitanMetadata()
 
@@ -223,6 +224,7 @@ class YomitanHTMLParser(HTMLParser):
         self._current_dictionary: Optional[str] = None
 
     def handle_starttag(self, tag: str, attrs: Sequence[Tuple[str, Optional[str]]]) -> None:
+        """Handle opening HTML tags and update parser container state."""
         attr_dict = dict(attrs)
         sc_content = attr_dict.get("data-sc-content", "") or ""
         data_dict = (attr_dict.get("data-dictionary", "") or "").strip()
@@ -319,6 +321,7 @@ class YomitanHTMLParser(HTMLParser):
             self._legacy_span_depth += 1
 
     def handle_endtag(self, tag: str) -> None:
+        """Handle closing HTML tags and finalize container text extraction."""
         was_excluded = bool(self._excluded_ancestors)
         if self._excluded_ancestors:
             if tag == self._excluded_ancestors[-1]:
@@ -521,6 +524,7 @@ class YomitanHTMLParser(HTMLParser):
                             self._has_collected_gloss = True
 
     def handle_data(self, data: str) -> None:
+        """Handle textual content within active HTML containers."""
         if self._in_i:
             self._current_i_text.append(data)
         if self._in_forms_table and (self._in_th or self._in_td):

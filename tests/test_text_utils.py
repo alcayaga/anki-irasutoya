@@ -809,6 +809,8 @@ class TestTextUtils(unittest.TestCase):
     def test_generate_search_candidates_ordering_manual_then_kaishi_then_reading(self) -> None:
         """Verify candidate ordering: concept_map (manual) -> kaishi_concept -> note_reading."""
         class MockNote(dict):
+            """Mock dictionary-based Anki note object."""
+
             pass
 
         mock_note = MockNote({"Word": "走る", "Reading": "はしる"})

@@ -15,8 +15,11 @@ from addon.catalog import CatalogStore, create_schema, write_posts, write_synony
 from addon.feed import IrasutoyaImage, ParsedPost
 from scripts.build_synonyms import (
     _contains_english_word,
+    _fetch_yomitan_term_entries,
     _parse_yomitan_metadata,
     _populate_concept_json_mapping,
+    _save_yomitan_cache,
+    check_ollama_availability,
     clean_sudachi_headword,
     fetch_jpdb_freq_github,
     fetch_kaishi_github_slice,
@@ -50,6 +53,14 @@ class TestBuildSynonyms(unittest.TestCase):
         post = ParsedPost("blogger_99999", "猫のイラスト", "desc", "pub", "upd", (), [img])
         write_posts(conn, [post])
         conn.close()
+
+        # Hermetic default: never probe a live Ollama server from unit tests
+        ollama_patcher = patch(
+            "scripts.build_synonyms.check_ollama_availability",
+            return_value=(True, None),
+        )
+        ollama_patcher.start()
+        self.addCleanup(ollama_patcher.stop)
 
     def tearDown(self) -> None:
         """Clean up temporary test workspace."""
@@ -309,12 +320,16 @@ class TestBuildSynonyms(unittest.TestCase):
         """Verify fetch_kaishi_github_slice raises descriptive ValueError on malformed or truncated headers."""
         import struct
 
-        def make_urlopen_mock(slice_payload: bytes):
-            def _fake_open(req, *args, **kwargs):
+        def make_urlopen_mock(slice_payload: bytes) -> Callable[..., io.BytesIO]:
+            """Create a mocked urlopen handler returning custom payload."""
+
+            def _fake_open(req: Any, *args: Any, **kwargs: Any) -> io.BytesIO:
+                """Return mocked API or slice payload based on URL."""
                 url = req.full_url if hasattr(req, "full_url") else str(req)
                 if url.startswith("https://api.github.com/"):
                     return io.BytesIO(b'{"tag_name": "test_tag", "assets": []}')
                 return io.BytesIO(slice_payload)
+
             return _fake_open
 
         # Case 1: Entry not found
@@ -619,13 +634,18 @@ class TestBuildSynonyms(unittest.TestCase):
         mock_resp = io.BytesIO(mock_csv)
 
         class MockUrlOpen:
+            """Mock urlopen context manager returning test CSV response."""
+
             def __enter__(self) -> io.BytesIO:
+                """Enter context manager."""
                 return mock_resp
 
             def __exit__(self, *args: object) -> None:
+                """Exit context manager."""
                 pass
 
         def fake_urlopen(*args: object, **kwargs: object) -> MockUrlOpen:
+            """Return MockUrlOpen context manager."""
             return MockUrlOpen()
 
         with patch("urllib.request.urlopen", side_effect=fake_urlopen):
@@ -643,13 +663,18 @@ class TestBuildSynonyms(unittest.TestCase):
         small_resp = io.BytesIO(b"too small")
 
         class SmallUrlOpen:
+            """Mock urlopen context manager returning truncated response."""
+
             def __enter__(self) -> io.BytesIO:
+                """Enter context manager."""
                 return small_resp
 
             def __exit__(self, *args: object) -> None:
+                """Exit context manager."""
                 pass
 
         def fake_small_urlopen(*args: object, **kwargs: object) -> SmallUrlOpen:
+            """Return SmallUrlOpen context manager."""
             return SmallUrlOpen()
 
         with patch("urllib.request.urlopen", side_effect=fake_small_urlopen):
@@ -732,10 +757,14 @@ class TestBuildSynonyms(unittest.TestCase):
         mock_resp = io.BytesIO(mock_csv)
 
         class MockUrlOpen:
+            """Mock urlopen context manager returning test CSV response."""
+
             def __enter__(self) -> io.BytesIO:
+                """Enter context manager."""
                 return mock_resp
 
             def __exit__(self, *args: object) -> None:
+                """Exit context manager."""
                 pass
 
         url1 = "https://example.com/v1/synonyms.txt"
@@ -744,6 +773,7 @@ class TestBuildSynonyms(unittest.TestCase):
         url2_hash = hashlib.sha256(url2.encode("utf-8")).hexdigest()[:10]
 
         def fake_urlopen(*args: object, **kwargs: object) -> MockUrlOpen:
+            """Return MockUrlOpen context manager with rewound stream."""
             mock_resp.seek(0)
             return MockUrlOpen()
 
@@ -1321,6 +1351,17 @@ class TestBuildSynonyms(unittest.TestCase):
                 self.assertEqual(call_order, ["compile", "llm"])
                 self.assertEqual(compile_kwargs.get("llm_out_path"), llm_json)
                 self.assertEqual(populate_kwargs.get("llm_json_path"), llm_json)
+
+    def test_main_cli_help_formatting(self) -> None:
+        """Verify main CLI --help output formats the 100% strict option text cleanly."""
+        buf = io.StringIO()
+        with patch("sys.stdout", buf):
+            with self.assertRaises(SystemExit) as cm:
+                main(["--help"])
+            self.assertEqual(cm.exception.code, 0)
+        output = buf.getvalue()
+        self.assertIn("Enforce 100% strict target validation", output)
+        self.assertNotIn("{'option_strings'", output)
 
     def test_populate_concept_json_mapping_rejects_non_list_value(self) -> None:
         """Verify _populate_concept_json_mapping rejects non-list concept values."""
@@ -1968,13 +2009,18 @@ class TestBuildSynonyms(unittest.TestCase):
             mock_b = json.dumps(resp_payload).encode("utf-8")
 
             class MockResp:
+                """Mock HTTP response."""
+
                 def __enter__(self) -> "MockResp":
+                    """Enter context manager."""
                     return self
 
                 def __exit__(self, *args: Any) -> None:
+                    """Exit context manager."""
                     pass
 
                 def read(self) -> bytes:
+                    """Read body bytes."""
                     return mock_b
 
             return MockResp()
@@ -1982,6 +2028,7 @@ class TestBuildSynonyms(unittest.TestCase):
         rejections: List[Tuple[str, str]] = []
 
         def handle_reject(term: str, reason: str) -> None:
+            """Track rejection callbacks."""
             rejections.append((term, reason))
 
         with patch("urllib.request.urlopen", side_effect=fake_string_false_resp):
@@ -2117,6 +2164,179 @@ class TestBuildSynonyms(unittest.TestCase):
                 self.assertTrue(ok_read)
                 cands = mock_b.call_args[1].get("candidates")
                 self.assertEqual(cands[0]["reading"], "いぬ")
+
+    def test_check_ollama_availability_success_and_model_detection(self) -> None:
+        """Verify check_ollama_availability detects running Ollama and checks installed models."""
+        mock_payload = {
+            "models": [
+                {"name": "gemma4:31b"},
+                {"name": "llama3:latest"},
+            ]
+        }
+        mock_b = json.dumps(mock_payload).encode("utf-8")
+
+        class MockResp:
+            """Mock 200 HTTP response."""
+
+            status = 200
+
+            def __enter__(self) -> "MockResp":
+                """Enter context manager."""
+                return self
+
+            def __exit__(self, *args: Any) -> None:
+                """Exit context manager."""
+                pass
+
+            def read(self) -> bytes:
+                """Return response bytes."""
+                return mock_b
+
+        with patch("urllib.request.urlopen", return_value=MockResp()):
+            ok, err = check_ollama_availability("http://localhost:11434/api/chat", model="gemma4:31b")
+            self.assertTrue(ok)
+            self.assertIsNone(err)
+
+    def test_check_ollama_availability_connection_refused(self) -> None:
+        """Verify check_ollama_availability handles connection refused gracefully."""
+        err = urllib.error.URLError(ConnectionRefusedError(61, "Connection refused"))
+        with patch("urllib.request.urlopen", side_effect=err):
+            ok, msg = check_ollama_availability("http://localhost:11434/api/chat")
+            self.assertFalse(ok)
+            self.assertIsNotNone(msg)
+            self.assertIn("Cannot connect to Ollama", str(msg))
+
+    def test_run_ollama_compile_aborts_when_ollama_unavailable(self) -> None:
+        """Verify run_ollama_compile aborts immediately if Ollama service is unreachable."""
+        with patch("scripts.build_synonyms.check_ollama_availability", return_value=(False, "Connection refused")):
+            ok = run_ollama_compile(
+                catalog_path=self.db_path,
+                llm_out_path=os.path.join(self.temp_dir.name, "out.json"),
+                terms=["犬"],
+            )
+            self.assertFalse(ok)
+
+    def test_run_ollama_agent_batch_consecutive_connection_failure_cutoff(self) -> None:
+        """Verify run_ollama_agent_batch aborts after consecutive connection failures."""
+        cands = [
+            {"term": f"単語_{i}", "reading": f"たんご_{i}", "frequency": i}
+            for i in range(1, 10)
+        ]
+        err = urllib.error.URLError(ConnectionRefusedError(61, "Connection refused"))
+        with patch("urllib.request.urlopen", side_effect=err):
+            res, failed = run_ollama_agent_batch(
+                cands,
+                catalog_path=self.db_path,
+            )
+            self.assertEqual(res, {})
+            # Should have aborted and counted remaining as failed
+            self.assertEqual(failed, 9)
+
+    def test_fetch_yomitan_term_entries_handling(self) -> None:
+        """Verify _fetch_yomitan_term_entries handles valid, non-object, and malformed responses."""
+
+        class MockHttpResponse:
+            """Mock HTTP response wrapping arbitrary payload."""
+
+            def __init__(self, body: bytes) -> None:
+                """Initialize with response body bytes."""
+                self._body = body
+
+            def __enter__(self) -> "MockHttpResponse":
+                """Enter context manager."""
+                return self
+
+            def __exit__(self, *args: Any) -> None:
+                """Exit context manager."""
+                pass
+
+            def read(self) -> bytes:
+                """Return response bytes."""
+                return self._body
+
+        # 1. Normal dict return with valid list
+        valid_json = json.dumps({"dictionaryEntries": [{"headword": "犬"}]}).encode("utf-8")
+        with patch("urllib.request.urlopen", return_value=MockHttpResponse(valid_json)):
+            entries, status = _fetch_yomitan_term_entries("犬")
+            self.assertEqual(status, "ok")
+            self.assertEqual(entries, [{"headword": "犬"}])
+
+        # 2. Non-object JSON return (e.g. JSON list or string)
+        list_json = json.dumps(["invalid", "array"]).encode("utf-8")
+        with patch("urllib.request.urlopen", return_value=MockHttpResponse(list_json)):
+            entries, status = _fetch_yomitan_term_entries("犬")
+            self.assertEqual(status, "term_error")
+            self.assertIsNone(entries)
+
+        # 3. Malformed dictionaryEntries (non-list, e.g. integer)
+        malformed_json = json.dumps({"dictionaryEntries": 123}).encode("utf-8")
+        with patch("urllib.request.urlopen", return_value=MockHttpResponse(malformed_json)):
+            entries, status = _fetch_yomitan_term_entries("犬")
+            self.assertEqual(status, "term_error")
+            self.assertIsNone(entries)
+
+        # 4. Connection error (URLError)
+        net_err = urllib.error.URLError("Connection reset")
+        with patch("urllib.request.urlopen", side_effect=net_err):
+            entries, status = _fetch_yomitan_term_entries("犬")
+            self.assertEqual(status, "connection_error")
+            self.assertIsNone(entries)
+
+        # 5. HTTP error (HTTPError 500)
+        http_err = urllib.error.HTTPError(
+            url="http://127.0.0.1:19633/termEntries",
+            code=500,
+            msg="Internal Server Error",
+            hdrs={},  # type: ignore[arg-type]
+            fp=io.BytesIO(b"error"),
+        )
+        with patch("urllib.request.urlopen", side_effect=http_err):
+            entries, status = _fetch_yomitan_term_entries("犬")
+            self.assertEqual(status, "term_error")
+            self.assertIsNone(entries)
+
+    def test_load_jpdb_candidates_skips_term_error_without_deferral(self) -> None:
+        """Verify load_jpdb_candidates skips per-term error without caching or incrementing deferred_count."""
+        tsv_path = os.path.join(self.temp_dir.name, "single_term.tsv")
+        with open(tsv_path, "w", encoding="utf-8") as f:
+            f.write("問題語\tもんだいご\t1\n良語\tりょうご\t2\n")
+
+        def fake_fetch(term: str, **kwargs: Any) -> Tuple[Optional[List[Dict[str, Any]]], str]:
+            """Simulate term error for one term and ok for other."""
+            if term == "問題語":
+                return None, "term_error"
+            return [{"headwords": [{"term": "良語", "reading": "りょうご"}]}], "ok"
+
+        with patch("scripts.build_synonyms._fetch_yomitan_term_entries", side_effect=fake_fetch):
+            cands, deferred = load_jpdb_candidates(
+                catalog_path=self.db_path,
+                jpdb_path=tsv_path,
+                mode="all",
+                cache_dir=self.temp_dir.name,
+            )
+            # Problematic term was skipped without being deferred
+            self.assertEqual(deferred, 0)
+            self.assertEqual(len(cands), 1)
+            self.assertEqual(cands[0]["term"], "良語")
+
+            # Check that cache does NOT contain the problematic term
+            cache_path = os.path.join(self.temp_dir.name, "yomitan_api_cache.json")
+            with open(cache_path, "r", encoding="utf-8") as f:
+                saved_cache = json.load(f)
+            self.assertNotIn("http://127.0.0.1:19633\t問題語\tもんだいご", saved_cache)
+
+    def test_save_yomitan_cache_atomic_write(self) -> None:
+        """Verify _save_yomitan_cache writes data atomically without leaving temp files."""
+        cache_path = os.path.join(self.temp_dir.name, "sub_dir", "test_cache.json")
+        sample_cache = {"key1": {"pos_tags": ["n"]}}
+
+        _save_yomitan_cache(sample_cache, cache_path)
+
+        self.assertTrue(os.path.isfile(cache_path))
+        self.assertFalse(os.path.isfile(f"{cache_path}.tmp"))
+        with open(cache_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertEqual(data, sample_cache)
 
 
 if __name__ == "__main__":

@@ -185,6 +185,7 @@ def fetch_deck_notes(
     # Sort cards by sort_field (numeric if possible)
     if sort_field:
         def sort_key(card: Dict[str, Any]) -> Any:
+            """Extract numeric or lexical sort key from card sort field."""
             val = card.get("fields", {}).get(sort_field, {}).get("value", "")
             try:
                 return (0, int(val))
@@ -674,7 +675,8 @@ def run_evaluation(
         sys.exit(1)
 
 
-def main():
+def main() -> None:
+    """CLI entrypoint for AnkiConnect deck search recall evaluation."""
     parser = argparse.ArgumentParser(
         description="Evaluate and compare Irasutoya search recall against an Anki deck via AnkiConnect."
     )

@@ -694,6 +694,7 @@ def generate_search_candidates(
     seen = set()
 
     def add(term: Optional[str], reason: str, tier: int) -> bool:
+        """Sanitize term and append to candidates if non-empty and unvisited."""
         if not term:
             return False
         cleaned = clean_search_query(term)
@@ -826,6 +827,7 @@ def generate_search_candidates(
         ) -> List[str]:
             """Resolve concept map targets with surface-then-deinflection fallback."""
             def _lookup(term: str) -> List[str]:
+                """Query injected lookup or default catalog store function."""
                 if injected_lookup is not None:
                     return injected_lookup(term)
                 if store is not None:

@@ -776,6 +776,8 @@ class TestSynonyms(unittest.TestCase):
             z.writestr("collection.anki21b", b"small_compressed_data")
 
         class DummyInfo:
+            """Mock ZipInfo representing oversized file."""
+
             file_size: int = 60 * 1024 * 1024
 
         with patch.object(zipfile.ZipFile, "getinfo", return_value=DummyInfo()):
@@ -925,12 +927,16 @@ class TestSynonyms(unittest.TestCase):
         real_connect = sqlite3.connect
 
         class FailingVacuumConnection(sqlite3.Connection):
+            """Connection subclass simulating disk-full error on VACUUM."""
+
             def execute(self, sql: str, *parameters: Any) -> sqlite3.Cursor:
+                """Execute SQL query or raise on VACUUM."""
                 if "VACUUM" in sql.upper():
                     raise sqlite3.OperationalError("Simulated disk full during VACUUM")
                 return super().execute(sql, *parameters)
 
         def fake_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+            """Intercept connection creation to inject FailingVacuumConnection factory."""
             if args and "vacuum_fail_catalog" in str(args[0]):
                 kwargs["factory"] = FailingVacuumConnection
             return real_connect(*args, **kwargs)

@@ -973,6 +973,7 @@ def populate_sudachi_synonyms(
     target_cache: Dict[str, Tuple[bool, bool, float]] = {}
 
     def validate_target(target: str) -> Tuple[bool, bool, float]:
+        """Validate whether target matches catalog illustrations with quality score."""
         if target in target_cache:
             return target_cache[target]
         if target.casefold() not in titles_blob:
@@ -992,6 +993,7 @@ def populate_sudachi_synonyms(
     source_canonical_cache: Dict[str, int] = {}
 
     def count_canonical_matches(term: str) -> int:
+        """Count canonical illustrations matching term without decorative noise."""
         if term in source_canonical_cache:
             return source_canonical_cache[term]
         if term.casefold() not in titles_blob:
@@ -1174,7 +1176,7 @@ def _fetch_yomitan_term_entries(
     term: str,
     yomitan_url: str = "http://127.0.0.1:19633",
     timeout: float = 5.0,
-) -> Tuple[Optional[List[Dict[str, Any]]], bool]:
+) -> Tuple[Optional[List[Dict[str, Any]]], Union[str, bool]]:
     """Fetch raw dictionary entries from local Yomitan HTTP API /termEntries.
 
     Args:
@@ -1183,7 +1185,8 @@ def _fetch_yomitan_term_entries(
         timeout: HTTP request timeout in seconds.
 
     Returns:
-        Tuple of (entries_list, request_succeeded).
+        Tuple of (entries_list, status_or_bool).
+        status is "ok", "term_error", or "connection_error".
     """
     url = f"{yomitan_url.rstrip('/')}/termEntries"
     payload = json.dumps({"term": term}).encode("utf-8")
@@ -1195,17 +1198,27 @@ def _fetch_yomitan_term_entries(
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        logger.warning("Yomitan returned HTTP %s for '%s'", exc.code, term)
+        return None, "term_error"
+    except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
+        logger.debug("Yomitan API connection failed for '%s': %s", term, exc)
+        return None, "connection_error"
+    except (ValueError, UnicodeDecodeError) as exc:
+        logger.warning("Undecodable Yomitan response for '%s': %s", term, exc)
+        return None, "term_error"
     except Exception as exc:
-        logger.debug("Yomitan API request failed for '%s': %s", term, exc)
-        return None, False
+        logger.debug("Yomitan API unexpected error for '%s': %s", term, exc)
+        return None, "term_error"
 
     if not isinstance(data, dict):
-        return None, True
+        logger.debug("Yomitan returned non-object JSON for '%s': %r", term, type(data).__name__)
+        return None, "term_error"
     raw_entries = data.get("dictionaryEntries", [])
     if raw_entries is not None and not isinstance(raw_entries, list):
         logger.debug("Yomitan returned non-list dictionaryEntries for '%s': %r", term, raw_entries)
-        return None, False
-    return raw_entries if raw_entries is not None else [], True
+        return None, "term_error"
+    return raw_entries if raw_entries is not None else [], "ok"
 
 
 def _parse_yomitan_metadata(
@@ -1432,7 +1445,9 @@ def query_yomitan_term_metadata(
         YomitanMetadata instance if successfully resolved, or None if unavailable/error.
     """
     entries, ok = _fetch_yomitan_term_entries(term, yomitan_url=yomitan_url, timeout=timeout)
-    if not ok or not entries:
+    if ok != "ok" and ok is not True:
+        return None
+    if not entries:
         return None
     return _parse_yomitan_metadata(entries, term=term, reading=reading)
 
@@ -1448,6 +1463,22 @@ def _readonly_catalog_uri(catalog_path: str) -> str:
     """
     uri_path = urllib.request.pathname2url(os.path.abspath(catalog_path))
     return f"file:{uri_path}?mode=ro&immutable=1"
+
+
+def _save_yomitan_cache(cache: Dict[str, Any], path: str) -> None:
+    """Atomically write the Yomitan lookup cache to path using a temp file.
+
+    Args:
+        cache: Dictionary of cached Yomitan term lookups.
+        path: Destination JSON file path.
+    """
+    abs_path = os.path.abspath(path)
+    os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+    tmp_path = f"{abs_path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as cache_f:
+        json.dump(cache, cache_f, ensure_ascii=False, indent=2)
+        cache_f.write("\n")
+    os.replace(tmp_path, abs_path)
 
 
 def load_jpdb_candidates(
@@ -1535,8 +1566,7 @@ def load_jpdb_candidates(
                 logger.info("Inspecting JPDB candidate %d/%d (%d candidates queued)...", idx, limit, len(candidates))
                 if cache_dirty:
                     try:
-                        with open(yomitan_cache_path, "w", encoding="utf-8") as f:
-                            json.dump(yomitan_cache, f, ensure_ascii=False, indent=2)
+                        _save_yomitan_cache(yomitan_cache, yomitan_cache_path)
                         cache_dirty = False
                     except Exception as exc:
                         logger.warning("Failed to save Yomitan cache checkpoint: %s", exc)
@@ -1577,8 +1607,8 @@ def load_jpdb_candidates(
                     deferred_count += 1
                     continue
                 else:
-                    entries, ok = _fetch_yomitan_term_entries(term, yomitan_url=yomitan_url)
-                    if ok:
+                    entries, status = _fetch_yomitan_term_entries(term, yomitan_url=yomitan_url)
+                    if status == "ok" or status is True:
                         consecutive_yomitan_failures = 0
                         if entries:
                             yomitan_meta = _parse_yomitan_metadata(entries, term=term, reading=reading)
@@ -1595,7 +1625,7 @@ def load_jpdb_candidates(
                         else:
                             yomitan_cache[cache_key] = None
                         cache_dirty = True
-                    else:
+                    elif status == "connection_error" or status is False:
                         consecutive_yomitan_failures += 1
                         if consecutive_yomitan_failures >= max_consecutive_yomitan_failures:
                             logger.warning(
@@ -1604,6 +1634,18 @@ def load_jpdb_candidates(
                             )
                         logger.debug("Deferring candidate '%s' due to Yomitan fetch failure.", term)
                         deferred_count += 1
+                        continue
+                    else:  # status == "term_error"
+                        consecutive_yomitan_failures += 1
+                        if consecutive_yomitan_failures >= max_consecutive_yomitan_failures:
+                            logger.warning(
+                                "Yomitan API reached %d consecutive failures; skipping further Yomitan lookups for this run.",
+                                max_consecutive_yomitan_failures,
+                            )
+                        logger.warning(
+                            "Skipping candidate '%s' due to Yomitan term-level error (not cached, not deferred).",
+                            term,
+                        )
                         continue
 
             if yomitan_meta and yomitan_meta.is_particle_or_aux:
@@ -1638,8 +1680,7 @@ def load_jpdb_candidates(
 
     if cache_dirty:
         try:
-            with open(yomitan_cache_path, "w", encoding="utf-8") as f:
-                json.dump(yomitan_cache, f, ensure_ascii=False, indent=2)
+            _save_yomitan_cache(yomitan_cache, yomitan_cache_path)
         except Exception as exc:
             logger.warning("Failed to save Yomitan cache to %s: %s", yomitan_cache_path, exc)
 
@@ -1744,6 +1785,66 @@ def _parse_llm_json_response(text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def check_ollama_availability(
+    ollama_url: str = "http://localhost:11434/api/chat",
+    model: Optional[str] = None,
+    timeout: float = 3.0,
+) -> Tuple[bool, Optional[str]]:
+    """Verify that the Ollama service is reachable and responsive.
+
+    Args:
+        ollama_url: Chat endpoint URL.
+        model: Optional model name to check against installed models.
+        timeout: Network probe timeout in seconds.
+
+    Returns:
+        Tuple of (is_available, error_message_if_any).
+    """
+    parsed = urllib.parse.urlparse(ollama_url)
+    base_url = f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else "http://localhost:11434"
+    tags_url = f"{base_url.rstrip('/')}/api/tags"
+
+    req = urllib.request.Request(
+        tags_url,
+        headers={"User-Agent": "anki-irasutoya/1.0"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.URLError as exc:
+        root_url = f"{base_url.rstrip('/')}/"
+        try:
+            req_root = urllib.request.Request(root_url, headers={"User-Agent": "anki-irasutoya/1.0"})
+            with urllib.request.urlopen(req_root, timeout=timeout) as resp:
+                if resp.status == 200:
+                    return True, None
+        except Exception:
+            pass
+        err_detail = exc.reason if hasattr(exc, "reason") else exc
+        return False, f"Cannot connect to Ollama at {base_url} ({err_detail})"
+    except Exception as exc:
+        return False, f"Cannot connect to Ollama at {base_url} ({exc})"
+
+    if model and isinstance(data, dict):
+        models_list = data.get("models", [])
+        if isinstance(models_list, list) and models_list:
+            installed: Set[str] = set()
+            for m in models_list:
+                if isinstance(m, dict) and "name" in m:
+                    full = str(m["name"]).strip()
+                    installed.add(full)
+                    installed.add(full.split(":")[0])
+            model_base = model.split(":")[0]
+            if model not in installed and model_base not in installed:
+                logger.warning(
+                    "Model '%s' was not found in Ollama installed models: %s. (Ollama may attempt auto-pull on first request).",
+                    model,
+                    sorted(installed),
+                )
+
+    return True, None
+
+
 def run_ollama_agent_batch(
     candidates: Sequence[Dict[str, Any]],
     catalog_path: str,
@@ -1780,6 +1881,8 @@ def run_ollama_agent_batch(
     conn = sqlite3.connect(_readonly_catalog_uri(catalog_path), uri=True)
     mappings: Dict[str, List[str]] = {}
     failed_candidates = 0
+    consecutive_connection_failures = 0
+    max_consecutive_connection_failures = 3
 
     try:
         total = len(candidates)
@@ -1825,9 +1928,21 @@ def run_ollama_agent_batch(
                     try:
                         with urllib.request.urlopen(req, timeout=timeout) as resp:
                             resp_data = json.loads(resp.read().decode("utf-8"))
+                        consecutive_connection_failures = 0
                     except Exception as exc:
                         logger.warning("Ollama API request failed for '%s': %s", term, exc)
                         failed_candidates += 1
+                        consecutive_connection_failures += 1
+                        if consecutive_connection_failures >= max_consecutive_connection_failures:
+                            remaining = total - idx
+                            logger.error(
+                                "Ollama connection failed %d consecutive times (%s); aborting batch (%d candidates skipped)",
+                                max_consecutive_connection_failures,
+                                exc,
+                                remaining,
+                            )
+                            failed_candidates += remaining
+                            return mappings, failed_candidates
                         break
 
                     if not isinstance(resp_data, dict):
@@ -2020,6 +2135,14 @@ def run_ollama_compile(
         logger.error("Catalog index unavailable at %s; aborting Ollama compilation", catalog_path)
         return False
 
+    is_available, err_msg = check_ollama_availability(
+        ollama_url=ollama_url,
+        model=ollama_model,
+    )
+    if not is_available:
+        logger.error("Ollama service unavailable: %s; aborting compilation", err_msg)
+        return False
+
     if terms:
         if isinstance(terms, str):
             raw_list = [t.strip() for t in terms.split(",") if t.strip()]
@@ -2028,9 +2151,15 @@ def run_ollama_compile(
         candidates: List[Dict[str, Any]] = []
         for idx, term in enumerate(raw_list):
             entries, fetched = _fetch_yomitan_term_entries(term, yomitan_url=yomitan_url)
-            if not fetched:
-                logger.error("Yomitan API unavailable for explicit term '%s'; aborting compilation", term)
+            if fetched == "connection_error" or fetched is False:
+                logger.error("Yomitan API connection error for explicit term '%s'; aborting compilation", term)
                 return False
+            if fetched == "term_error":
+                logger.warning(
+                    "Yomitan returned term-level error for explicit term '%s'; continuing without Yomitan metadata",
+                    term,
+                )
+                entries = []
             meta = _parse_yomitan_metadata(entries, term=term) if entries else None
             reading = ""
             if entries:
@@ -2451,7 +2580,7 @@ def main(argv: Sequence[str]) -> int:
         "--strict",
         action="store_true",
         dest="strict",
-        help="Enforce 100% strict target validation when populating JSON concept files (default)",
+        help="Enforce 100%% strict target validation when populating JSON concept files (default)",
     )
     parser.add_argument(
         "--non-strict",
