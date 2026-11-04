@@ -18,6 +18,9 @@ The codebase is organized into cleanly decoupled layers inside the `addon/` pack
 | [`addon/batch.py`](addon/batch.py) | Batch processing worker, preview table data models, rate-limited downloads, and audit tagging (`irasutoya::fallback_reading`). | Anki collection operations & UI abstractions. |
 | [`addon/ui.py`](addon/ui.py) | Apple HIG native modal dialogs, visual thumbnail gallery, suggestion chips, transparency banners, and batch configuration views. | `aqt` (PyQt6). |
 | [`addon/config.py`](addon/config.py) | User configuration management with schema fallback defaults. | `aqt.mw.addonManager`. |
+| [`scripts/build_synonyms.py`](scripts/build_synonyms.py) | Streamlined CI catalog builder compiling manual, bilingual, Kaishi, Sudachi, and LLM synonyms. | Standard Library + `scripts.synonyms.*`. |
+| [`scripts/agent_synonyms.py`](scripts/agent_synonyms.py) | Standalone local CLI driving the Ollama + Yomitan + JPDB visual concept compiler. | Standard Library + `scripts.synonyms.*`. |
+| [`scripts/synonyms/`](scripts/synonyms/) | Modular synonym compiler package (`common.py`, `concepts.py`, `kaishi.py`, `sudachi.py`, `yomitan_jpdb.py`, `ollama_agent.py`). | Standard Library + `addon.*`. |
 | [`scripts/eval_deck_search.py`](scripts/eval_deck_search.py) | Standalone CLI tool to evaluate search recall against real Anki decks via AnkiConnect. | Standard Library + `addon.*`. |
 
 ---
@@ -86,6 +89,9 @@ We enforce strict separation between **Hermetic Unit Tests** and **Live Integrat
   - `tests/test_catalog_parity.py`: Exact parity verification between live Blogger feed parsing and offline catalog indexing.
   - `tests/test_build_catalog.py`: Feed fixture ingestion, keyword merging, and build validation gates.
   - `tests/test_package_addon.py`: Distribution archive packaging, allowlist enforcement, and version stamping.
+  - `tests/test_synonyms.py`: Synonym runtime lookups, ranking integration, and Kaishi/Sudachi catalog population.
+  - `tests/test_build_synonyms.py`: Deterministic CI synonym builder CLI, concepts validation, and dataset ingestion.
+  - `tests/test_agent_synonyms.py`: Standalone local Ollama agent compiler CLI, JPDB candidate extraction, and Yomitan HTTP API caching.
 
 #### Running Unit Tests
 
