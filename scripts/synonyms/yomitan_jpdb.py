@@ -46,8 +46,19 @@ def fetch_jpdb_freq_github(
     filename = posixpath.basename(parsed_path) or "jpdb_v2.2_freq_list_2024-10-13.csv"
     target_path = os.path.join(cache_dir, filename)
     if os.path.isfile(target_path) and os.path.getsize(target_path) > 1000:
-        logger.info("Using cached JPDB frequency list at %s", target_path)
-        return os.path.abspath(target_path)
+        try:
+            with open(target_path, "r", encoding="utf-8-sig") as check_f:
+                header = check_f.readline()
+                if header.startswith(("term\t", "term,")):
+                    logger.info("Using cached JPDB frequency list at %s", target_path)
+                    return os.path.abspath(target_path)
+                logger.warning(
+                    "Cached JPDB file at %s has invalid header %r; re-downloading...",
+                    target_path,
+                    header[:50],
+                )
+        except Exception as exc:
+            logger.warning("Failed to validate cached JPDB file at %s: %s; re-downloading...", target_path, exc)
 
     logger.info("Downloading JPDB v2.2 frequency list from %s...", url)
     tmp_path = f"{target_path}.part"
@@ -218,7 +229,7 @@ def _parse_yomitan_metadata(
             for hw in hws:
                 if not isinstance(hw, dict):
                     continue
-                if hw.get("term") == term:
+                if hw.get("term") == term and (not reading or not hw.get("reading") or hw.get("reading") == reading):
                     best_entry = entry
                     break
             if best_entry:
@@ -428,7 +439,7 @@ def load_jpdb_candidates(
     consecutive_yomitan_failures = 0
     max_consecutive_yomitan_failures = 5
 
-    with open(jpdb_path, "r", encoding="utf-8") as f:
+    with open(jpdb_path, "r", encoding="utf-8-sig") as f:
         sample = f.read(4096)
         f.seek(0)
         delimiter = "\t"

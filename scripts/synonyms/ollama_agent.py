@@ -273,32 +273,42 @@ def run_ollama_agent_batch(
                         parsed = _parse_llm_json_response(content)
                         matched = False
                         is_malformed = False
-                        if parsed and parsed.get("visualizable") is True:
-                            targets = parsed.get("targets", [])
-                            if isinstance(targets, str):
-                                targets = [targets]
-                            elif not isinstance(targets, list):
+                        if parsed:
+                            raw_vis = parsed.get("visualizable")
+                            if not isinstance(raw_vis, bool):
                                 logger.warning(
-                                    "Malformed non-list targets in visualizable response for '%s': %r; skipping rejection to allow retry",
+                                    "Malformed non-boolean 'visualizable' in response for '%s': %r; skipping rejection to allow retry",
                                     term,
-                                    targets,
+                                    raw_vis,
                                 )
                                 is_malformed = True
                                 break
-                            valid_targets = []
-                            for t in targets:
-                                clean_t = str(t).strip()
-                                if not clean_t or not JAPANESE_CHAR_RE.search(clean_t) or _contains_english_word(clean_t):
-                                    continue
-                                results = filter_relevant_illustrations(index.search(clean_t), clean_t)
-                                if has_title_illustration_match(results, clean_t):
-                                    valid_targets.append(clean_t)
-                            if valid_targets:
-                                mappings[term] = valid_targets
-                                logger.info("Matched '%s' -> %s", term, valid_targets)
-                                if on_match:
-                                    on_match(term, valid_targets)
-                                matched = True
+                            if raw_vis is True:
+                                targets = parsed.get("targets", [])
+                                if isinstance(targets, str):
+                                    targets = [targets]
+                                elif not isinstance(targets, list):
+                                    logger.warning(
+                                        "Malformed non-list targets in visualizable response for '%s': %r; skipping rejection to allow retry",
+                                        term,
+                                        targets,
+                                    )
+                                    is_malformed = True
+                                    break
+                                valid_targets = []
+                                for t in targets:
+                                    clean_t = str(t).strip()
+                                    if not clean_t or not JAPANESE_CHAR_RE.search(clean_t) or _contains_english_word(clean_t):
+                                        continue
+                                    results = filter_relevant_illustrations(index.search(clean_t), clean_t)
+                                    if has_title_illustration_match(results, clean_t):
+                                        valid_targets.append(clean_t)
+                                if valid_targets:
+                                    mappings[term] = valid_targets
+                                    logger.info("Matched '%s' -> %s", term, valid_targets)
+                                    if on_match:
+                                        on_match(term, valid_targets)
+                                    matched = True
                         if not matched and not is_malformed:
                             if not parsed:
                                 logger.warning(

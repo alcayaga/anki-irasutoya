@@ -996,6 +996,108 @@ class TestBuildSynonyms(unittest.TestCase):
         )
         self.assertFalse(ok_strict)
 
+    def test_populate_concept_json_mapping_merges_whitespace_key_collisions(self) -> None:
+        """Verify concepts with whitespace padding merge targets into the same stripped key."""
+        conn = sqlite3.connect(self.db_path)
+        img2 = IrasutoyaImage(
+            "子猫のイラスト",
+            "https://1.bp.blogspot.com/s800/kitten.png",
+            "k.png",
+            "子猫",
+            post_id="blogger_99998",
+        )
+        post2 = ParsedPost("blogger_99998", "子猫のイラスト", "desc", "pub", "upd", (), [img2])
+        write_posts(conn, [post2])
+        conn.close()
+
+        json_path = os.path.join(self.temp_dir.name, "whitespace_collision.json")
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump({"concepts": {"cat": ["猫"], "  cat  ": ["子猫"]}}, f)
+
+        ok = _populate_concept_json_mapping(
+            catalog_path=self.db_path,
+            json_path=json_path,
+            source="manual",
+            min_matched=1,
+            strict=True,
+        )
+        self.assertTrue(ok)
+
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT term, target, ord FROM synonyms WHERE source = 'manual' ORDER BY ord")
+        rows = cur.fetchall()
+        conn.close()
+        self.assertEqual(rows, [("cat", "子猫", 0), ("cat", "猫", 1)])
+
+    def test_populate_concept_json_mapping_rejects_blank_headwords(self) -> None:
+        """Verify mappings containing whitespace-only or empty headwords are rejected in both modes."""
+        json_path = os.path.join(self.temp_dir.name, "blank_hw.json")
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump({"concepts": {"   ": ["猫"], "cat": ["猫"]}}, f)
+
+        # In strict mode, headword failure causes rejection
+        ok_strict = _populate_concept_json_mapping(
+            catalog_path=self.db_path,
+            json_path=json_path,
+            source="manual",
+            min_matched=1,
+            strict=True,
+        )
+        self.assertFalse(ok_strict)
+
+        # In non-strict mode, headword failure still causes rejection
+        ok_non_strict = _populate_concept_json_mapping(
+            catalog_path=self.db_path,
+            json_path=json_path,
+            source="manual",
+            min_matched=1,
+            strict=False,
+        )
+        self.assertFalse(ok_non_strict)
+
+    def test_populate_kaishi_concepts_distinct_keyword_threshold(self) -> None:
+        """Verify Kaishi import checks distinct (img_id, kw) pairs against keyword count threshold."""
+        target_db = os.path.join(self.temp_dir.name, "kaishi_threshold.sqlite")
+        conn = sqlite3.connect(target_db)
+        create_schema(conn)
+        p1 = ParsedPost(
+            "1",
+            "猫のイラスト",
+            "desc",
+            "pub",
+            "upd",
+            (),
+            [IrasutoyaImage("猫のイラスト", "https://1.bp.blogspot.com/cat.png", "t", "猫", post_id="1")],
+        )
+        write_posts(conn, [p1])
+
+        # Pre-seed 10 distinct image_keywords
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM images LIMIT 1")
+        img_id = cur.fetchone()[0]
+        keywords = [(img_id, f"kw_{i}", "donkuri/kaishi", 1.0) for i in range(10)]
+        cur.executemany(
+            "INSERT INTO image_keywords (image_id, keyword, source, weight) VALUES (?, ?, ?, ?)",
+            keywords,
+        )
+        conn.commit()
+        conn.close()
+
+        # Create a synth Kaishi db with 10 notes, but all 10 have identical headword '猫' pointing to 'cat.png'.
+        # This produces 10 raw image_keywords entries in the loop, but only 1 distinct (img_id, kw) pair ('猫').
+        # Since existing_kws = 10, distinct_kws_count (1) < 10 * 0.8 (8), it must refuse replacement.
+        small_kaishi = os.path.join(self.temp_dir.name, "synth_kaishi_dup.sqlite")
+        k_conn = sqlite3.connect(small_kaishi)
+        k_conn.execute("CREATE TABLE notes (id INTEGER PRIMARY KEY, flds TEXT NOT NULL)")
+        notes = [("猫\x1fねこ\x1f<img src='cat.png'>",) for _ in range(10)]
+        k_conn.executemany("INSERT INTO notes (flds) VALUES (?)", notes)
+        k_conn.commit()
+        k_conn.close()
+
+        # Should refuse replacement because distinct keyword count (1) < 80% of existing (10)
+        self.assertFalse(populate_kaishi_concepts(target_db, small_kaishi, min_matched=1))
+
 
 if __name__ == "__main__":
     unittest.main()

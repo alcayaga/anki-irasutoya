@@ -72,12 +72,53 @@ class TestYomitanJpdbCandidates(unittest.TestCase):
         custom_url = "https://example.com/data/custom_vocab_list.csv?token=secret123"
         cached_file = os.path.join(self.temp_dir.name, "custom_vocab_list.csv")
         with open(cached_file, "w", encoding="utf-8") as f:
-            f.write("test content" * 100)
+            f.write("term\treading\tfreq\tkana_freq\n" + "test content\treading\t1\t1\n" * 100)
 
         with patch("urllib.request.urlopen") as mock_url:
             path = fetch_jpdb_freq_github(cache_dir=self.temp_dir.name, url=custom_url)
             mock_url.assert_not_called()
         self.assertEqual(os.path.basename(path), "custom_vocab_list.csv")
+
+    def test_fetch_jpdb_freq_github_validates_cache_header(self) -> None:
+        """Verify fetch_jpdb_freq_github rejects corrupted cache and re-downloads."""
+        cache_dir = os.path.join(self.temp_dir.name, "cache_header_val")
+        os.makedirs(cache_dir, exist_ok=True)
+        cached_file = os.path.join(cache_dir, "jpdb_v2.2_freq_list_2024-10-13.csv")
+
+        # 1. Corrupted cached file with HTML error page (> 1000 bytes)
+        with open(cached_file, "w", encoding="utf-8") as f:
+            f.write("<!DOCTYPE html><html><body>Error 404</body></html>\n" * 50)
+
+        mock_csv_bytes = (b"term\treading\tfreq\tkana_freq\n" + b"\xe7\x8c\xab\t\xe3\x81\xad\xe3\x81\x93\t1\t1\n" * 100)
+
+        class MockResp:
+            """Mock HTTP response."""
+
+            def __enter__(self) -> "MockResp":
+                """Enter context manager."""
+                return self
+
+            def __exit__(self, *args: Any) -> None:
+                """Exit context manager."""
+                pass
+
+            def read(self, n: int = -1) -> bytes:
+                """Return response bytes."""
+                nonlocal mock_csv_bytes
+                chunk = mock_csv_bytes[:n] if n > 0 else mock_csv_bytes
+                mock_csv_bytes = mock_csv_bytes[n:] if n > 0 else b""
+                return chunk
+
+        with patch("urllib.request.urlopen", return_value=MockResp()) as mock_url:
+            path = fetch_jpdb_freq_github(cache_dir=cache_dir)
+            mock_url.assert_called_once()
+        self.assertEqual(path, os.path.abspath(cached_file))
+
+        # 2. Re-running with now-valid cached header reuses file without re-downloading
+        with patch("urllib.request.urlopen") as mock_url_again:
+            path_cached = fetch_jpdb_freq_github(cache_dir=cache_dir)
+            mock_url_again.assert_not_called()
+        self.assertEqual(path_cached, os.path.abspath(cached_file))
 
     def test_query_yomitan_term_metadata(self) -> None:
         """Verify query_yomitan_term_metadata extracts structured JMdict POS and glosses."""
@@ -236,6 +277,106 @@ class TestYomitanJpdbCandidates(unittest.TestCase):
         assert res_unambiguous is not None
         self.assertEqual(res_unambiguous.english_glosses, ["bridge"])
 
+    def test_parse_yomitan_metadata_homograph_reading_consistency(self) -> None:
+        """Verify _parse_yomitan_metadata does not match alternate reading homographs."""
+        # 1. 一日 (tsuitachi vs ichinichi)
+        tsuitachi_entry = {
+            "headwords": [{"term": "一日", "reading": "ついたち"}],
+            "definitions": [
+                {
+                    "dictionary": "JMdict (English)",
+                    "tags": [{"name": "n", "category": "partOfSpeech"}],
+                    "entries": ["first day of the month"],
+                }
+            ],
+        }
+        ichinichi_entry = {
+            "headwords": [{"term": "一日", "reading": "いちにち"}],
+            "definitions": [
+                {
+                    "dictionary": "JMdict (English)",
+                    "tags": [{"name": "n", "category": "partOfSpeech"}],
+                    "entries": ["one day", "all day long"],
+                }
+            ],
+        }
+
+        # Query for 'いちにち' when both entries are present -> picks ichinichi_entry
+        res1 = _parse_yomitan_metadata(
+            [tsuitachi_entry, ichinichi_entry],
+            term="一日",
+            reading="いちにち",
+        )
+        self.assertIsNotNone(res1)
+        assert res1 is not None
+        self.assertEqual(res1.english_glosses, ["one day", "all day long"])
+
+        # Query for 'いちにち' when ONLY tsuitachi_entry is present -> must NOT match tsuitachi
+        res2 = _parse_yomitan_metadata(
+            [tsuitachi_entry],
+            term="一日",
+            reading="いちにち",
+        )
+        self.assertIsNone(res2)
+
+        # 2. 方 (kata vs hou)
+        kata_entry = {
+            "headwords": [{"term": "方", "reading": "かた"}],
+            "definitions": [
+                {
+                    "dictionary": "JMdict (English)",
+                    "tags": [{"name": "n", "category": "partOfSpeech"}],
+                    "entries": ["person", "way of doing"],
+                }
+            ],
+        }
+        hou_entry = {
+            "headwords": [{"term": "方", "reading": "ほう"}],
+            "definitions": [
+                {
+                    "dictionary": "JMdict (English)",
+                    "tags": [{"name": "n", "category": "partOfSpeech"}],
+                    "entries": ["direction", "side"],
+                }
+            ],
+        }
+        res_hou = _parse_yomitan_metadata([kata_entry, hou_entry], term="方", reading="ほう")
+        self.assertIsNotNone(res_hou)
+        assert res_hou is not None
+        self.assertEqual(res_hou.english_glosses, ["direction", "side"])
+
+        # Query for 'ほう' when ONLY kata_entry is present -> must NOT match
+        self.assertIsNone(_parse_yomitan_metadata([kata_entry], term="方", reading="ほう"))
+
+        # 3. 角 (kado vs tsuno)
+        kado_entry = {
+            "headwords": [{"term": "角", "reading": "かど"}],
+            "definitions": [
+                {
+                    "dictionary": "JMdict (English)",
+                    "tags": [{"name": "n", "category": "partOfSpeech"}],
+                    "entries": ["corner", "edge"],
+                }
+            ],
+        }
+        tsuno_entry = {
+            "headwords": [{"term": "角", "reading": "つの"}],
+            "definitions": [
+                {
+                    "dictionary": "JMdict (English)",
+                    "tags": [{"name": "n", "category": "partOfSpeech"}],
+                    "entries": ["horn", "antler"],
+                }
+            ],
+        }
+        res_tsuno = _parse_yomitan_metadata([kado_entry, tsuno_entry], term="角", reading="つの")
+        self.assertIsNotNone(res_tsuno)
+        assert res_tsuno is not None
+        self.assertEqual(res_tsuno.english_glosses, ["horn", "antler"])
+
+        # Query for 'つの' when ONLY kado_entry is present -> must NOT match
+        self.assertIsNone(_parse_yomitan_metadata([kado_entry], term="角", reading="つの"))
+
     def test_load_jpdb_candidates(self) -> None:
         """Verify load_jpdb_candidates filters non-tier1, unmatched, and all modes."""
         tsv_path = os.path.join(self.temp_dir.name, "sample_jpdb.tsv")
@@ -319,6 +460,83 @@ class TestYomitanJpdbCandidates(unittest.TestCase):
         terms = [c["term"] for c in candidates]
         self.assertIn("猫", terms)
         self.assertIn("犬", terms)
+
+    def test_load_jpdb_candidates_with_utf8_bom(self) -> None:
+        """Verify load_jpdb_candidates strips UTF-8 BOM cleanly from JPDB CSV/TSV input."""
+        tsv_path = os.path.join(self.temp_dir.name, "bom_jpdb.tsv")
+        with open(tsv_path, "wb") as f:
+            f.write(b"\xef\xbb\xbf")  # UTF-8 BOM
+            f.write("term\treading\tfrequency\tkana_frequency\n".encode("utf-8"))
+            f.write("犬\tいぬ\t1\t1\n".encode("utf-8"))
+
+        def fake_fetch(term: str, **kwargs: Any) -> Tuple[Optional[List[Dict[str, Any]]], bool]:
+            """Simulate Yomitan fetch returning empty list."""
+            return [], True
+
+        with patch("scripts.synonyms.yomitan_jpdb._fetch_yomitan_term_entries", side_effect=fake_fetch):
+            candidates, _ = load_jpdb_candidates(
+                catalog_path=self.db_path,
+                jpdb_path=tsv_path,
+                limit=10,
+                mode="all",
+                cache_dir=self.temp_dir.name,
+            )
+        terms = [c["term"] for c in candidates]
+        self.assertEqual(terms, ["犬"])
+
+    def test_load_jpdb_candidates_unmatched_mode_tier2_filtering(self) -> None:
+        """Verify load_jpdb_candidates mode='unmatched' excludes terms matching Tier 2 candidates."""
+        # Create a catalog containing a post for 'メンバーのイラスト'
+        db_path = os.path.join(self.temp_dir.name, "unmatched_catalog.sqlite")
+        conn = sqlite3.connect(db_path)
+        img = IrasutoyaImage("メンバー", "https://1.bp.blogspot.com/s800/member.png", "t.png", "メンバー", post_id="b_1")
+        post = ParsedPost("b_1", "メンバーのイラスト", "desc", "pub", "upd", (), [img])
+        write_posts(conn, [post])
+        conn.close()
+
+        tsv_path = os.path.join(self.temp_dir.name, "tier2_test_jpdb.tsv")
+        with open(tsv_path, "w", encoding="utf-8") as f:
+            f.write("term\treading\tfrequency\n")
+            f.write("メンバ\tメンバ\t1\n")  # Matches 'メンバー' via Katakana chōonpu expansion (Tier 2)
+            f.write("未登録語\tみとうろくご\t2\n")  # Unmatched (neither Tier 1 nor Tier 2)
+
+        def fake_fetch(term: str, **kwargs: Any) -> Tuple[Optional[List[Dict[str, Any]]], bool]:
+            """Simulate Yomitan fetch returning empty list."""
+            return [], True
+
+        with patch("scripts.synonyms.yomitan_jpdb._fetch_yomitan_term_entries", side_effect=fake_fetch):
+            # non-tier1 mode includes 'メンバ' (Tier 2 match is not Tier 1) and '未登録語'
+            cands_non_tier1, _ = load_jpdb_candidates(
+                catalog_path=db_path,
+                jpdb_path=tsv_path,
+                limit=10,
+                mode="non-tier1",
+                cache_dir=self.temp_dir.name,
+            )
+            terms_non_tier1 = [c["term"] for c in cands_non_tier1]
+            self.assertEqual(terms_non_tier1, ["メンバ", "未登録語"])
+
+            # all mode includes both
+            cands_all, _ = load_jpdb_candidates(
+                catalog_path=db_path,
+                jpdb_path=tsv_path,
+                limit=10,
+                mode="all",
+                cache_dir=self.temp_dir.name,
+            )
+            terms_all = [c["term"] for c in cands_all]
+            self.assertEqual(terms_all, ["メンバ", "未登録語"])
+
+            # unmatched mode EXCLUDES 'メンバ' (because it has a Tier 2 match) and keeps only '未登録語'
+            cands_unmatched, _ = load_jpdb_candidates(
+                catalog_path=db_path,
+                jpdb_path=tsv_path,
+                limit=10,
+                mode="unmatched",
+                cache_dir=self.temp_dir.name,
+            )
+            terms_unmatched = [c["term"] for c in cands_unmatched]
+            self.assertEqual(terms_unmatched, ["未登録語"])
 
     def test_load_jpdb_candidates_consecutive_failure_cutoff(self) -> None:
         """Verify load_jpdb_candidates ceases API calls after consecutive network failures."""
@@ -1285,11 +1503,11 @@ class TestOllamaAgentCompiler(unittest.TestCase):
         self.assertEqual(data.get("stale", {}).get("猫"), ["存在しない架空のイラスト123"])
 
     def test_run_ollama_agent_batch_strict_boolean_visualizable(self) -> None:
-        """Verify visualizable string 'false' is not treated as boolean true."""
+        """Verify non-boolean visualizable value is treated as malformed retryable rather than rejection."""
         cands = [{"term": "偽物", "reading": "にせもの", "frequency": 1}]
 
         def fake_string_false_resp(req: Any, *args: Any, **kwargs: Any) -> Any:
-            """Return string 'false' for visualizable."""
+            """Return non-boolean string 'false' for visualizable."""
             resp_payload = {
                 "message": {
                     "role": "assistant",
@@ -1321,6 +1539,7 @@ class TestOllamaAgentCompiler(unittest.TestCase):
             """Track rejection callbacks."""
             rejections.append((term, reason))
 
+        # 1. Non-boolean string 'false' is skipped without invoking on_reject
         with patch("urllib.request.urlopen", side_effect=fake_string_false_resp):
             res, failed = run_ollama_agent_batch(
                 cands,
@@ -1329,8 +1548,46 @@ class TestOllamaAgentCompiler(unittest.TestCase):
             )
             self.assertEqual(res, {})
             self.assertEqual(failed, 0)
+            self.assertEqual(len(rejections), 0)
+
+        # 2. Genuine boolean False properly invokes on_reject
+        def fake_bool_false_resp(req: Any, *args: Any, **kwargs: Any) -> Any:
+            """Return genuine boolean False for visualizable."""
+            resp_payload = {
+                "message": {
+                    "role": "assistant",
+                    "content": '{"visualizable": false, "reason": "genuine grammatical rejection"}',
+                }
+            }
+            mock_b = json.dumps(resp_payload).encode("utf-8")
+
+            class MockResp:
+                """Mock HTTP response."""
+
+                def __enter__(self) -> "MockResp":
+                    """Enter context manager."""
+                    return self
+
+                def __exit__(self, *args: Any) -> None:
+                    """Exit context manager."""
+                    pass
+
+                def read(self) -> bytes:
+                    """Read body bytes."""
+                    return mock_b
+
+            return MockResp()
+
+        with patch("urllib.request.urlopen", side_effect=fake_bool_false_resp):
+            res, failed = run_ollama_agent_batch(
+                cands,
+                catalog_path=self.db_path,
+                on_reject=handle_reject,
+            )
+            self.assertEqual(res, {})
+            self.assertEqual(failed, 0)
             self.assertEqual(len(rejections), 1)
-            self.assertIn("not boolean true", rejections[0][1])
+            self.assertEqual(rejections[0], ("偽物", "genuine grammatical rejection"))
 
     def test_run_ollama_compile_terms_re_evaluates_prior_decisions(self) -> None:
         """Verify explicit terms argument forces re-evaluation even if term was previously rejected or mapped."""
