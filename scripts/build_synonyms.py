@@ -20,7 +20,7 @@ import urllib.parse
 import urllib.request
 import zipfile
 from collections import defaultdict
-from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple, Union
 
 try:
     import zstandard
@@ -76,6 +76,34 @@ JPDB_FREQ_RAW_URL = (
 )
 CONCEPT_MIN_VALID_RATIO = 0.95
 JAPANESE_CHAR_RE = re.compile(r"[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9fff\u3400-\u4dbf々〆〇]")
+VALID_JAPANESE_LATIN_ACRONYMS: Set[str] = {
+    "AI", "AR", "ATM", "BGM", "CD", "CM", "DIY", "DJ", "DVD", "FAQ", "GPS",
+    "IT", "LAN", "LED", "MC", "MV", "NG", "OK", "OS", "PC", "PR", "PTA",
+    "PV", "QR", "SD", "SDGS", "SIM", "SNS", "TV", "URL", "USB", "VIP", "VR",
+    "WEB", "WI", "FI", "WIFI",
+}
+
+
+def _contains_english_word(text: str) -> bool:
+    """Check whether a candidate target contains embedded English/Latin words.
+
+    Distinguishes English words (e.g. 'cat', 'car') from valid Japanese concepts
+    written with Latin letters or initialisms (e.g. 'Tシャツ', 'Wi-Fi', 'QRコード').
+
+    Args:
+        text: Target concept or illustration topic candidate.
+
+    Returns:
+        True if text contains an embedded English word, False otherwise.
+    """
+    latin_tokens = re.findall(r"[A-Za-z]+", text)
+    for token in latin_tokens:
+        if len(token) == 1:
+            continue
+        if token.upper() in VALID_JAPANESE_LATIN_ACRONYMS:
+            continue
+        return True
+    return False
 
 SEARCH_CATALOG_TOOL = {
     "type": "function",
@@ -243,6 +271,8 @@ def _populate_concept_json_mapping(
         for target in targets:
             clean_tgt = str(target).strip()
             if not clean_tgt:
+                if strict:
+                    validation_failures.append((clean_hw, "<empty>"))
                 continue
             results = filter_relevant_illustrations(index.search(clean_tgt), clean_tgt)
             if not has_title_illustration_match(results, clean_tgt):
@@ -1254,9 +1284,17 @@ def _parse_yomitan_metadata(
 
     best_entry: Optional[Dict[str, Any]] = None
     for entry in dictionary_entries:
-        if not any(_is_english_jmdict(d) for d in entry.get("definitions", [])):
+        if not isinstance(entry, dict):
             continue
-        for hw in entry.get("headwords", []):
+        defs = entry.get("definitions", [])
+        if not isinstance(defs, list) or not any(_is_english_jmdict(d) for d in defs if isinstance(d, dict)):
+            continue
+        hws = entry.get("headwords", [])
+        if not isinstance(hws, list):
+            continue
+        for hw in hws:
+            if not isinstance(hw, dict):
+                continue
             if hw.get("term") == term and (not reading or hw.get("reading") == reading):
                 best_entry = entry
                 break
@@ -1265,9 +1303,17 @@ def _parse_yomitan_metadata(
 
     if not best_entry:
         for entry in dictionary_entries:
-            if not any(_is_english_jmdict(d) for d in entry.get("definitions", [])):
+            if not isinstance(entry, dict):
                 continue
-            for hw in entry.get("headwords", []):
+            defs = entry.get("definitions", [])
+            if not isinstance(defs, list) or not any(_is_english_jmdict(d) for d in defs if isinstance(d, dict)):
+                continue
+            hws = entry.get("headwords", [])
+            if not isinstance(hws, list):
+                continue
+            for hw in hws:
+                if not isinstance(hw, dict):
+                    continue
                 if hw.get("term") == term:
                     best_entry = entry
                     break
@@ -1278,13 +1324,22 @@ def _parse_yomitan_metadata(
         target_read = reading or term
         # Prefer entries with 'uk' (usually kana) or where headword term matches reading
         for entry in dictionary_entries:
-            if not any(_is_english_jmdict(d) for d in entry.get("definitions", [])):
+            if not isinstance(entry, dict):
+                continue
+            defs = entry.get("definitions", [])
+            if not isinstance(defs, list) or not any(_is_english_jmdict(d) for d in defs if isinstance(d, dict)):
                 continue
             has_uk = any(
-                any(t.get("name") == "uk" for t in d.get("tags", []))
-                for d in entry.get("definitions", [])
+                any(isinstance(t, dict) and t.get("name") == "uk" for t in d.get("tags", []) if isinstance(t, dict))
+                for d in defs
+                if isinstance(d, dict) and isinstance(d.get("tags"), list)
             )
-            for hw in entry.get("headwords", []):
+            hws = entry.get("headwords", [])
+            if not isinstance(hws, list):
+                continue
+            for hw in hws:
+                if not isinstance(hw, dict):
+                    continue
                 if hw.get("reading") == target_read and (has_uk or hw.get("term") == target_read):
                     best_entry = entry
                     break
@@ -1294,9 +1349,17 @@ def _parse_yomitan_metadata(
     if not best_entry:
         target_read = reading or term
         for entry in dictionary_entries:
-            if not any(_is_english_jmdict(d) for d in entry.get("definitions", [])):
+            if not isinstance(entry, dict):
                 continue
-            for hw in entry.get("headwords", []):
+            defs = entry.get("definitions", [])
+            if not isinstance(defs, list) or not any(_is_english_jmdict(d) for d in defs if isinstance(d, dict)):
+                continue
+            hws = entry.get("headwords", [])
+            if not isinstance(hws, list):
+                continue
+            for hw in hws:
+                if not isinstance(hw, dict):
+                    continue
                 if hw.get("reading") == target_read:
                     best_entry = entry
                     break
@@ -1312,22 +1375,32 @@ def _parse_yomitan_metadata(
     verb_class: Optional[str] = None
     per_definition_tags: List[Set[str]] = []
 
-    for d in best_entry.get("definitions", []):
-        if not _is_english_jmdict(d):
+    definitions = best_entry.get("definitions", [])
+    if not isinstance(definitions, list):
+        return None
+
+    for d in definitions:
+        if not isinstance(d, dict) or not _is_english_jmdict(d):
             continue
         def_pos: Set[str] = set()
-        for t in d.get("tags", []):
-            tag_name = t.get("name", "")
-            if t.get("category") == "partOfSpeech":
-                pos_tags.add(tag_name)
-                def_pos.add(tag_name)
-                if not verb_class and VERB_POS_PATTERN.match(tag_name):
-                    verb_class = tag_name
-            elif tag_name == "uk":
-                is_uk = True
+        tags = d.get("tags", [])
+        if isinstance(tags, list):
+            for t in tags:
+                if not isinstance(t, dict):
+                    continue
+                tag_name = t.get("name", "")
+                if t.get("category") == "partOfSpeech":
+                    pos_tags.add(tag_name)
+                    def_pos.add(tag_name)
+                    if not verb_class and VERB_POS_PATTERN.match(tag_name):
+                        verb_class = tag_name
+                elif tag_name == "uk":
+                    is_uk = True
         if def_pos:
             per_definition_tags.append(def_pos)
-        english_glosses.extend(_extract_glosses(d.get("entries", [])))
+        entries_list = d.get("entries", [])
+        if isinstance(entries_list, list):
+            english_glosses.extend(_extract_glosses(entries_list))
 
     is_particle_or_aux = bool(per_definition_tags) and all(
         is_grammar_sense(tags) for tags in per_definition_tags
@@ -1385,7 +1458,7 @@ def load_jpdb_candidates(
     yomitan_url: str = "http://127.0.0.1:19633",
     cache_dir: str = ".catalog_cache",
     clear_yomitan_cache: bool = False,
-) -> List[Dict[str, Any]]:
+) -> Tuple[List[Dict[str, Any]], int]:
     """Load, filter, and enrich candidates from JPDB v2.2 frequency list.
 
     Args:
@@ -1398,13 +1471,13 @@ def load_jpdb_candidates(
         clear_yomitan_cache: If True, discards existing cached Yomitan lookups.
 
     Returns:
-        List of enriched candidate dictionaries.
+        Tuple of (candidates_list, deferred_count).
     """
     store = CatalogStore(catalog_path)
     index = store.get_index()
     if index is None:
         logger.error("Catalog index unavailable for JPDB candidate loading at %s", catalog_path)
-        return []
+        return [], 0
 
     os.makedirs(cache_dir, exist_ok=True)
     yomitan_cache_path = os.path.join(cache_dir, "yomitan_api_cache.json")
@@ -1412,7 +1485,11 @@ def load_jpdb_candidates(
     if not clear_yomitan_cache and os.path.isfile(yomitan_cache_path):
         try:
             with open(yomitan_cache_path, "r", encoding="utf-8") as f:
-                yomitan_cache = json.load(f)
+                loaded_cache = json.load(f)
+            if isinstance(loaded_cache, dict):
+                yomitan_cache = loaded_cache
+            else:
+                logger.warning("Ignoring Yomitan cache at %s: root is not a JSON object.", yomitan_cache_path)
         except Exception as exc:
             logger.warning("Could not read Yomitan cache from %s: %s", yomitan_cache_path, exc)
 
@@ -1432,6 +1509,7 @@ def load_jpdb_candidates(
         logger.debug("Failed to read existing catalog synonyms: %s", exc)
 
     candidates: List[Dict[str, Any]] = []
+    deferred_count = 0
     cache_dirty = False
     consecutive_yomitan_failures = 0
     max_consecutive_yomitan_failures = 5
@@ -1482,7 +1560,13 @@ def load_jpdb_candidates(
                     )
             else:
                 if consecutive_yomitan_failures >= max_consecutive_yomitan_failures:
-                    yomitan_meta = None
+                    logger.debug(
+                        "Deferring candidate '%s' due to Yomitan outage (%d consecutive failures).",
+                        term,
+                        consecutive_yomitan_failures,
+                    )
+                    deferred_count += 1
+                    continue
                 else:
                     entries, ok = _fetch_yomitan_term_entries(term, yomitan_url=yomitan_url)
                     if ok:
@@ -1509,6 +1593,9 @@ def load_jpdb_candidates(
                                 "Yomitan API reached %d consecutive failures; skipping further Yomitan lookups for this run.",
                                 max_consecutive_yomitan_failures,
                             )
+                        logger.debug("Deferring candidate '%s' due to Yomitan fetch failure.", term)
+                        deferred_count += 1
+                        continue
 
             if yomitan_meta and yomitan_meta.is_particle_or_aux:
                 continue
@@ -1547,7 +1634,7 @@ def load_jpdb_candidates(
         except Exception as exc:
             logger.warning("Failed to save Yomitan cache to %s: %s", yomitan_cache_path, exc)
 
-    return candidates
+    return candidates, deferred_count
 
 
 def search_catalog_for_agent(
@@ -1570,6 +1657,9 @@ def search_catalog_for_agent(
         Dict with 'query', 'posts', and 'runtime_top1_if_queried'.
     """
     clean_q = clean_search_query(query)
+    if not clean_q:
+        return {"query": query, "posts": [], "runtime_top1_if_queried": None}
+
     close_conn = False
     if conn is None:
         conn = sqlite3.connect(_readonly_catalog_uri(catalog_path), uri=True)
@@ -1794,10 +1884,12 @@ def run_ollama_agent_batch(
                             targets = parsed.get("targets", [])
                             if isinstance(targets, str):
                                 targets = [targets]
+                            elif not isinstance(targets, list):
+                                targets = []
                             valid_targets = []
                             for t in targets:
                                 clean_t = str(t).strip()
-                                if not clean_t or not JAPANESE_CHAR_RE.search(clean_t):
+                                if not clean_t or not JAPANESE_CHAR_RE.search(clean_t) or _contains_english_word(clean_t):
                                     continue
                                 results = filter_relevant_illustrations(index.search(clean_t), clean_t)
                                 if has_title_illustration_match(results, clean_t):
@@ -1823,6 +1915,12 @@ def run_ollama_agent_batch(
                                 if on_reject:
                                     on_reject(term, reason)
                         break
+                else:
+                    logger.warning(
+                        "Exhausted %d turns for '%s' without a final answer; leaving it for the next run",
+                        max_turns,
+                        term,
+                    )
             except Exception as cand_err:
                 logger.warning("Unexpected error compiling candidate '%s': %s", term, cand_err)
                 failed_candidates += 1
@@ -1837,16 +1935,19 @@ def _flush_llm_concepts(
     out_path: str,
     model: str,
     rejected_map: Optional[Dict[str, str]] = None,
+    stale_map: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """Atomically write compiled LLM concepts and rejected terms to a JSON file.
+    """Atomically write compiled LLM concepts, rejected terms, and pending stale entries to JSON.
 
     Args:
         concepts_map: Mapping of Japanese term to list of verified catalog targets.
         out_path: Destination JSON file path.
         model: Identifier of the LLM model used.
         rejected_map: Optional mapping of rejected terms to explanation strings.
+        stale_map: Optional mapping of unevaluated concepts with stale catalog targets.
     """
     rej = rejected_map or {}
+    stale = stale_map or {}
     out_data = {
         "schema_version": 1,
         "source": "llm_concept",
@@ -1855,6 +1956,8 @@ def _flush_llm_concepts(
         "concepts": {k: concepts_map[k] for k in sorted(concepts_map)},
         "rejected": {k: rej[k] for k in sorted(rej)},
     }
+    if stale:
+        out_data["stale"] = {k: stale[k] for k in sorted(stale)}
     abs_path = os.path.abspath(out_path)
     os.makedirs(os.path.dirname(abs_path), exist_ok=True)
     tmp_path = f"{abs_path}.tmp"
@@ -1874,7 +1977,7 @@ def run_ollama_compile(
     ollama_model: str = "gemma4:31b",
     llm_out_path: str = DEFAULT_LLM_CONCEPTS_PATH,
     cache_dir: str = ".catalog_cache",
-    terms: Optional[str] = None,
+    terms: Optional[Union[str, Sequence[str]]] = None,
     clear_yomitan_cache: bool = False,
 ) -> bool:
     """Run the complete build-time JPDB + Yomitan + Ollama visual concept compilation pipeline.
@@ -1889,25 +1992,43 @@ def run_ollama_compile(
         ollama_model: Ollama model name.
         llm_out_path: Output JSON path to save compiled concepts.
         cache_dir: Directory for cached files.
-        terms: Optional comma-separated explicit terms to compile instead of JPDB list.
+        terms: Optional comma-separated string or sequence of explicit terms to compile.
         clear_yomitan_cache: If True, discards existing cached Yomitan lookups.
 
     Returns:
         True if concepts were compiled and saved successfully, False otherwise.
     """
     store = CatalogStore(catalog_path)
-    if store.get_index() is None:
+    index = store.get_index()
+    if index is None:
         logger.error("Catalog index unavailable at %s; aborting Ollama compilation", catalog_path)
         return False
 
     if terms:
-        raw_list = [t.strip() for t in terms.split(",") if t.strip()]
+        if isinstance(terms, str):
+            raw_list = [t.strip() for t in terms.split(",") if t.strip()]
+        else:
+            raw_list = [str(t).strip() for t in terms if str(t).strip()]
         candidates: List[Dict[str, Any]] = []
         for idx, term in enumerate(raw_list):
-            meta = query_yomitan_term_metadata(term, yomitan_url=yomitan_url)
+            entries, fetched = _fetch_yomitan_term_entries(term, yomitan_url=yomitan_url)
+            if not fetched:
+                logger.error("Yomitan API unavailable for explicit term '%s'; aborting compilation", term)
+                return False
+            meta = _parse_yomitan_metadata(entries, term=term) if entries else None
+            reading = ""
+            if entries:
+                for entry in entries:
+                    if isinstance(entry, dict):
+                        for hw in entry.get("headwords", []):
+                            if isinstance(hw, dict) and hw.get("term") == term and hw.get("reading"):
+                                reading = str(hw["reading"])
+                                break
+                    if reading:
+                        break
             candidates.append({
                 "term": term,
-                "reading": term,
+                "reading": reading,
                 "frequency": idx + 1,
                 "pos_tags": sorted(meta.pos_tags) if meta else [],
                 "english_glosses": meta.english_glosses if meta else [],
@@ -1922,7 +2043,7 @@ def run_ollama_compile(
                 logger.error("Failed to fetch JPDB frequency list: %s", exc)
                 return False
 
-        candidates = load_jpdb_candidates(
+        candidates, deferred_count = load_jpdb_candidates(
             catalog_path=catalog_path,
             jpdb_path=jpdb_path,
             limit=limit,
@@ -1932,12 +2053,19 @@ def run_ollama_compile(
             clear_yomitan_cache=clear_yomitan_cache,
         )
         logger.info("Loaded %d %s candidates from JPDB v2.2 for compilation", len(candidates), mode)
+        if deferred_count > 0:
+            logger.error(
+                "%d JPDB candidates were deferred because the Yomitan API was unavailable; aborting compilation",
+                deferred_count,
+            )
+            return False
     if not candidates:
         logger.warning("No candidates found to compile.")
         return True
 
     existing_concepts: Dict[str, List[str]] = {}
     existing_rejected: Dict[str, str] = {}
+    stale_raw_concepts: Dict[str, Any] = {}
     if os.path.isfile(llm_out_path):
         try:
             with open(llm_out_path, "r", encoding="utf-8") as f:
@@ -1949,12 +2077,43 @@ def run_ollama_compile(
             if not isinstance(raw_concepts, dict):
                 logger.error("Invalid 'concepts' structure in %s; refusing to overwrite", llm_out_path)
                 return False
-            existing_concepts = raw_concepts
+            raw_stale = prev_data.get("stale", {})
+            if isinstance(raw_stale, dict):
+                stale_raw_concepts.update({str(k): v for k, v in raw_stale.items()})
+            valid_existing_concepts: Dict[str, List[str]] = {}
+            stale_concept_terms: Set[str] = set()
+            for c_term, c_targets in raw_concepts.items():
+                if not isinstance(c_targets, list) or not c_targets:
+                    stale_concept_terms.add(c_term)
+                    continue
+                valid_c_targets: List[str] = []
+                for ct in c_targets:
+                    clean_ct = str(ct).strip()
+                    if not clean_ct:
+                        continue
+                    res = filter_relevant_illustrations(index.search(clean_ct), clean_ct)
+                    if res and has_title_illustration_match(res, clean_ct):
+                        valid_c_targets.append(clean_ct)
+                if valid_c_targets:
+                    valid_existing_concepts[c_term] = valid_c_targets
+                else:
+                    stale_concept_terms.add(c_term)
+
+            existing_concepts = valid_existing_concepts
+            if stale_concept_terms:
+                stale_raw_concepts.update({
+                    t: raw_concepts[t] for t in stale_concept_terms if t in raw_concepts
+                })
+                logger.warning(
+                    "Re-queuing %d saved concepts with stale/invalid catalog targets for re-evaluation: %s",
+                    len(stale_concept_terms),
+                    sorted(stale_concept_terms),
+                )
             raw_rej = prev_data.get("rejected", {})
             if isinstance(raw_rej, dict):
-                existing_rejected = raw_rej
+                existing_rejected = {k: str(v) for k, v in raw_rej.items() if k not in existing_concepts}
             elif isinstance(raw_rej, list):
-                existing_rejected = {k: "rejected" for k in raw_rej}
+                existing_rejected = {k: "rejected" for k in raw_rej if k not in existing_concepts}
         except Exception as exc:
             logger.error(
                 "Could not read previous LLM concepts from %s: %s; refusing to overwrite",
@@ -1963,10 +2122,18 @@ def run_ollama_compile(
             )
             return False
 
-    remaining_candidates = [
-        c for c in candidates
-        if c["term"] not in existing_concepts and c["term"] not in existing_rejected
-    ]
+    remaining_candidates: List[Dict[str, Any]] = []
+    seen_terms: Set[str] = set()
+    force_explicit = bool(terms)
+    for c in candidates:
+        c_term = c["term"]
+        if c_term in seen_terms:
+            continue
+        if not force_explicit and (c_term in existing_concepts or c_term in existing_rejected):
+            continue
+        seen_terms.add(c_term)
+        remaining_candidates.append(c)
+
     logger.info(
         "Candidate evaluation pool: %d candidates (%d concepts, %d rejected in %s, %d remaining)",
         len(candidates),
@@ -1979,11 +2146,30 @@ def run_ollama_compile(
         logger.info("All %d candidates already evaluated. Nothing to do.", len(candidates))
         return True
 
+    evaluated_count = 0
+
+    def _pending_stale() -> Dict[str, Any]:
+        """Return unevaluated stale concepts outside the active 'concepts' key."""
+        return {
+            t: v for t, v in stale_raw_concepts.items()
+            if t not in existing_concepts and t not in existing_rejected
+        }
+
     def _handle_match(term: str, targets: List[str]) -> None:
         """Persist newly compiled concept mapping immediately to disk."""
+        nonlocal evaluated_count
+        evaluated_count += 1
         existing_concepts[term] = targets
+        existing_rejected.pop(term, None)
+        stale_raw_concepts.pop(term, None)
         try:
-            _flush_llm_concepts(existing_concepts, llm_out_path, ollama_model, rejected_map=existing_rejected)
+            _flush_llm_concepts(
+                existing_concepts,
+                llm_out_path,
+                ollama_model,
+                rejected_map=existing_rejected,
+                stale_map=_pending_stale(),
+            )
         except Exception as exc:
             logger.warning("Interim write failed for '%s': %s", term, exc)
         logger.info(
@@ -1996,13 +2182,24 @@ def run_ollama_compile(
 
     def _handle_reject(term: str, reason: str) -> None:
         """Persist rejected term immediately to disk."""
+        nonlocal evaluated_count
+        if not force_explicit and term in existing_concepts:
+            return
+        evaluated_count += 1
+        existing_concepts.pop(term, None)
+        stale_raw_concepts.pop(term, None)
         existing_rejected[term] = reason
         try:
-            _flush_llm_concepts(existing_concepts, llm_out_path, ollama_model, rejected_map=existing_rejected)
+            _flush_llm_concepts(
+                existing_concepts,
+                llm_out_path,
+                ollama_model,
+                rejected_map=existing_rejected,
+                stale_map=_pending_stale(),
+            )
         except Exception as exc:
             logger.warning("Interim write failed for rejection '%s': %s", term, exc)
 
-    prev_rej_count = len(existing_rejected)
     compiled, failed_count = run_ollama_agent_batch(
         candidates=remaining_candidates,
         catalog_path=catalog_path,
@@ -2010,6 +2207,7 @@ def run_ollama_compile(
         model=ollama_model,
         on_match=_handle_match,
         on_reject=_handle_reject,
+        store=store,
     )
     if failed_count > 0:
         logger.error(
@@ -2018,7 +2216,7 @@ def run_ollama_compile(
         )
         return False
 
-    if not compiled and len(existing_rejected) == prev_rej_count:
+    if not compiled and evaluated_count == 0:
         logger.error(
             "Ollama compilation produced 0 new mappings or rejections for %d candidates; keeping previous %s",
             len(remaining_candidates),
@@ -2027,7 +2225,13 @@ def run_ollama_compile(
         return False
 
     try:
-        _flush_llm_concepts(existing_concepts, llm_out_path, ollama_model, rejected_map=existing_rejected)
+        _flush_llm_concepts(
+            existing_concepts,
+            llm_out_path,
+            ollama_model,
+            rejected_map=existing_rejected,
+            stale_map=_pending_stale(),
+        )
     except Exception as exc:
         logger.error("Failed to write final compiled concepts artifact to %s: %s", llm_out_path, exc)
         return False

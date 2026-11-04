@@ -14,6 +14,8 @@ from unittest.mock import patch
 from addon.catalog import CatalogStore, create_schema, write_posts, write_synonyms
 from addon.feed import IrasutoyaImage, ParsedPost
 from scripts.build_synonyms import (
+    _contains_english_word,
+    _parse_yomitan_metadata,
     _populate_concept_json_mapping,
     clean_sudachi_headword,
     fetch_jpdb_freq_github,
@@ -816,6 +818,12 @@ class TestBuildSynonyms(unittest.TestCase):
             strict=False,
         )
         self.assertTrue(ok_non_strict)
+        conn = sqlite3.connect(self.db_path)
+        try:
+            rows = conn.execute("SELECT term, target FROM synonyms WHERE source = 'test_source'").fetchall()
+        finally:
+            conn.close()
+        self.assertNotIn(("word_19", "存在しないターゲット123"), rows)
         store = CatalogStore(self.db_path)
         index = store.get_index()
         self.assertIsNotNone(index)
@@ -990,7 +998,7 @@ class TestBuildSynonyms(unittest.TestCase):
 
         with patch("scripts.build_synonyms._fetch_yomitan_term_entries", side_effect=fake_fetch_entries):
             # non-tier1 mode: skips 'まで' (grammar) and '猫' (Tier 1 match), keeps '犬' and '傷薬'
-            cands_non_tier1 = load_jpdb_candidates(
+            cands_non_tier1, _ = load_jpdb_candidates(
                 catalog_path=self.db_path,
                 jpdb_path=tsv_path,
                 limit=10,
@@ -1002,7 +1010,7 @@ class TestBuildSynonyms(unittest.TestCase):
             self.assertEqual(cands_non_tier1[0]["english_glosses"], ["gloss for 犬"])
 
             # all mode: skips only grammar 'まで', keeps '猫', '犬', and '傷薬'
-            cands_all = load_jpdb_candidates(
+            cands_all, _ = load_jpdb_candidates(
                 catalog_path=self.db_path,
                 jpdb_path=tsv_path,
                 limit=10,
@@ -1013,7 +1021,7 @@ class TestBuildSynonyms(unittest.TestCase):
             self.assertEqual(terms_all, ["猫", "犬", "傷薬"])
 
             # Verify that header was skipped without eating candidate limit slot (inspects top 3: まで, 猫, 犬)
-            cands_limit_3 = load_jpdb_candidates(
+            cands_limit_3, _ = load_jpdb_candidates(
                 catalog_path=self.db_path,
                 jpdb_path=tsv_path,
                 limit=3,
@@ -1110,9 +1118,9 @@ class TestBuildSynonyms(unittest.TestCase):
         with open(tsv_path, "w", encoding="utf-8") as f:
             f.write("子猫\tこねこ\t500\t\n")
 
-        def fake_load_candidates(*args: Any, **kwargs: Any) -> List[Dict[str, Any]]:
+        def fake_load_candidates(*args: Any, **kwargs: Any) -> Tuple[List[Dict[str, Any]], int]:
             """Return static test candidates."""
-            return candidates
+            return candidates, 0
 
         turn_count = 0
         with patch("scripts.build_synonyms.load_jpdb_candidates", side_effect=fake_load_candidates):
@@ -1162,9 +1170,9 @@ class TestBuildSynonyms(unittest.TestCase):
             }
         ]
 
-        def fake_load_abstract(*args: Any, **kwargs: Any) -> List[Dict[str, Any]]:
+        def fake_load_abstract(*args: Any, **kwargs: Any) -> Tuple[List[Dict[str, Any]], int]:
             """Return abstract candidate."""
-            return abstract_candidates
+            return abstract_candidates, 0
 
         def fake_batch_reject(
             candidates: Any,
@@ -1283,15 +1291,19 @@ class TestBuildSynonyms(unittest.TestCase):
 
         # Test combined --ollama-compile and --llm runs compile before populate
         call_order: List[str] = []
+        compile_kwargs: Dict[str, Any] = {}
+        populate_kwargs: Dict[str, Any] = {}
 
         def mock_compile_track(**kwargs: Any) -> bool:
-            """Track compile invocation order."""
+            """Track compile invocation order and arguments."""
             call_order.append("compile")
+            compile_kwargs.update(kwargs)
             return True
 
         def mock_populate_track(**kwargs: Any) -> bool:
-            """Track populate invocation order."""
+            """Track populate invocation order and arguments."""
             call_order.append("llm")
+            populate_kwargs.update(kwargs)
             return True
 
         with patch("scripts.build_synonyms.run_ollama_compile", side_effect=mock_compile_track):
@@ -1300,11 +1312,15 @@ class TestBuildSynonyms(unittest.TestCase):
                     "--catalog",
                     self.db_path,
                     "--ollama-compile",
+                    "--llm-out",
+                    llm_json,
                     "--llm",
                     llm_json,
                 ])
                 self.assertEqual(code_both, 0)
                 self.assertEqual(call_order, ["compile", "llm"])
+                self.assertEqual(compile_kwargs.get("llm_out_path"), llm_json)
+                self.assertEqual(populate_kwargs.get("llm_json_path"), llm_json)
 
     def test_populate_concept_json_mapping_rejects_non_list_value(self) -> None:
         """Verify _populate_concept_json_mapping rejects non-list concept values."""
@@ -1389,7 +1405,7 @@ class TestBuildSynonyms(unittest.TestCase):
             return [], True
 
         with patch("scripts.build_synonyms._fetch_yomitan_term_entries", side_effect=fake_fetch):
-            candidates = load_jpdb_candidates(
+            candidates, _ = load_jpdb_candidates(
                 catalog_path=self.db_path,
                 jpdb_path=csv_path,
                 limit=10,
@@ -1418,7 +1434,7 @@ class TestBuildSynonyms(unittest.TestCase):
             return None, False
 
         with patch("scripts.build_synonyms._fetch_yomitan_term_entries", side_effect=fake_fetch_fail):
-            candidates = load_jpdb_candidates(
+            candidates, deferred_count = load_jpdb_candidates(
                 catalog_path=self.db_path,
                 jpdb_path=tsv_path,
                 limit=12,
@@ -1428,7 +1444,8 @@ class TestBuildSynonyms(unittest.TestCase):
             )
             # Max consecutive failures is 5, so loop should stop calling API after 5 consecutive failures
             self.assertEqual(call_count, 5)
-            self.assertEqual(len(candidates), 12)
+            self.assertEqual(len(candidates), 0)
+            self.assertEqual(deferred_count, 12)
 
     def test_is_english_jmdict_filtering(self) -> None:
         """Verify _parse_yomitan_metadata filters non-English JMdict dictionaries."""
@@ -1582,6 +1599,428 @@ class TestBuildSynonyms(unittest.TestCase):
         conn_ns.close()
         res_no_syn = prune_stale_synonyms(catalog_path=no_syn_db, source="llm_concept")
         self.assertEqual(res_no_syn, 0)
+
+    def test_strict_populate_rejects_empty_targets(self) -> None:
+        """Verify strict mode rejects mappings with empty target strings."""
+        json_path = os.path.join(self.temp_dir.name, "empty_tgt.json")
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump({"concepts": {"猫": ["   "]}}, f)
+
+        ok_strict = _populate_concept_json_mapping(
+            catalog_path=self.db_path,
+            json_path=json_path,
+            source="manual",
+            min_matched=1,
+            strict=True,
+        )
+        self.assertFalse(ok_strict)
+
+    def test_yomitan_cache_handles_non_dict_root(self) -> None:
+        """Verify load_jpdb_candidates safely ignores non-dictionary cache files."""
+        tsv_path = os.path.join(self.temp_dir.name, "sample.tsv")
+        with open(tsv_path, "w", encoding="utf-8") as f:
+            f.write("term\treading\tfrequency\n猫\tねこ\t1\n")
+
+        cache_dir = os.path.join(self.temp_dir.name, "cache_non_dict")
+        os.makedirs(cache_dir, exist_ok=True)
+        cache_file = os.path.join(cache_dir, "yomitan_api_cache.json")
+        with open(cache_file, "w", encoding="utf-8") as f:
+            json.dump(["not", "a", "dict"], f)
+
+        with patch("scripts.build_synonyms._fetch_yomitan_term_entries", return_value=([], True)):
+            cands, _ = load_jpdb_candidates(
+                catalog_path=self.db_path,
+                jpdb_path=tsv_path,
+                cache_dir=cache_dir,
+                mode="all",
+            )
+            self.assertEqual(len(cands), 1)
+
+    def test_load_jpdb_candidates_defers_during_outage(self) -> None:
+        """Verify candidates are skipped/deferred during Yomitan API outages."""
+        tsv_path = os.path.join(self.temp_dir.name, "sample_outage.tsv")
+        with open(tsv_path, "w", encoding="utf-8") as f:
+            f.write("term\treading\tfrequency\n猫\tねこ\t1\n犬\tいぬ\t2\n")
+
+        cache_dir = os.path.join(self.temp_dir.name, "cache_outage")
+        with patch("scripts.build_synonyms._fetch_yomitan_term_entries", return_value=([], False)):
+            cands, deferred = load_jpdb_candidates(
+                catalog_path=self.db_path,
+                jpdb_path=tsv_path,
+                cache_dir=cache_dir,
+            )
+            # Both terms should be deferred because Yomitan lookups failed
+            self.assertEqual(len(cands), 0)
+            self.assertEqual(deferred, 2)
+
+    def test_run_ollama_compile_aborts_on_deferred_candidates(self) -> None:
+        """Verify run_ollama_compile returns False when candidates are deferred due to Yomitan outage."""
+        llm_out = os.path.join(self.temp_dir.name, "outage_llm_out.json")
+        tsv_path = os.path.join(self.temp_dir.name, "outage_compile.tsv")
+        with open(tsv_path, "w", encoding="utf-8") as f:
+            f.write("猫\tねこ\t1\n")
+
+        with patch("scripts.build_synonyms.load_jpdb_candidates", return_value=([], 1)):
+            ok = run_ollama_compile(
+                catalog_path=self.db_path,
+                jpdb_path=tsv_path,
+                llm_out_path=llm_out,
+            )
+            self.assertFalse(ok)
+
+    def test_search_catalog_for_agent_empty_or_punctuation_query(self) -> None:
+        """Verify search_catalog_for_agent returns empty results for empty/punctuation queries."""
+        for empty_q in ("", "   ", "...", "！？"):
+            res = search_catalog_for_agent(self.db_path, empty_q)
+            self.assertEqual(res["query"], empty_q)
+            self.assertEqual(res["posts"], [])
+            self.assertIsNone(res["runtime_top1_if_queried"])
+
+    def test_contains_english_word_and_target_filtering(self) -> None:
+        """Verify English words are detected while valid Japanese Latin terms are preserved."""
+        # English words or mixed words should be detected as English
+        self.assertTrue(_contains_english_word("cat"))
+        self.assertTrue(_contains_english_word("car"))
+        self.assertTrue(_contains_english_word("smart car"))
+        self.assertTrue(_contains_english_word("猫cat"))
+        self.assertTrue(_contains_english_word("Dog"))
+
+        # Valid Japanese concepts or Latin loanwords/initialisms should be accepted
+        self.assertFalse(_contains_english_word("猫"))
+        self.assertFalse(_contains_english_word("可愛い猫"))
+        self.assertFalse(_contains_english_word("Tシャツ"))
+        self.assertFalse(_contains_english_word("A型"))
+        self.assertFalse(_contains_english_word("Wi-Fi"))
+        self.assertFalse(_contains_english_word("QRコード"))
+        self.assertFalse(_contains_english_word("PC"))
+        self.assertFalse(_contains_english_word("DVD"))
+
+    def test_parse_yomitan_metadata_handles_non_dict_entries(self) -> None:
+        """Verify _parse_yomitan_metadata tolerates non-dictionary elements gracefully."""
+        # Non-dict in root list, definitions, or headwords
+        malformed_entries: List[Any] = [
+            None,
+            "not a dict",
+            {"definitions": ["not a dict", None], "headwords": ["not a dict"]},
+            {
+                "definitions": [
+                    {
+                        "dictionary": "JMdict (English)",
+                        "tags": [None, "invalid"],
+                        "entries": ["feline animal"],
+                    }
+                ],
+                "headwords": [{"term": "猫", "reading": "ねこ"}],
+            },
+        ]
+        meta = _parse_yomitan_metadata(malformed_entries, term="猫", reading="ねこ")
+        self.assertIsNotNone(meta)
+        if meta:
+            self.assertIn("feline animal", meta.english_glosses)
+
+    def test_run_ollama_compile_revalidates_saved_concepts(self) -> None:
+        """Verify run_ollama_compile re-evaluates terms whose saved targets are no longer in catalog."""
+        llm_out = os.path.join(self.temp_dir.name, "revalidate_concepts.json")
+        # Save a concept with an invalid target (not in catalog) along with an unevaluated concept
+        with open(llm_out, "w", encoding="utf-8") as f:
+            json.dump({
+                "concepts": {
+                    "猫": ["存在しない架空のイラスト123"],
+                    "未評価語": ["未評価の架空ターゲット999"],
+                },
+                "rejected": {},
+            }, f)
+
+        tsv_path = os.path.join(self.temp_dir.name, "reval.tsv")
+        with open(tsv_path, "w", encoding="utf-8") as f:
+            f.write("term\treading\tfrequency\n猫\tねこ\t1\n")
+
+        with patch("scripts.build_synonyms._fetch_yomitan_term_entries", return_value=([], True)):
+            with patch("scripts.build_synonyms.run_ollama_agent_batch") as mock_batch:
+                def fake_batch_reval(*args: Any, **kwargs: Any) -> Tuple[Dict[str, List[str]], int]:
+                    """Simulate match callback during revalidation."""
+                    on_match = kwargs.get("on_match")
+                    if on_match:
+                        on_match("猫", ["猫"])
+                    return {"猫": ["猫"]}, 0
+
+                mock_batch.side_effect = fake_batch_reval
+                ok = run_ollama_compile(
+                    catalog_path=self.db_path,
+                    llm_out_path=llm_out,
+                    jpdb_path=tsv_path,
+                    limit=1,
+                    mode="all",
+                    cache_dir=self.temp_dir.name,
+                )
+                self.assertTrue(ok)
+                # mock_batch should have been called with '猫' because the previous target was stale
+                mock_batch.assert_called_once()
+                cands_arg = mock_batch.call_args[1].get("candidates")
+                self.assertEqual(len(cands_arg), 1)
+                self.assertEqual(cands_arg[0]["term"], "猫")
+
+        # Verify disk state preserves unevaluated stale concept in 'stale' and updates re-evaluated concept in 'concepts'
+        with open(llm_out, "r", encoding="utf-8") as f:
+            saved_reval = json.load(f)
+        self.assertEqual(saved_reval.get("concepts", {}).get("猫"), ["猫"])
+        self.assertNotIn("未評価語", saved_reval.get("concepts", {}))
+        self.assertEqual(saved_reval.get("stale", {}).get("未評価語"), ["未評価の架空ターゲット999"])
+
+    def test_run_ollama_compile_deduplicates_candidate_terms(self) -> None:
+        """Verify run_ollama_compile evaluates duplicate candidates only once."""
+        llm_out = os.path.join(self.temp_dir.name, "dedup_llm_out.json")
+        tsv_path = os.path.join(self.temp_dir.name, "dedup.tsv")
+        with open(tsv_path, "w", encoding="utf-8") as f:
+            f.write("何\tなに\t1\n何\tなん\t2\n")
+
+        with patch("scripts.build_synonyms._fetch_yomitan_term_entries", return_value=([], True)):
+            with patch("scripts.build_synonyms.run_ollama_agent_batch", return_value=({"何": ["猫"]}, 0)) as mock_batch:
+                ok = run_ollama_compile(
+                    catalog_path=self.db_path,
+                    llm_out_path=llm_out,
+                    jpdb_path=tsv_path,
+                    limit=2,
+                    mode="all",
+                    cache_dir=self.temp_dir.name,
+                )
+                self.assertTrue(ok)
+                mock_batch.assert_called_once()
+                cands_arg = mock_batch.call_args[1].get("candidates")
+                self.assertEqual(len(cands_arg), 1)
+                self.assertEqual(cands_arg[0]["term"], "何")
+
+    def test_run_ollama_agent_batch_turn_exhaustion(self) -> None:
+        """Verify candidates that loop tool calls until turn exhaustion are left unmapped without failure."""
+        cands = [
+            {
+                "term": "ループ単語",
+                "reading": "るーぷ",
+                "frequency": 1,
+            }
+        ]
+
+        def fake_infinite_tool_call(req: Any, *args: Any, **kwargs: Any) -> Any:
+            """Always return tool call without final answer."""
+            resp_payload = {
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "search_catalog",
+                                "arguments": {"queries": ["猫"]},
+                            }
+                        }
+                    ],
+                }
+            }
+            mock_b = json.dumps(resp_payload).encode("utf-8")
+
+            class MockResp:
+                """Mock HTTP response."""
+
+                def __enter__(self) -> "MockResp":
+                    """Enter context manager."""
+                    return self
+
+                def __exit__(self, *args: Any) -> None:
+                    """Exit context manager."""
+                    pass
+
+                def read(self) -> bytes:
+                    """Read body bytes."""
+                    return mock_b
+
+            return MockResp()
+
+        with patch("urllib.request.urlopen", side_effect=fake_infinite_tool_call):
+            res, failed = run_ollama_agent_batch(
+                cands,
+                catalog_path=self.db_path,
+                max_turns=2,
+            )
+            # Not matched, but not failed
+            self.assertEqual(res, {})
+            self.assertEqual(failed, 0)
+
+    def test_run_ollama_agent_batch_handles_non_list_targets(self) -> None:
+        """Verify run_ollama_agent_batch tolerates non-list targets without raising TypeError."""
+        cands = [
+            {
+                "term": "テスト語",
+                "reading": "てすとご",
+                "frequency": 1,
+            }
+        ]
+
+        def fake_non_list_targets_resp(req: Any, *args: Any, **kwargs: Any) -> Any:
+            """Return response with visualizable=True but targets=null."""
+            resp_payload = {
+                "message": {
+                    "role": "assistant",
+                    "content": '{"visualizable": true, "targets": null, "reason": "malformed"}',
+                }
+            }
+            mock_b = json.dumps(resp_payload).encode("utf-8")
+
+            class MockResp:
+                """Mock HTTP response."""
+
+                def __enter__(self) -> "MockResp":
+                    """Enter context manager."""
+                    return self
+
+                def __exit__(self, *args: Any) -> None:
+                    """Exit context manager."""
+                    pass
+
+                def read(self) -> bytes:
+                    """Read body bytes."""
+                    return mock_b
+
+            return MockResp()
+
+        rejections: List[Tuple[str, str]] = []
+
+        def handle_reject(term: str, reason: str) -> None:
+            """Track rejection callbacks."""
+            rejections.append((term, reason))
+
+        with patch("urllib.request.urlopen", side_effect=fake_non_list_targets_resp):
+            res, failed = run_ollama_agent_batch(
+                cands,
+                catalog_path=self.db_path,
+                on_reject=handle_reject,
+            )
+            self.assertEqual(res, {})
+            self.assertEqual(failed, 0)
+            self.assertEqual(len(rejections), 1)
+            self.assertEqual(rejections[0][0], "テスト語")
+
+    def test_run_ollama_compile_terms_re_evaluates_prior_decisions(self) -> None:
+        """Verify explicit terms argument forces re-evaluation even if term was previously rejected or mapped."""
+        llm_out = os.path.join(self.temp_dir.name, "llm_re_eval.json")
+        initial_data = {
+            "meta": {"source": "test"},
+            "concepts": {"猫": ["猫"]},
+            "rejected": {"犬": "abstract concept"},
+        }
+        with open(llm_out, "w", encoding="utf-8") as f:
+            json.dump(initial_data, f, ensure_ascii=False)
+
+        tsv_path = os.path.join(self.temp_dir.name, "jpdb_terms_re_eval.tsv")
+        with open(tsv_path, "w", encoding="utf-8") as f:
+            f.write("犬\tいぬ\t1\n")
+
+        with patch("scripts.build_synonyms._fetch_yomitan_term_entries", return_value=([], True)):
+            with patch(
+                "scripts.build_synonyms.run_ollama_agent_batch",
+                return_value=({"犬": ["猫"]}, 0),
+            ) as mock_batch:
+                # Without explicit terms, 犬 is skipped as already rejected
+                ok = run_ollama_compile(
+                    catalog_path=self.db_path,
+                    llm_out_path=llm_out,
+                    jpdb_path=tsv_path,
+                    mode="all",
+                    cache_dir=self.temp_dir.name,
+                )
+                self.assertTrue(ok)
+                mock_batch.assert_not_called()
+
+                # With explicit terms=["犬"], 犬 is re-evaluated despite being in rejected
+                def fake_batch_match(
+                    *args: Any,
+                    **kwargs: Any,
+                ) -> Tuple[Dict[str, List[str]], int]:
+                    """Simulate match callback during re-evaluation."""
+                    on_match = kwargs.get("on_match")
+                    if on_match:
+                        on_match("犬", ["猫"])
+                    return {"犬": ["猫"]}, 0
+
+                mock_batch.side_effect = fake_batch_match
+                ok = run_ollama_compile(
+                    catalog_path=self.db_path,
+                    llm_out_path=llm_out,
+                    jpdb_path=tsv_path,
+                    terms=["犬"],
+                    mode="all",
+                    cache_dir=self.temp_dir.name,
+                )
+                self.assertTrue(ok)
+                mock_batch.assert_called_once()
+                cands_arg = mock_batch.call_args[1].get("candidates")
+                self.assertEqual(len(cands_arg), 1)
+                self.assertEqual(cands_arg[0]["term"], "犬")
+
+        # Verify disk state was updated: '犬' moved from rejected to concepts
+        with open(llm_out, "r", encoding="utf-8") as f:
+            saved = json.load(f)
+        self.assertIn("犬", saved.get("concepts", {}))
+        self.assertNotIn("犬", saved.get("rejected", {}))
+
+        # Test case: explicit re-evaluation that ends in a rejection updates reason and succeeds
+        with patch("scripts.build_synonyms._fetch_yomitan_term_entries", return_value=([], True)):
+            with patch(
+                "scripts.build_synonyms.run_ollama_agent_batch",
+            ) as mock_batch_rej:
+                def fake_batch_rej(
+                    *args: Any,
+                    **kwargs: Any,
+                ) -> Tuple[Dict[str, List[str]], int]:
+                    """Simulate rejection callback during explicit re-evaluation."""
+                    on_reject = kwargs.get("on_reject")
+                    if on_reject:
+                        on_reject("犬", "still abstract after re-check")
+                    return {}, 0
+
+                mock_batch_rej.side_effect = fake_batch_rej
+                ok_rej = run_ollama_compile(
+                    catalog_path=self.db_path,
+                    llm_out_path=llm_out,
+                    jpdb_path=tsv_path,
+                    terms=["犬"],
+                    mode="all",
+                    cache_dir=self.temp_dir.name,
+                )
+                self.assertTrue(ok_rej)
+
+        with open(llm_out, "r", encoding="utf-8") as f:
+            saved_rej = json.load(f)
+        self.assertNotIn("犬", saved_rej.get("concepts", {}))
+        self.assertEqual(saved_rej.get("rejected", {}).get("犬"), "still abstract after re-check")
+
+        # Test case: explicit terms aborts on Yomitan outage
+        with patch("scripts.build_synonyms._fetch_yomitan_term_entries", return_value=([], False)):
+            ok_outage = run_ollama_compile(
+                catalog_path=self.db_path,
+                llm_out_path=llm_out,
+                terms=["犬"],
+                cache_dir=self.temp_dir.name,
+            )
+            self.assertFalse(ok_outage)
+
+        # Test case: explicit terms extracts real reading from Yomitan headwords
+        mock_entries = [
+            {
+                "headwords": [{"term": "犬", "reading": "いぬ"}],
+                "definitions": [{"tags": [{"name": "n"}]}],
+            }
+        ]
+        with patch("scripts.build_synonyms._fetch_yomitan_term_entries", return_value=(mock_entries, True)):
+            with patch("scripts.build_synonyms.run_ollama_agent_batch", return_value=({"犬": ["猫"]}, 0)) as mock_b:
+                ok_read = run_ollama_compile(
+                    catalog_path=self.db_path,
+                    llm_out_path=llm_out,
+                    terms=["犬"],
+                    cache_dir=self.temp_dir.name,
+                )
+                self.assertTrue(ok_read)
+                cands = mock_b.call_args[1].get("candidates")
+                self.assertEqual(cands[0]["reading"], "いぬ")
 
 
 if __name__ == "__main__":
