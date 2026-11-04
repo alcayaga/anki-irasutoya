@@ -1531,6 +1531,15 @@ def load_jpdb_candidates(
         for idx, row in enumerate(reader):
             if idx >= limit:
                 break
+            if idx > 0 and idx % 250 == 0:
+                logger.info("Inspecting JPDB candidate %d/%d (%d candidates queued)...", idx, limit, len(candidates))
+                if cache_dirty:
+                    try:
+                        with open(yomitan_cache_path, "w", encoding="utf-8") as f:
+                            json.dump(yomitan_cache, f, ensure_ascii=False, indent=2)
+                        cache_dirty = False
+                    except Exception as exc:
+                        logger.warning("Failed to save Yomitan cache checkpoint: %s", exc)
             if not row or not row[0].strip():
                 continue
             term = row[0].strip()
