@@ -1347,7 +1347,10 @@ class TestOllamaAgentCompiler(unittest.TestCase):
         with open(tsv_path, "w", encoding="utf-8") as f:
             f.write("犬\tいぬ\t1\n")
 
-        with patch("scripts.synonyms.ollama_agent._fetch_yomitan_term_entries", return_value=([], True)):
+        with (
+            patch("scripts.synonyms.ollama_agent._fetch_yomitan_term_entries", return_value=([], True)),
+            patch("scripts.synonyms.yomitan_jpdb._fetch_yomitan_term_entries", return_value=([], True)),
+        ):
             with patch(
                 "scripts.synonyms.ollama_agent.run_ollama_agent_batch",
                 return_value=({"犬": ["猫"]}, 0),
@@ -1396,7 +1399,10 @@ class TestOllamaAgentCompiler(unittest.TestCase):
         self.assertNotIn("犬", saved.get("rejected", {}))
 
         # Test case: explicit re-evaluation that ends in a rejection updates reason and succeeds
-        with patch("scripts.synonyms.ollama_agent._fetch_yomitan_term_entries", return_value=([], True)):
+        with (
+            patch("scripts.synonyms.ollama_agent._fetch_yomitan_term_entries", return_value=([], True)),
+            patch("scripts.synonyms.yomitan_jpdb._fetch_yomitan_term_entries", return_value=([], True)),
+        ):
             with patch(
                 "scripts.synonyms.ollama_agent.run_ollama_agent_batch",
             ) as mock_batch_rej:
@@ -1427,7 +1433,10 @@ class TestOllamaAgentCompiler(unittest.TestCase):
         self.assertEqual(saved_rej.get("rejected", {}).get("犬"), "still abstract after re-check")
 
         # Test case: explicit terms aborts on Yomitan outage
-        with patch("scripts.synonyms.ollama_agent._fetch_yomitan_term_entries", return_value=([], False)):
+        with (
+            patch("scripts.synonyms.ollama_agent._fetch_yomitan_term_entries", return_value=([], False)),
+            patch("scripts.synonyms.yomitan_jpdb._fetch_yomitan_term_entries", return_value=([], False)),
+        ):
             ok_outage = run_ollama_compile(
                 catalog_path=self.db_path,
                 llm_out_path=llm_out,
@@ -1443,8 +1452,11 @@ class TestOllamaAgentCompiler(unittest.TestCase):
                 "definitions": [{"tags": [{"name": "n"}]}],
             }
         ]
-        with patch("scripts.synonyms.ollama_agent._fetch_yomitan_term_entries", return_value=(mock_entries, True)):
-            with patch("scripts.synonyms.ollama_agent.run_ollama_agent_batch", return_value=({"犬": ["猫"]}, 0)) as mock_b:
+        with (
+            patch("scripts.synonyms.ollama_agent._fetch_yomitan_term_entries", return_value=(mock_entries, True)),
+            patch("scripts.synonyms.yomitan_jpdb._fetch_yomitan_term_entries", return_value=(mock_entries, True)),
+            patch("scripts.synonyms.ollama_agent.run_ollama_agent_batch", return_value=({"犬": ["猫"]}, 0)) as mock_b,
+        ):
                 ok_read = run_ollama_compile(
                     catalog_path=self.db_path,
                     llm_out_path=llm_out,
@@ -1496,7 +1508,10 @@ class TestOllamaAgentCompiler(unittest.TestCase):
         with open(tsv_path, "w", encoding="utf-8") as f:
             f.write("term\treading\tfrequency\n猫\tねこ\t1\n")
 
-        with patch("scripts.synonyms.ollama_agent._fetch_yomitan_term_entries", return_value=([], True)):
+        with (
+            patch("scripts.synonyms.ollama_agent._fetch_yomitan_term_entries", return_value=([], True)),
+            patch("scripts.synonyms.yomitan_jpdb._fetch_yomitan_term_entries", return_value=([], True)),
+        ):
             with patch("scripts.synonyms.ollama_agent.run_ollama_agent_batch") as mock_batch:
                 def fake_batch_reval(*args: Any, **kwargs: Any) -> Tuple[Dict[str, List[str]], int]:
                     """Simulate match callback during revalidation."""
@@ -1533,7 +1548,10 @@ class TestOllamaAgentCompiler(unittest.TestCase):
         with open(tsv_path, "w", encoding="utf-8") as f:
             f.write("何\tなに\t1\n何\tなん\t2\n")
 
-        with patch("scripts.synonyms.ollama_agent._fetch_yomitan_term_entries", return_value=([], True)):
+        with (
+            patch("scripts.synonyms.ollama_agent._fetch_yomitan_term_entries", return_value=([], True)),
+            patch("scripts.synonyms.yomitan_jpdb._fetch_yomitan_term_entries", return_value=([], True)),
+        ):
             with patch("scripts.synonyms.ollama_agent.run_ollama_agent_batch", return_value=({"何": ["猫"]}, 0)) as mock_batch:
                 ok = run_ollama_compile(
                     catalog_path=self.db_path,
@@ -1608,6 +1626,7 @@ class TestOllamaAgentCompiler(unittest.TestCase):
 
         with (
             patch("scripts.synonyms.ollama_agent._fetch_yomitan_term_entries", return_value=(mock_entries, "ok")),
+            patch("scripts.synonyms.yomitan_jpdb._fetch_yomitan_term_entries", return_value=(mock_entries, "ok")),
             patch("scripts.synonyms.ollama_agent.check_ollama_availability", return_value=(True, None)),
             patch("scripts.synonyms.ollama_agent.run_ollama_agent_batch", return_value=({"猫": ["猫"]}, 0)),
         ):
