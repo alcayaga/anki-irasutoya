@@ -1595,18 +1595,20 @@ def load_jpdb_candidates(
 
             yomitan_meta: Optional[YomitanMetadata] = None
             cache_key = f"{yomitan_url}\t{term}\t{reading}"
-            if cache_key in yomitan_cache and (yomitan_cache[cache_key] is None or isinstance(yomitan_cache[cache_key], dict)):
-                c_val = yomitan_cache[cache_key]
-                if isinstance(c_val, dict):
-                    pos_tags_raw = c_val.get("pos_tags") or []
-                    glosses_raw = c_val.get("english_glosses") or []
-                    yomitan_meta = YomitanMetadata(
-                        pos_tags=set(pos_tags_raw),
-                        is_uk=bool(c_val.get("is_uk", False)),
-                        is_particle_or_aux=bool(c_val.get("is_particle_or_aux", False)),
-                        verb_class=c_val.get("verb_class"),
-                        english_glosses=list(glosses_raw),
-                    )
+            cached_val = yomitan_cache.get(cache_key)
+            if cache_key in yomitan_cache and cached_val is None:
+                yomitan_meta = None
+            elif isinstance(cached_val, dict) and isinstance(cached_val.get("pos_tags"), list):
+                pos_tags_raw = cached_val["pos_tags"]
+                glosses_raw = cached_val.get("english_glosses")
+                gloss_list = list(glosses_raw) if isinstance(glosses_raw, (list, tuple)) else []
+                yomitan_meta = YomitanMetadata(
+                    pos_tags=set(pos_tags_raw),
+                    is_uk=bool(cached_val.get("is_uk", False)),
+                    is_particle_or_aux=bool(cached_val.get("is_particle_or_aux", False)),
+                    verb_class=cached_val.get("verb_class"),
+                    english_glosses=gloss_list,
+                )
             else:
                 if consecutive_yomitan_failures >= max_consecutive_yomitan_failures:
                     logger.debug(

@@ -2462,34 +2462,62 @@ class TestBuildSynonyms(unittest.TestCase):
             ok, err = check_ollama_availability("http://localhost:11434/api/chat")
             self.assertTrue(ok)
 
-    def test_yomitan_cache_handles_null_pos_tags(self) -> None:
-        """Verify load_jpdb_candidates loads cached entries where pos_tags or glosses are null."""
-        tsv_path = os.path.join(self.temp_dir.name, "null_tags.tsv")
+    def test_yomitan_cache_handles_valid_and_malformed_pos_tags(self) -> None:
+        """Verify load_jpdb_candidates loads valid cached lists and refetches on malformed pos_tags."""
+        tsv_path = os.path.join(self.temp_dir.name, "cache_tags.tsv")
         with open(tsv_path, "w", encoding="utf-8") as f:
-            f.write("単語\tたんご\t1\n")
+            f.write("有効\tゆうこう\t1\n無効\tむこう\t2\n")
 
         cache_path = os.path.join(self.temp_dir.name, "yomitan_api_cache.json")
         with open(cache_path, "w", encoding="utf-8") as f:
             json.dump({
-                "http://127.0.0.1:19633\t単語\tたんご": {
-                    "pos_tags": None,
+                # Valid cached entry with list pos_tags
+                "http://127.0.0.1:19633\t有効\tゆうこう": {
+                    "pos_tags": ["n"],
+                    "english_glosses": ["effective"],
+                    "is_uk": False,
+                    "is_particle_or_aux": False,
+                    "verb_class": None,
+                },
+                # Malformed entry with non-list pos_tags (e.g. int or None)
+                "http://127.0.0.1:19633\t無効\tむこう": {
+                    "pos_tags": 5,
                     "english_glosses": None,
                     "is_uk": None,
                     "is_particle_or_aux": False,
                     "verb_class": None,
-                }
+                },
             }, f)
 
-        cands, deferred = load_jpdb_candidates(
-            catalog_path=self.db_path,
-            jpdb_path=tsv_path,
-            mode="all",
-            cache_dir=self.temp_dir.name,
-        )
-        self.assertEqual(deferred, 0)
-        self.assertEqual(len(cands), 1)
-        self.assertEqual(cands[0]["term"], "単語")
-        self.assertEqual(cands[0]["pos_tags"], [])
+        mock_entries = [
+            {
+                "headwords": [{"term": "無効", "reading": "むこう"}],
+                "definitions": [
+                    {
+                        "dictionary": "JMdict (English)",
+                        "tags": [{"name": "n", "category": "partOfSpeech"}],
+                        "entries": ["invalid"],
+                    }
+                ],
+            }
+        ]
+
+        with patch("scripts.build_synonyms._fetch_yomitan_term_entries", return_value=(mock_entries, "ok")) as mock_fetch:
+            cands, deferred = load_jpdb_candidates(
+                catalog_path=self.db_path,
+                jpdb_path=tsv_path,
+                mode="all",
+                cache_dir=self.temp_dir.name,
+            )
+            self.assertEqual(deferred, 0)
+            self.assertEqual(len(cands), 2)
+            # 有効 loaded from cache without API call
+            self.assertEqual(cands[0]["term"], "有効")
+            self.assertEqual(cands[0]["pos_tags"], ["n"])
+            # 無効 had malformed pos_tags=5 -> treated as cache miss and refetched via API
+            mock_fetch.assert_called_once_with("無効", yomitan_url="http://127.0.0.1:19633")
+            self.assertEqual(cands[1]["term"], "無効")
+            self.assertEqual(cands[1]["pos_tags"], ["n"])
 
     def test_run_ollama_compile_aborts_when_empty_candidates_and_missing_file(self) -> None:
         """Verify run_ollama_compile returns False when candidates are empty and artifact does not exist."""
