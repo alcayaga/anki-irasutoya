@@ -31,6 +31,7 @@ def _populate_concept_json_mapping(
     json_path: str,
     source: str,
     min_matched: int,
+    concept_key: str = "concepts",
     validate_canonical_headwords: bool = False,
     strict: bool = True,
 ) -> bool:
@@ -41,6 +42,7 @@ def _populate_concept_json_mapping(
         json_path: Path to source JSON file containing concept definitions.
         source: Source attribution string for synonyms table.
         min_matched: Minimum required valid concept mappings before writing.
+        concept_key: Key in the JSON dictionary to extract concepts from (default: 'concepts').
         validate_canonical_headwords: If True, validates headwords match canonical English glosses.
         strict: If True, requires 100% of targets to validate against the catalog.
 
@@ -65,9 +67,13 @@ def _populate_concept_json_mapping(
         logger.error("Root JSON value in %s is not an object", json_path)
         return False
 
-    raw_concepts: Dict[str, List[str]] = data.get("concepts") or data.get("mappings") or {}
+    if concept_key == "concepts":
+        raw_concepts = data.get("concepts") or data.get("mappings") or {}
+    else:
+        raw_concepts = data.get(concept_key) or {}
+
     if not isinstance(raw_concepts, dict):
-        logger.error("Invalid 'concepts' structure in %s: expected object", json_path)
+        logger.error("Invalid '%s' structure in %s: expected object", concept_key, json_path)
         return False
     if not raw_concepts or len(raw_concepts) < min_matched:
         logger.error(
@@ -264,7 +270,7 @@ def populate_llm_concepts(
     min_matched: int = 1,
     strict: bool = True,
 ) -> bool:
-    """Compile LLM-curated visual concepts into catalog.sqlite synonyms table.
+    """Compile LLM-curated visual concepts (Tier 1 & Tier 2) into catalog.sqlite synonyms table.
 
     Args:
         catalog_path: Path to catalog.sqlite to update.
@@ -275,14 +281,51 @@ def populate_llm_concepts(
     Returns:
         True if all targets validated and populated successfully, False otherwise.
     """
-    return _populate_concept_json_mapping(
-        catalog_path=catalog_path,
-        json_path=llm_json_path,
-        source="llm_concept",
-        min_matched=min_matched,
-        validate_canonical_headwords=False,
-        strict=strict,
-    )
+    try:
+        with open(llm_json_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as exc:
+        logger.error("Failed to read LLM concepts JSON from %s: %s", llm_json_path, exc)
+        return False
+
+    if not isinstance(data, dict):
+        logger.error("Root JSON structure in %s is not an object", llm_json_path)
+        return False
+
+    has_t1 = bool(data.get("concepts") or data.get("mappings"))
+    has_t2 = bool(data.get("tier2_concepts"))
+
+    if not has_t1 and not has_t2:
+        logger.error("No 'concepts' or 'tier2_concepts' found in %s", llm_json_path)
+        return False
+
+    if has_t1:
+        ok_t1 = _populate_concept_json_mapping(
+            catalog_path=catalog_path,
+            json_path=llm_json_path,
+            source="llm_concept",
+            min_matched=min_matched,
+            concept_key="concepts",
+            validate_canonical_headwords=False,
+            strict=strict,
+        )
+        if not ok_t1:
+            return False
+
+    if has_t2:
+        ok_t2 = _populate_concept_json_mapping(
+            catalog_path=catalog_path,
+            json_path=llm_json_path,
+            source="llm_concept_tier2",
+            min_matched=1,
+            concept_key="tier2_concepts",
+            validate_canonical_headwords=False,
+            strict=strict,
+        )
+        if not ok_t2:
+            return False
+
+    return True
 
 
 def validate_catalog_synonyms(catalog_path: Optional[str] = None) -> bool:

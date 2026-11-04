@@ -25,6 +25,27 @@ from scripts.agent_synonyms import (
     run_ollama_compile,
     search_catalog_for_agent,
 )
+from scripts.pull_models import (
+    DEFAULT_MODELS_PATH,
+    get_installed_ollama_models,
+    load_models_manifest,
+    pull_declared_models,
+    pull_single_model,
+)
+from scripts.pull_models import (
+    main as pull_models_main,
+)
+from scripts.synonyms.ollama_agent import (
+    _flush_llm_concepts,
+    _KeepAliveJSONClient,
+    _parse_llm_json_response,
+)
+from scripts.synonyms.ollama_embed import (
+    CatalogVectorIndex,
+    OllamaEmbedClient,
+    format_candidate_context_block,
+    search_hybrid_presearch,
+)
 
 
 class TestYomitanJpdbCandidates(unittest.TestCase):
@@ -1245,6 +1266,7 @@ class TestOllamaAgentCompiler(unittest.TestCase):
                     catalog_path=self.db_path,
                     jpdb_path=tsv_path,
                     llm_out_path=llm_out,
+                    no_embed=True,
                 )
                 self.assertTrue(ok)
                 self.assertTrue(os.path.isfile(llm_out))
@@ -1259,6 +1281,7 @@ class TestOllamaAgentCompiler(unittest.TestCase):
                     catalog_path=self.db_path,
                     jpdb_path=tsv_path,
                     llm_out_path=llm_out,
+                    no_embed=True,
                 )
                 self.assertTrue(ok_skip)
                 mock_batch.assert_not_called()
@@ -1271,6 +1294,7 @@ class TestOllamaAgentCompiler(unittest.TestCase):
                     catalog_path=self.db_path,
                     jpdb_path=tsv_path,
                     llm_out_path=empty_llm_out,
+                    no_embed=True,
                 )
                 self.assertFalse(ok_empty)
                 self.assertFalse(os.path.isfile(empty_llm_out))
@@ -1308,6 +1332,7 @@ class TestOllamaAgentCompiler(unittest.TestCase):
                     catalog_path=self.db_path,
                     jpdb_path=tsv_path,
                     llm_out_path=rej_llm_out,
+                    no_embed=True,
                 )
                 self.assertTrue(ok_rej)
                 self.assertTrue(os.path.isfile(rej_llm_out))
@@ -1633,6 +1658,105 @@ class TestOllamaAgentCompiler(unittest.TestCase):
             self.assertEqual(len(rejections), 1)
             self.assertEqual(rejections[0], ("偽物", "genuine grammatical rejection"))
 
+    def test_run_ollama_agent_batch_callback_arity_dispatch(self) -> None:
+        """Verify on_match and on_reject dispatch based on inspect.signature arity without TypeError swallowing."""
+        cands = [{"term": "猫", "reading": "ねこ", "frequency": 1}]
+        match_payload = {
+            "message": {
+                "role": "assistant",
+                "content": '{"reason": "cat illustration", "visualizable": true, "targets": ["猫"], "tier": 1}',
+            }
+        }
+        mock_b = json.dumps(match_payload).encode("utf-8")
+
+        class MockResp:
+            """Mock HTTP response."""
+
+            def __enter__(self) -> "MockResp":
+                """Enter context manager."""
+                return self
+
+            def __exit__(self, *args: Any) -> None:
+                """Exit context manager."""
+                pass
+
+            def read(self) -> bytes:
+                """Read body bytes."""
+                return mock_b
+
+        # 1. 2-argument callback receives (term, targets)
+        cb2_calls: List[Tuple[str, List[str]]] = []
+
+        def match_cb2(term: str, targets: List[str]) -> None:
+            """2-argument match callback."""
+            cb2_calls.append((term, targets))
+
+        with patch("urllib.request.urlopen", return_value=MockResp()):
+            res, _ = run_ollama_agent_batch(cands, catalog_path=self.db_path, on_match=match_cb2)
+            self.assertEqual(len(cb2_calls), 1)
+            self.assertEqual(cb2_calls[0], ("猫", ["猫"]))
+
+        # 2. 3-argument callback receives (term, targets, tier)
+        cb3_calls: List[Tuple[str, List[str], int]] = []
+
+        def match_cb3(term: str, targets: List[str], tier: int) -> None:
+            """3-argument match callback."""
+            cb3_calls.append((term, targets, tier))
+
+        with patch("urllib.request.urlopen", return_value=MockResp()):
+            res, _ = run_ollama_agent_batch(cands, catalog_path=self.db_path, on_match=match_cb3)
+            self.assertEqual(len(cb3_calls), 1)
+            self.assertEqual(cb3_calls[0], ("猫", ["猫"], 1))
+
+        # 3. Internal TypeError raised inside callback body is not retried with 2 args
+        cb_err_count = 0
+
+        def faulty_cb(term: str, targets: List[str], tier: int) -> None:
+            """Callback raising internal TypeError."""
+            nonlocal cb_err_count
+            cb_err_count += 1
+            raise TypeError("internal business logic failure")
+
+        with patch("urllib.request.urlopen", return_value=MockResp()):
+            res, failed = run_ollama_agent_batch(cands, catalog_path=self.db_path, on_match=faulty_cb)
+            self.assertEqual(cb_err_count, 1)
+            self.assertEqual(failed, 1)
+
+    def test_run_ollama_agent_batch_presearch_failure_resilience(self) -> None:
+        """Verify run_ollama_agent_batch gracefully survives presearch errors and continues."""
+        cands = [{"term": "猫", "reading": "ねこ", "frequency": 1}]
+        match_payload = {
+            "message": {
+                "role": "assistant",
+                "content": '{"reason": "cat illustration", "visualizable": true, "targets": ["猫"], "tier": 1}',
+            }
+        }
+        mock_b = json.dumps(match_payload).encode("utf-8")
+
+        class MockResp:
+            """Mock HTTP response."""
+
+            def __enter__(self) -> "MockResp":
+                """Enter context manager."""
+                return self
+
+            def __exit__(self, *args: Any) -> None:
+                """Exit context manager."""
+                pass
+
+            def read(self) -> bytes:
+                """Read body bytes."""
+                return mock_b
+
+        with (
+            patch("scripts.synonyms.ollama_agent.search_hybrid_presearch", side_effect=RuntimeError("embed outage")),
+            patch("urllib.request.urlopen", return_value=MockResp()),
+        ):
+            res, failed = run_ollama_agent_batch(cands, catalog_path=self.db_path)
+            self.assertEqual(len(res), 1)
+            self.assertEqual(res.get("猫"), ["猫"])
+            self.assertEqual(failed, 0)
+
     def test_run_ollama_compile_terms_re_evaluates_prior_decisions(self) -> None:
         """Verify explicit terms argument forces re-evaluation even if term was previously rejected or mapped."""
         llm_out = os.path.join(self.temp_dir.name, "llm_re_eval.json")
@@ -1775,6 +1899,29 @@ class TestOllamaAgentCompiler(unittest.TestCase):
                 catalog_path=self.db_path,
                 llm_out_path=os.path.join(self.temp_dir.name, "out.json"),
                 terms=["犬"],
+            )
+            self.assertFalse(ok)
+
+    def test_run_ollama_compile_rejects_malformed_tier2_concepts(self) -> None:
+        """Verify run_ollama_compile refuses to overwrite when tier2_concepts is not a dictionary."""
+        llm_out = os.path.join(self.temp_dir.name, "malformed_t2.json")
+        with open(llm_out, "w", encoding="utf-8") as f:
+            json.dump({
+                "schema_version": 1,
+                "concepts": {"猫": ["猫"]},
+                "tier2_concepts": ["not_a_dict"],
+            }, f)
+
+        with (
+            patch("scripts.synonyms.ollama_agent._fetch_yomitan_term_entries", return_value=([], True)),
+            patch("scripts.synonyms.yomitan_jpdb._fetch_yomitan_term_entries", return_value=([], True)),
+            patch("scripts.synonyms.ollama_agent.check_ollama_availability", return_value=(True, None)),
+        ):
+            ok = run_ollama_compile(
+                catalog_path=self.db_path,
+                llm_out_path=llm_out,
+                terms=["犬"],
+                cache_dir=self.temp_dir.name,
             )
             self.assertFalse(ok)
 
@@ -1979,6 +2126,520 @@ class TestOllamaAgentCompiler(unittest.TestCase):
         self.assertIn("visual concept compiler", output)
         self.assertIn("Irasutoya", output)
         self.assertIn("--jpdb-limit", output)
+        self.assertIn("--embed-model", output)
+        self.assertIn("--no-embed", output)
+        self.assertIn("--recheck-rejected", output)
+        self.assertIn("--pull-models", output)
+
+
+class TestPullModelsAndEmbedPresearch(unittest.TestCase):
+    """Test suite for declarative models manifest, vector index, and hybrid pre-search."""
+
+    def setUp(self) -> None:
+        """Create an isolated temporary environment for hermetic testing."""
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = os.path.join(self.temp_dir.name, "test_embed_catalog.sqlite")
+
+        # Create basic catalog database with two sample posts
+        conn = sqlite3.connect(self.db_path)
+        img1 = IrasutoyaImage("可愛い猫", "https://1.bp.blogspot.com/s800/cat.png", "t.png", "猫", post_id="p_cat")
+        post1 = ParsedPost("p_cat", "可愛い猫のイラスト", "desc cat", "pub", "upd", ("動物",), [img1])
+        img2 = IrasutoyaImage("走る犬", "https://1.bp.blogspot.com/s800/dog.png", "t.png", "犬", post_id="p_dog")
+        post2 = ParsedPost("p_dog", "走る犬のイラスト", "desc dog", "pub", "upd", ("動物",), [img2])
+        write_posts(conn, [post1, post2])
+        conn.close()
+
+    def tearDown(self) -> None:
+        """Clean up temporary test workspace."""
+        self.temp_dir.cleanup()
+
+    def test_load_models_manifest_valid_and_errors(self) -> None:
+        """Verify load_models_manifest parses valid manifests and raises on invalid inputs."""
+        # Test loading the repo's real models.yml
+        data = load_models_manifest(DEFAULT_MODELS_PATH)
+        cfg = data.get("ollama", data)
+        self.assertIn("models", cfg)
+        self.assertIsInstance(cfg["models"], list)
+        self.assertTrue(any(m.get("name") == "gemma4:26b" for m in cfg["models"]))
+        self.assertTrue(any(m.get("name") == "qwen3-embedding:4b" for m in cfg["models"]))
+
+        # Test non-existent file
+        with self.assertRaises(FileNotFoundError):
+            load_models_manifest(os.path.join(self.temp_dir.name, "nonexistent.yml"))
+
+        # Test invalid non-dict structure
+        invalid_path = os.path.join(self.temp_dir.name, "invalid.json")
+        with open(invalid_path, "w", encoding="utf-8") as f:
+            json.dump(["not", "a", "dict"], f)
+        with self.assertRaises(ValueError):
+            load_models_manifest(invalid_path)
+
+    def test_get_installed_ollama_models_handling(self) -> None:
+        """Verify get_installed_ollama_models parses tags and normalizes :latest tag suffix."""
+        mock_payload = {
+            "models": [
+                {"name": "gemma4:26b"},
+                {"name": "qwen3-embedding:4b"},
+                {"name": "custom-model:latest"},
+            ]
+        }
+
+        class MockResp:
+            """Mock HTTP response."""
+
+            def __enter__(self) -> "MockResp":
+                """Enter context manager."""
+                return self
+
+            def __exit__(self, *args: Any) -> None:
+                """Exit context manager."""
+                pass
+
+            def read(self) -> bytes:
+                """Read response body."""
+                return json.dumps(mock_payload).encode("utf-8")
+
+        with patch("urllib.request.urlopen", return_value=MockResp()):
+            installed = get_installed_ollama_models("http://localhost:11434")
+            self.assertIn("gemma4:26b", installed)
+            self.assertIn("qwen3-embedding:4b", installed)
+            self.assertIn("custom-model:latest", installed)
+            self.assertIn("custom-model", installed)
+
+        # Verify error returns empty set
+        with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("Refused")):
+            installed_err = get_installed_ollama_models("http://localhost:11434")
+            self.assertEqual(installed_err, set())
+
+    def test_pull_single_model_streaming(self) -> None:
+        """Verify pull_single_model parses streaming JSON lines and reports success or error."""
+        class MockStreamingResp:
+            """Mock streaming HTTP response."""
+
+            def __init__(self, lines: List[bytes]) -> None:
+                """Initialize streaming lines."""
+                self._lines = lines
+
+            def __enter__(self) -> "MockStreamingResp":
+                """Enter context manager."""
+                return self
+
+            def __exit__(self, *args: Any) -> None:
+                """Exit context manager."""
+                pass
+
+            def __iter__(self) -> Any:
+                """Iterate lines."""
+                return iter(self._lines)
+
+        success_lines = [
+            b'{"status": "pulling manifest"}\n',
+            b'{"status": "downloading", "completed": 50, "total": 100}\n',
+            b'{"status": "success"}\n',
+        ]
+        with (
+            patch("scripts.pull_models.shutil.which", return_value=None),
+            patch("urllib.request.urlopen", return_value=MockStreamingResp(success_lines)),
+        ):
+            ok = pull_single_model("gemma4:26b")
+            self.assertTrue(ok)
+
+        error_lines = [
+            b'{"status": "pulling manifest"}\n',
+            b'{"error": "model \'unknown:latest\' not found"}\n',
+        ]
+        with (
+            patch("scripts.pull_models.shutil.which", return_value=None),
+            patch("urllib.request.urlopen", return_value=MockStreamingResp(error_lines)),
+        ):
+            fail = pull_single_model("unknown:latest")
+            self.assertFalse(fail)
+
+        # Early stream truncation without 'success' event should report False
+        truncated_lines = [
+            b'{"status": "downloading", "completed": 50, "total": 100}\n',
+        ]
+        with (
+            patch("scripts.pull_models.shutil.which", return_value=None),
+            patch("urllib.request.urlopen", return_value=MockStreamingResp(truncated_lines)),
+        ):
+            fail_trunc = pull_single_model("truncated:latest")
+            self.assertFalse(fail_trunc)
+
+    def test_pull_declared_models_and_cli(self) -> None:
+        """Verify pull_declared_models respects presence, dry-run, and force flags."""
+        manifest_path = os.path.join(self.temp_dir.name, "test_models.yml")
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "models": [
+                    {"name": "model_present:1", "role": "chat", "size_gb": 1.0},
+                    {"name": "model_missing:1", "role": "embed", "size_gb": 2.0},
+                ]
+            }, f)
+
+        # Case 1: dry_run=True should not attempt to pull
+        with (
+            patch("scripts.pull_models.get_installed_ollama_models", return_value={"model_present:1"}),
+            patch("scripts.pull_models.pull_single_model") as mock_pull,
+        ):
+            ok_dry = pull_declared_models(manifest_path=manifest_path, dry_run=True)
+            self.assertTrue(ok_dry)
+            mock_pull.assert_not_called()
+
+        # Case 2: dry_run=False pulls missing model
+        with (
+            patch("scripts.pull_models.get_installed_ollama_models", return_value={"model_present:1"}),
+            patch("scripts.pull_models.pull_single_model", return_value=True) as mock_pull,
+        ):
+            ok_pull = pull_declared_models(manifest_path=manifest_path, dry_run=False)
+            self.assertTrue(ok_pull)
+            mock_pull.assert_called_once_with("model_missing:1", ollama_url="http://localhost:11434")
+
+        # Case 3: normalizes ollama_url ending in /api/chat
+        with (
+            patch("scripts.pull_models.get_installed_ollama_models", return_value=set()),
+            patch("scripts.pull_models.pull_single_model", return_value=True) as mock_pull_norm,
+        ):
+            ok_norm = pull_declared_models(
+                manifest_path=manifest_path,
+                ollama_url="http://localhost:11434/api/chat",
+                dry_run=False,
+            )
+            self.assertTrue(ok_norm)
+            self.assertEqual(mock_pull_norm.call_args[1].get("ollama_url"), "http://localhost:11434")
+
+        # Case 4: uses manifest endpoint when ollama_url is None
+        manifest_custom_ep = os.path.join(self.temp_dir.name, "test_custom_ep.yml")
+        with open(manifest_custom_ep, "w", encoding="utf-8") as f:
+            json.dump({
+                "ollama": {
+                    "endpoint": "http://remote-ollama:11434",
+                    "models": [{"name": "remote_model:1"}],
+                }
+            }, f)
+        with (
+            patch("scripts.pull_models.get_installed_ollama_models", return_value=set()),
+            patch("scripts.pull_models.pull_single_model", return_value=True) as mock_pull_custom,
+        ):
+            ok_custom = pull_declared_models(manifest_path=manifest_custom_ep, ollama_url=None)
+            self.assertTrue(ok_custom)
+            self.assertEqual(mock_pull_custom.call_args[1].get("ollama_url"), "http://remote-ollama:11434")
+
+        # Test CLI entrypoint
+        with patch("scripts.pull_models.pull_declared_models", return_value=True) as mock_decl:
+            code = pull_models_main(["--manifest", manifest_path, "--dry-run"])
+            self.assertEqual(code, 0)
+            mock_decl.assert_called_once()
+
+    def test_pull_single_model_cli_env(self) -> None:
+        """Verify pull_single_model sets OLLAMA_HOST environment variable when invoking ollama CLI."""
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        with (
+            patch("scripts.pull_models.shutil.which", return_value="/usr/local/bin/ollama"),
+            patch("scripts.pull_models.subprocess.run", return_value=mock_proc) as mock_subproc,
+        ):
+            ok = pull_single_model("gemma4:26b", ollama_url="http://custom-host:11434")
+            self.assertTrue(ok)
+            mock_subproc.assert_called_once()
+            called_env = mock_subproc.call_args[1].get("env", {})
+            self.assertEqual(called_env.get("OLLAMA_HOST"), "http://custom-host:11434")
+
+    def test_keep_alive_json_client(self) -> None:
+        """Verify _KeepAliveJSONClient formats requests and routes through patched urlopen in tests."""
+        client = _KeepAliveJSONClient(timeout=10.0)
+        mock_body = {"response": "test_output"}
+
+        class MockResp:
+            """Mock HTTP response."""
+
+            def __enter__(self) -> "MockResp":
+                """Enter context manager."""
+                return self
+
+            def __exit__(self, *args: Any) -> None:
+                """Exit context manager."""
+                pass
+
+            def read(self) -> bytes:
+                """Read response bytes."""
+                return json.dumps(mock_body).encode("utf-8")
+
+        with patch("urllib.request.urlopen", return_value=MockResp()) as mock_url:
+            resp = client.post_json("http://localhost:11434/api/chat", {"test": 123})
+            self.assertEqual(resp, mock_body)
+            mock_url.assert_called_once()
+
+        client.close()
+
+    def test_ollama_embed_client_batch_and_single(self) -> None:
+        """Verify OllamaEmbedClient sends batch payloads and normalizes vector outputs."""
+        # Test URL normalization when passed /api/chat or /api/embed
+        client_chat_url = OllamaEmbedClient("http://localhost:11434/api/chat")
+        self.assertEqual(client_chat_url._embed_url, "http://localhost:11434/api/embed")
+
+        client = OllamaEmbedClient("http://localhost:11434")
+        self.assertEqual(client._embed_url, "http://localhost:11434/api/embed")
+        mock_resp_data = {
+            "embeddings": [
+                [3.0, 4.0],  # L2 norm is 5.0 -> normalized: [0.6, 0.8]
+                [0.0, 2.0],  # L2 norm is 2.0 -> normalized: [0.0, 1.0]
+            ]
+        }
+
+        class MockResp:
+            """Mock HTTP response."""
+
+            def __enter__(self) -> "MockResp":
+                """Enter context manager."""
+                return self
+
+            def __exit__(self, *args: Any) -> None:
+                """Exit context manager."""
+                pass
+
+            def read(self) -> bytes:
+                """Read response body."""
+                return json.dumps(mock_resp_data).encode("utf-8")
+
+        with patch("urllib.request.urlopen", return_value=MockResp()):
+            embeddings = client.embed_batch(["猫", "犬"], batch_size=2)
+            self.assertEqual(len(embeddings), 2)
+            self.assertAlmostEqual(embeddings[0][0], 0.6)
+            self.assertAlmostEqual(embeddings[0][1], 0.8)
+            self.assertAlmostEqual(embeddings[1][0], 0.0)
+            self.assertAlmostEqual(embeddings[1][1], 1.0)
+
+        class MockSingleResp:
+            """Mock single HTTP response."""
+
+            def __enter__(self) -> "MockSingleResp":
+                """Enter context manager."""
+                return self
+
+            def __exit__(self, *args: Any) -> None:
+                """Exit context manager."""
+                pass
+
+            def read(self) -> bytes:
+                """Read response body."""
+                return json.dumps({"embeddings": [[3.0, 4.0]]}).encode("utf-8")
+
+        with patch("urllib.request.urlopen", return_value=MockSingleResp()):
+            single = client.embed_single("猫")
+            self.assertIsNotNone(single)
+            if single:
+                self.assertAlmostEqual(single[0], 0.6)
+
+        # Empty input handling
+        self.assertEqual(client.embed_batch([]), [])
+        self.assertIsNone(client.embed_single("   "))
+
+    def test_catalog_vector_index_build_save_load_search(self) -> None:
+        """Verify CatalogVectorIndex binary serialization, caching, and cosine similarity search."""
+        embed_client = OllamaEmbedClient("http://localhost:11434")
+        # Return orthogonal 2D vectors for the 2 posts
+        mock_vectors = [[1.0, 0.0], [0.0, 1.0]]
+
+        with patch.object(embed_client, "embed_batch", return_value=mock_vectors):
+            idx = CatalogVectorIndex.build_or_load(
+                catalog_path=self.db_path,
+                client=embed_client,
+                cache_dir=self.temp_dir.name,
+                batch_size=10,
+                build_if_missing=True,
+            )
+            self.assertIsNotNone(idx)
+            if idx is None:
+                return
+
+            self.assertEqual(len(idx.post_ids), 2)
+            self.assertEqual(idx.dim, 2)
+
+            # Query aligned with vector 0 ([1.0, 0.0]) -> top result should be post 0
+            results = idx.search_similar([1.0, 0.0], top_k=2)
+            self.assertGreaterEqual(len(results), 1)
+            top_post_id, top_score = results[0]
+            self.assertEqual(top_post_id, idx.post_ids[0])
+            self.assertAlmostEqual(top_score, 1.0, places=4)
+
+            # Verify reload from disk without re-embedding
+            with patch.object(embed_client, "embed_batch") as mock_never:
+                cached_idx = CatalogVectorIndex.build_or_load(
+                    catalog_path=self.db_path,
+                    client=embed_client,
+                    cache_dir=self.temp_dir.name,
+                )
+                mock_never.assert_not_called()
+                self.assertIsNotNone(cached_idx)
+                if cached_idx:
+                    self.assertEqual(len(cached_idx.post_ids), 2)
+
+    def test_search_hybrid_presearch_and_formatting(self) -> None:
+        """Verify search_hybrid_presearch merges lexical and vector candidates and formats markdown block."""
+        embed_client = OllamaEmbedClient("http://localhost:11434")
+        mock_vector = [1.0, 0.0]
+
+        with (
+            patch.object(embed_client, "embed_single", return_value=mock_vector),
+            patch.object(CatalogVectorIndex, "build_or_load") as mock_build_idx,
+        ):
+            # Create a mock vector index that returns the first post
+            mock_idx = MagicMock()
+            mock_idx.dim = 2
+            mock_idx.search_similar.return_value = [(1, 0.95)]
+            mock_build_idx.return_value = mock_idx
+
+            candidates = search_hybrid_presearch(
+                term="猫",
+                catalog_path=self.db_path,
+                embed_client=embed_client,
+                vector_index=mock_idx,
+                limit=5,
+            )
+            self.assertIsInstance(candidates, list)
+            self.assertGreater(len(candidates), 0)
+            self.assertEqual(candidates[0]["suggested_target"], "可愛い猫")
+
+            formatted = format_candidate_context_block(candidates)
+            self.assertIn("Target: 「可愛い猫」", formatted)
+            self.assertIn("可愛い猫のイラスト", formatted)
+
+    def test_parse_llm_json_response_reason_first_and_tiers(self) -> None:
+        """Verify _parse_llm_json_response parses reason-first JSON and extracts confidence tier."""
+        # Tier 1 direct mapping
+        t1_json = json.dumps({
+            "reason": "傷薬 is medicine for cuts, visualizable as 塗り薬",
+            "visualizable": True,
+            "targets": ["塗り薬"],
+            "tier": 1,
+        })
+        parsed1 = _parse_llm_json_response(t1_json)
+        self.assertIsNotNone(parsed1)
+        if parsed1:
+            self.assertTrue(parsed1.get("visualizable"))
+            self.assertEqual(parsed1.get("targets"), ["塗り薬"])
+            self.assertEqual(parsed1.get("tier"), 1)
+            self.assertIn("medicine for cuts", parsed1.get("reason", ""))
+
+        # Tier 2 visual exemplar / prototypical scene
+        t2_json = json.dumps({
+            "reason": "広い is an abstract adjective best represented by a wide meadow",
+            "visualizable": True,
+            "targets": ["広い野原"],
+            "tier": 2,
+        })
+        parsed2 = _parse_llm_json_response(t2_json)
+        self.assertIsNotNone(parsed2)
+        if parsed2:
+            self.assertTrue(parsed2.get("visualizable"))
+            self.assertEqual(parsed2.get("targets"), ["広い野原"])
+            self.assertEqual(parsed2.get("tier"), 2)
+            self.assertIn("wide meadow", parsed2.get("reason", ""))
+
+        # Abstract / non-visual rejection
+        t_rej_json = json.dumps({
+            "reason": "心の中 is an abstract mental concept with no canonical illustration",
+            "visualizable": False,
+            "targets": [],
+        })
+        parsed_rej = _parse_llm_json_response(t_rej_json)
+        self.assertIsNotNone(parsed_rej)
+        if parsed_rej:
+            self.assertFalse(parsed_rej.get("visualizable"))
+            self.assertEqual(parsed_rej.get("targets"), [])
+            self.assertIn("abstract mental concept", parsed_rej.get("reason", ""))
+
+    def test_flush_llm_concepts_tier1_and_tier2(self) -> None:
+        """Verify _flush_llm_concepts writes both Tier 1 concepts and Tier 2 concepts."""
+        out_path = os.path.join(self.temp_dir.name, "out_concepts.json")
+        _flush_llm_concepts(
+            concepts_map={"猫": ["猫"]},
+            out_path=out_path,
+            model="gemma4:26b",
+            tier2_map={"広い": ["広い野原"]},
+            rejected_map={"心の中": "abstract mental state"},
+        )
+
+        with open(out_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        self.assertEqual(data["schema_version"], 1)
+        self.assertEqual(data["source"], "llm_concept")
+        self.assertEqual(data["model"], "gemma4:26b")
+        self.assertEqual(data["concepts"], {"猫": ["猫"]})
+        self.assertEqual(data["tier2_concepts"], {"広い": ["広い野原"]})
+        self.assertEqual(data["rejected"], {"心の中": "abstract mental state"})
+
+    def test_run_ollama_compile_with_recheck_rejected(self) -> None:
+        """Verify run_ollama_compile re-evaluates rejected terms when recheck_rejected is True."""
+        llm_out = os.path.join(self.temp_dir.name, "llm_recheck.json")
+        with open(llm_out, "w", encoding="utf-8") as f:
+            json.dump({
+                "schema_version": 1,
+                "concepts": {},
+                "tier2_concepts": {},
+                "rejected": {"猫": "previously rejected"},
+            }, f)
+
+        mock_candidates = [
+            {"term": "猫", "reading": "ねこ", "frequency": 1, "pos_tags": [], "english_glosses": [], "is_uk": False}
+        ]
+        mock_jpdb_path = os.path.join(self.temp_dir.name, "fake_jpdb.csv")
+        with open(mock_jpdb_path, "w", encoding="utf-8") as f:
+            f.write("term\treading\tfreq\tkana_freq\n猫\tねこ\t1\t1\n")
+
+        with (
+            patch("scripts.synonyms.ollama_agent.load_jpdb_candidates", return_value=(mock_candidates, 0)),
+            patch("scripts.synonyms.ollama_agent.check_ollama_availability", return_value=(True, None)),
+            patch("scripts.synonyms.ollama_agent.run_ollama_agent_batch", return_value=({"猫": ["猫"]}, 0)) as mock_batch,
+        ):
+            # Case 1: recheck_rejected=False -> "猫" is skipped because it is already rejected
+            ok1 = run_ollama_compile(
+                catalog_path=self.db_path,
+                jpdb_path=mock_jpdb_path,
+                llm_out_path=llm_out,
+                cache_dir=self.temp_dir.name,
+                recheck_rejected=False,
+                no_embed=True,
+            )
+            self.assertTrue(ok1)
+            mock_batch.assert_not_called()
+
+            # Case 2: recheck_rejected=True -> "猫" is included for re-evaluation
+            ok2 = run_ollama_compile(
+                catalog_path=self.db_path,
+                jpdb_path=mock_jpdb_path,
+                llm_out_path=llm_out,
+                cache_dir=self.temp_dir.name,
+                recheck_rejected=True,
+                no_embed=True,
+            )
+            self.assertTrue(ok2)
+            mock_batch.assert_called_once()
+
+    def test_main_cli_agent_synonyms_new_flags(self) -> None:
+        """Verify agent_synonyms main CLI passes --embed-model, --no-embed, --recheck-rejected, --pull-models."""
+        with (
+            patch("scripts.agent_synonyms.run_ollama_compile", return_value=True) as mock_compile,
+            patch("scripts.pull_models.pull_declared_models", return_value=True) as mock_pull,
+        ):
+            code = main([
+                "--catalog", self.db_path,
+                "--embed-model", "custom-embed:latest",
+                "--no-embed",
+                "--recheck-rejected",
+                "--pull-models",
+                "--terms", "猫",
+            ])
+            self.assertEqual(code, 0)
+            mock_pull.assert_called_once()
+            mock_compile.assert_called_once()
+            _, kwargs = mock_compile.call_args
+            self.assertEqual(kwargs.get("embed_model"), "custom-embed:latest")
+            self.assertTrue(kwargs.get("no_embed"))
+            self.assertTrue(kwargs.get("recheck_rejected"))
+            self.assertEqual(kwargs.get("ollama_model"), "gemma4:26b")
 
 
 if __name__ == "__main__":

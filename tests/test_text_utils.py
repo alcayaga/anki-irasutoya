@@ -941,23 +941,24 @@ class TestTextUtils(unittest.TestCase):
                     self.assertLess(idx_reading, idx_same_kana)
                     self.assertLess(idx_same_kana, idx_sudachi)
 
-    def test_generate_search_candidates_emits_llm_concept(self) -> None:
-        """Verify generate_search_candidates emits Tier 2 candidates with reason 'llm_concept'."""
+    def test_generate_search_candidates_emits_llm_concept_tier1(self) -> None:
+        """Verify generate_search_candidates emits direct surface matches with reason 'llm_concept' in Tier 1."""
         with patch("addon.text_utils.lookup_llm_concept", return_value=["塗り薬"]):
             cands = generate_search_candidates("傷薬", allow_tier2=True)
             llm_cands = [c for c in cands if c[1] == "llm_concept"]
             self.assertEqual(len(llm_cands), 1)
-            self.assertEqual(llm_cands[0], ("塗り薬", "llm_concept", 2))
+            self.assertEqual(llm_cands[0], ("塗り薬", "llm_concept", 1))
 
-    def test_generate_search_candidates_llm_concept_suppressed_when_tier2_false(self) -> None:
-        """Verify llm_concept candidates are suppressed when allow_tier2 is False."""
+    def test_generate_search_candidates_llm_concept_tier1_retained_when_tier2_false(self) -> None:
+        """Verify direct llm_concept surface candidates are retained in Tier 1 even when allow_tier2 is False."""
         with patch("addon.text_utils.lookup_llm_concept", return_value=["塗り薬"]):
             cands = generate_search_candidates("傷薬", allow_tier2=False)
             llm_cands = [c for c in cands if c[1] == "llm_concept"]
-            self.assertEqual(len(llm_cands), 0)
+            self.assertEqual(len(llm_cands), 1)
+            self.assertEqual(llm_cands[0], ("塗り薬", "llm_concept", 1))
 
-    def test_generate_search_candidates_injected_llm_lookup(self) -> None:
-        """Verify generate_search_candidates uses injected llm_lookup callable."""
+    def test_generate_search_candidates_injected_llm_lookup_tier1(self) -> None:
+        """Verify generate_search_candidates uses injected llm_lookup callable for Tier 1."""
         def mock_llm(term: str) -> List[str]:
             """Mock LLM lookup function."""
             return ["新紙幣"] if term == "新札" else []
@@ -969,22 +970,52 @@ class TestTextUtils(unittest.TestCase):
         )
         llm_cands = [c for c in cands if c[1] == "llm_concept"]
         self.assertEqual(len(llm_cands), 1)
-        self.assertEqual(llm_cands[0], ("新紙幣", "llm_concept", 2))
+        self.assertEqual(llm_cands[0], ("新紙幣", "llm_concept", 1))
 
-    def test_candidate_ordering_tier2_hierarchy_with_llm_concept(self) -> None:
-        """Verify candidate ordering: sudachi_synonym -> llm_concept -> bilingual_gloss."""
+    def test_generate_search_candidates_emits_llm_concept_tier2(self) -> None:
+        """Verify generate_search_candidates emits Tier 2 visual exemplars with reason 'llm_concept_tier2'."""
+        with patch("addon.text_utils.lookup_llm_concept_tier2", return_value=["広い野原"]):
+            cands = generate_search_candidates("広い", allow_tier2=True)
+            llm_cands = [c for c in cands if c[1] == "llm_concept_tier2"]
+            self.assertEqual(len(llm_cands), 1)
+            self.assertEqual(llm_cands[0], ("広い野原", "llm_concept_tier2", 2))
+
+    def test_generate_search_candidates_llm_concept_tier2_suppressed_when_tier2_false(self) -> None:
+        """Verify llm_concept_tier2 candidates are suppressed when allow_tier2 is False."""
+        with patch("addon.text_utils.lookup_llm_concept_tier2", return_value=["広い野原"]):
+            cands = generate_search_candidates("広い", allow_tier2=False)
+            llm_cands = [c for c in cands if c[1] == "llm_concept_tier2"]
+            self.assertEqual(len(llm_cands), 0)
+
+    def test_generate_search_candidates_injected_llm_tier2_lookup(self) -> None:
+        """Verify generate_search_candidates uses injected llm_tier2_lookup callable."""
+        def mock_llm_t2(term: str) -> List[str]:
+            """Mock LLM Tier 2 lookup function."""
+            return ["悩む人のイラスト"] if term == "心の中" else []
+
+        cands = generate_search_candidates(
+            "心の中",
+            allow_tier2=True,
+            llm_tier2_lookup=mock_llm_t2,
+        )
+        llm_cands = [c for c in cands if c[1] == "llm_concept_tier2"]
+        self.assertEqual(len(llm_cands), 1)
+        self.assertEqual(llm_cands[0], ("悩む人のイラスト", "llm_concept_tier2", 2))
+
+    def test_candidate_ordering_tier2_hierarchy_with_llm_concept_tier2(self) -> None:
+        """Verify candidate ordering: sudachi_synonym -> llm_concept_tier2 -> bilingual_gloss."""
         mock_note = {"Expression": "テスト", "Meaning": "test"}
         with patch("addon.text_utils.lookup_sudachi_synonyms", return_value=["スダチターゲット"]):
-            with patch("addon.text_utils.lookup_llm_concept", return_value=["LLMターゲット"]):
+            with patch("addon.text_utils.lookup_llm_concept_tier2", return_value=["LLMターゲット2"]):
                 with patch("addon.text_utils.lookup_bilingual_glosses", return_value=["バイリンガルターゲット"]):
                     cands = generate_search_candidates("テスト", note=mock_note, allow_tier2=True)
                     reasons = [c[1] for c in cands]
                     self.assertIn("sudachi_synonym", reasons)
-                    self.assertIn("llm_concept", reasons)
+                    self.assertIn("llm_concept_tier2", reasons)
                     self.assertIn("bilingual_gloss", reasons)
 
                     idx_sudachi = reasons.index("sudachi_synonym")
-                    idx_llm = reasons.index("llm_concept")
+                    idx_llm = reasons.index("llm_concept_tier2")
                     idx_bilingual = reasons.index("bilingual_gloss")
 
                     self.assertLess(idx_sudachi, idx_llm)
