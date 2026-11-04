@@ -134,6 +134,20 @@ class TestYomitanJpdbCandidates(unittest.TestCase):
             mock_url.assert_not_called()
         self.assertEqual(path, os.path.abspath(cached_file))
 
+    def test_fetch_jpdb_freq_github_accepts_quoted_data_row(self) -> None:
+        """Verify fetch_jpdb_freq_github reuses cache for valid quoted frequency files."""
+        cache_dir = os.path.join(self.temp_dir.name, "cache_quoted")
+        os.makedirs(cache_dir, exist_ok=True)
+        cached_file = os.path.join(cache_dir, "jpdb_v2.2_freq_list_2024-10-13.csv")
+        # Quoted row with "term", "reading", "rank"
+        with open(cached_file, "w", encoding="utf-8") as f:
+            f.write('"猫"\t"ねこ"\t"1"\t"1"\n' * 100)
+
+        with patch("urllib.request.urlopen") as mock_url:
+            path = fetch_jpdb_freq_github(cache_dir=cache_dir)
+            mock_url.assert_not_called()
+        self.assertEqual(path, os.path.abspath(cached_file))
+
     def test_query_yomitan_term_metadata(self) -> None:
         """Verify query_yomitan_term_metadata extracts structured JMdict POS and glosses."""
         mock_resp_data = {
@@ -391,6 +405,21 @@ class TestYomitanJpdbCandidates(unittest.TestCase):
         # Query for 'つの' when ONLY kado_entry is present -> must NOT match
         self.assertIsNone(_parse_yomitan_metadata([kado_entry], term="角", reading="つの"))
 
+        # 4. Term matches but headword has no reading -> must NOT match when reading is requested
+        no_reading_entry = {
+            "headwords": [{"term": "角"}],
+            "definitions": [
+                {
+                    "dictionary": "JMdict (English)",
+                    "tags": [{"name": "n", "category": "partOfSpeech"}],
+                    "entries": ["angle"],
+                }
+            ],
+        }
+        self.assertIsNone(_parse_yomitan_metadata([no_reading_entry], term="角", reading="つの"))
+        # But matches when NO reading is requested
+        self.assertIsNotNone(_parse_yomitan_metadata([no_reading_entry], term="角", reading=None))
+
     def test_load_jpdb_candidates(self) -> None:
         """Verify load_jpdb_candidates filters non-tier1, unmatched, and all modes."""
         tsv_path = os.path.join(self.temp_dir.name, "sample_jpdb.tsv")
@@ -405,8 +434,9 @@ class TestYomitanJpdbCandidates(unittest.TestCase):
 
         def fake_fetch_entries(term: str, *args: Any, **kwargs: Any) -> Tuple[Optional[List[Dict[str, Any]]], bool]:
             """Simulate Yomitan API returning structured JMdict noun entry for terms."""
+            readings = {"まで": "まで", "猫": "ねこ", "犬": "いぬ", "傷薬": "きずぐすり"}
             entry = {
-                "headwords": [{"term": term}],
+                "headwords": [{"term": term, "reading": readings.get(term, term)}],
                 "definitions": [
                     {
                         "dictionary": "JMdict (English)",

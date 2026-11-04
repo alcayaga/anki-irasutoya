@@ -37,12 +37,13 @@ def _is_valid_jpdb_header_or_row(first_line: str) -> bool:
     Returns:
         True if the line starts with a standard 'term' header or has valid delimited columns.
     """
-    if first_line.startswith(("term\t", "term,")):
+    clean_line = first_line.strip()
+    if clean_line.startswith(("term\t", "term,", '"term"\t', '"term",')):
         return True
-    delim = "\t" if "\t" in first_line else ("," if "," in first_line else None)
+    delim = "\t" if "\t" in clean_line else ("," if "," in clean_line else None)
     if not delim:
         return False
-    cols = [c.strip() for c in first_line.split(delim)]
+    cols = [c.strip(' "\'') for c in clean_line.split(delim)]
     if len(cols) >= 3 and cols[2].isdigit():
         return True
     return False
@@ -249,7 +250,7 @@ def _parse_yomitan_metadata(
             for hw in hws:
                 if not isinstance(hw, dict):
                     continue
-                if hw.get("term") == term and (not reading or not hw.get("reading") or hw.get("reading") == reading):
+                if hw.get("term") == term and (not reading or hw.get("reading") == reading):
                     best_entry = entry
                     break
             if best_entry:
