@@ -18,8 +18,28 @@ NOTE_DEFINITION_FIELDS = (
 )
 
 GRAMMAR_POS_TAGS = frozenset({
-    "prt", "conj", "aux", "aux-v", "aux-adj"
+    "prt", "conj", "aux", "aux-v", "aux-adj", "cop", "suf", "pref"
 })
+AFFIX_POS_TAGS = frozenset({"suf", "pref"})
+
+
+def is_grammar_sense(tags: Set[str]) -> bool:
+    """Return True if sense is purely grammatical (particles, conjunctions, copulas, or standalone affixes).
+
+    Args:
+        tags: Set of JMdict POS and dictionary tags for a single definition sense.
+
+    Returns:
+        True if the sense represents a purely grammatical particle, auxiliary, or affix without content POS.
+    """
+    grammar = tags & GRAMMAR_POS_TAGS
+    if not grammar:
+        return False
+    # If the only grammar tags are affixes (suf, pref), check if any content POS is present
+    if grammar <= AFFIX_POS_TAGS:
+        content = {t for t in (tags - GRAMMAR_POS_TAGS) if t in ("n", "pn") or t.startswith(("n-", "v", "adj", "adv"))}
+        return not bool(content)
+    return True
 
 VERB_POS_PATTERN = re.compile(
     r"^(v1(-s)?|v5[a-z]+(-[a-z]+)?|vs|vs-i|vs-s|vs-c|vk)$"
@@ -144,6 +164,7 @@ class YomitanHTMLParser(HTMLParser):
     """Standard-library HTMLParser extracting POS, formsTable, references, and sense notes."""
 
     def __init__(self) -> None:
+        """Initialize parser state tracking POS, forms tables, and glosses."""
         super().__init__()
         self.metadata = YomitanMetadata()
 
@@ -203,6 +224,7 @@ class YomitanHTMLParser(HTMLParser):
         self._current_dictionary: Optional[str] = None
 
     def handle_starttag(self, tag: str, attrs: Sequence[Tuple[str, Optional[str]]]) -> None:
+        """Handle opening HTML tags and update parser container state."""
         attr_dict = dict(attrs)
         sc_content = attr_dict.get("data-sc-content", "") or ""
         data_dict = (attr_dict.get("data-dictionary", "") or "").strip()
@@ -299,6 +321,7 @@ class YomitanHTMLParser(HTMLParser):
             self._legacy_span_depth += 1
 
     def handle_endtag(self, tag: str) -> None:
+        """Handle closing HTML tags and finalize container text extraction."""
         was_excluded = bool(self._excluded_ancestors)
         if self._excluded_ancestors:
             if tag == self._excluded_ancestors[-1]:
@@ -501,6 +524,7 @@ class YomitanHTMLParser(HTMLParser):
                             self._has_collected_gloss = True
 
     def handle_data(self, data: str) -> None:
+        """Handle textual content within active HTML containers."""
         if self._in_i:
             self._current_i_text.append(data)
         if self._in_forms_table and (self._in_th or self._in_td):
@@ -534,7 +558,7 @@ def parse_yomitan_html(html_text: Optional[str]) -> Optional[YomitanMetadata]:
         parser.feed(html_text)
         meta = parser.metadata
         meta.is_particle_or_aux = bool(parser._sense_tags) and all(
-            bool(tags & GRAMMAR_POS_TAGS) for tags in parser._sense_tags
+            is_grammar_sense(tags) for tags in parser._sense_tags
         )
         # If no structured glossary entries were found, populate from legacy spans
         if not meta.english_glosses and parser._legacy_spans:

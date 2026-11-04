@@ -85,6 +85,22 @@ def lookup_sudachi_synonyms(
     return lookup_synonyms(term, source="sudachi", store=store)
 
 
+def lookup_llm_concept(
+    term: str,
+    store: Optional[CatalogStore] = None,
+) -> List[str]:
+    """Look up prioritized LLM-curated visual concept target queries for a given term.
+
+    Args:
+        term: Japanese vocabulary headword or phrase to look up.
+        store: Optional CatalogStore instance (defaults to global default_store()).
+
+    Returns:
+        List of catalog-verified search queries from the 'llm_concept' source.
+    """
+    return lookup_synonyms(term, source="llm_concept", store=store)
+
+
 ENGLISH_STOP_WORDS = frozenset({
     "in", "of", "for", "a", "an", "the", "to", "at", "on", "by", "with",
     "and", "or", "from", "as", "about", "into", "over", "after", "one's",

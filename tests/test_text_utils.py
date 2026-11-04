@@ -34,6 +34,9 @@ class TestTextUtils(unittest.TestCase):
         b_patcher = patch("addon.text_utils.lookup_bilingual_glosses", return_value=[])
         b_patcher.start()
         self.addCleanup(b_patcher.stop)
+        l_patcher = patch("addon.text_utils.lookup_llm_concept", return_value=[])
+        l_patcher.start()
+        self.addCleanup(l_patcher.stop)
 
     def test_empty_and_none(self):
         """Test handling of None and empty string inputs."""
@@ -405,6 +408,14 @@ class TestTextUtils(unittest.TestCase):
         self.assertTrue(is_grammar_function_word("もん"))
         self.assertTrue(is_grammar_function_word("その"))
         self.assertTrue(is_grammar_function_word("これ"))
+        self.assertTrue(is_grammar_function_word("あと"))
+        self.assertTrue(is_grammar_function_word("でした"))
+        self.assertTrue(is_grammar_function_word("だった"))
+        self.assertTrue(is_grammar_function_word("だろう"))
+        self.assertTrue(is_grammar_function_word("じゃない"))
+        self.assertTrue(is_grammar_function_word("ではない"))
+        self.assertTrue(is_grammar_function_word("ます"))
+        self.assertTrue(is_grammar_function_word("でしたら"))
         self.assertFalse(is_grammar_function_word("本"))
         self.assertFalse(is_grammar_function_word("猫"))
         self.assertFalse(is_grammar_function_word("走る"))
@@ -798,6 +809,8 @@ class TestTextUtils(unittest.TestCase):
     def test_generate_search_candidates_ordering_manual_then_kaishi_then_reading(self) -> None:
         """Verify candidate ordering: concept_map (manual) -> kaishi_concept -> note_reading."""
         class MockNote(dict):
+            """Mock dictionary-based Anki note object."""
+
             pass
 
         mock_note = MockNote({"Word": "走る", "Reading": "はしる"})
@@ -927,6 +940,55 @@ class TestTextUtils(unittest.TestCase):
                     self.assertLess(idx_kaishi, idx_reading)
                     self.assertLess(idx_reading, idx_same_kana)
                     self.assertLess(idx_same_kana, idx_sudachi)
+
+    def test_generate_search_candidates_emits_llm_concept(self) -> None:
+        """Verify generate_search_candidates emits Tier 2 candidates with reason 'llm_concept'."""
+        with patch("addon.text_utils.lookup_llm_concept", return_value=["塗り薬"]):
+            cands = generate_search_candidates("傷薬", allow_tier2=True)
+            llm_cands = [c for c in cands if c[1] == "llm_concept"]
+            self.assertEqual(len(llm_cands), 1)
+            self.assertEqual(llm_cands[0], ("塗り薬", "llm_concept", 2))
+
+    def test_generate_search_candidates_llm_concept_suppressed_when_tier2_false(self) -> None:
+        """Verify llm_concept candidates are suppressed when allow_tier2 is False."""
+        with patch("addon.text_utils.lookup_llm_concept", return_value=["塗り薬"]):
+            cands = generate_search_candidates("傷薬", allow_tier2=False)
+            llm_cands = [c for c in cands if c[1] == "llm_concept"]
+            self.assertEqual(len(llm_cands), 0)
+
+    def test_generate_search_candidates_injected_llm_lookup(self) -> None:
+        """Verify generate_search_candidates uses injected llm_lookup callable."""
+        def mock_llm(term: str) -> List[str]:
+            """Mock LLM lookup function."""
+            return ["新紙幣"] if term == "新札" else []
+
+        cands = generate_search_candidates(
+            "新札",
+            allow_tier2=True,
+            llm_lookup=mock_llm,
+        )
+        llm_cands = [c for c in cands if c[1] == "llm_concept"]
+        self.assertEqual(len(llm_cands), 1)
+        self.assertEqual(llm_cands[0], ("新紙幣", "llm_concept", 2))
+
+    def test_candidate_ordering_tier2_hierarchy_with_llm_concept(self) -> None:
+        """Verify candidate ordering: sudachi_synonym -> llm_concept -> bilingual_gloss."""
+        mock_note = {"Expression": "テスト", "Meaning": "test"}
+        with patch("addon.text_utils.lookup_sudachi_synonyms", return_value=["スダチターゲット"]):
+            with patch("addon.text_utils.lookup_llm_concept", return_value=["LLMターゲット"]):
+                with patch("addon.text_utils.lookup_bilingual_glosses", return_value=["バイリンガルターゲット"]):
+                    cands = generate_search_candidates("テスト", note=mock_note, allow_tier2=True)
+                    reasons = [c[1] for c in cands]
+                    self.assertIn("sudachi_synonym", reasons)
+                    self.assertIn("llm_concept", reasons)
+                    self.assertIn("bilingual_gloss", reasons)
+
+                    idx_sudachi = reasons.index("sudachi_synonym")
+                    idx_llm = reasons.index("llm_concept")
+                    idx_bilingual = reasons.index("bilingual_gloss")
+
+                    self.assertLess(idx_sudachi, idx_llm)
+                    self.assertLess(idx_llm, idx_bilingual)
 
     def test_generate_search_candidates_emits_bilingual_gloss(self) -> None:
         """Verify generate_search_candidates emits Tier 2 candidates from bilingual definition glosses."""

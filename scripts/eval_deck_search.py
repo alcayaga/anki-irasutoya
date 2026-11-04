@@ -35,7 +35,12 @@ from addon.ranking import (
     is_image_relevant,
     rank_relevant_images,
 )
-from addon.synonyms import lookup_concept_map, lookup_kaishi_concept, lookup_sudachi_synonyms
+from addon.synonyms import (
+    lookup_concept_map,
+    lookup_kaishi_concept,
+    lookup_llm_concept,
+    lookup_sudachi_synonyms,
+)
 from addon.text_utils import (
     deinflect_japanese,
     extract_furigana_terms,
@@ -180,6 +185,7 @@ def fetch_deck_notes(
     # Sort cards by sort_field (numeric if possible)
     if sort_field:
         def sort_key(card: Dict[str, Any]) -> Any:
+            """Extract numeric or lexical sort key from card sort field."""
             val = card.get("fields", {}).get(sort_field, {}).get("value", "")
             try:
                 return (0, int(val))
@@ -470,16 +476,20 @@ def run_evaluation(
                     "title": best_img.title,
                 })
 
-            # Determine if winning match originated from an affix stem (directly or via concept/Kaishi/Sudachi fallback)
+            # Determine if winning match originated from an affix stem (directly or via concept/Kaishi/Sudachi/LLM fallback)
             is_affix_hit = (matched_reason == "honorific_affix")
-            if not is_affix_hit and matched_reason in ("concept_map", "kaishi_concept", "sudachi_synonym"):
+            if not is_affix_hit and matched_reason in ("concept_map", "kaishi_concept", "sudachi_synonym", "llm_concept"):
                 clean_surface, _ = extract_furigana_terms(raw_source)
                 affix_stems = strip_honorific_affixes(clean_surface)
                 if affix_stems:
                     deinfs = deinflect_japanese(clean_surface)
                     first_deinf = deinfs[0] if deinfs else ""
                     direct_targets = set()
-                    if matched_reason == "sudachi_synonym" and cat_store:
+                    if matched_reason == "llm_concept" and cat_store:
+                        direct_targets = set(lookup_llm_concept(clean_surface, store=cat_store))
+                        if first_deinf:
+                            direct_targets.update(lookup_llm_concept(first_deinf, store=cat_store))
+                    elif matched_reason == "sudachi_synonym" and cat_store:
                         direct_targets = set(lookup_sudachi_synonyms(clean_surface, store=cat_store))
                         if first_deinf:
                             direct_targets.update(lookup_sudachi_synonyms(first_deinf, store=cat_store))
@@ -608,7 +618,7 @@ def run_evaluation(
         print("-" * 72)
         print(f"{'1. Legacy (Naive Direct Query)':<38s} | {cat_leg_baseline:4d} / {valid_total:<5d} | {leg_pct:6.2f}% | —")
         print(f"{'2. Tier 1 (Syntactic & Script Norm)':<38s} | {t1_hits:4d} / {valid_total:<5d} | {t1_pct:6.2f}% | {delta_t1:+5.2f}% ({t1_hits - cat_leg_baseline:+d} cards)")
-        print(f"{'3. Tier 2 (Japanese Readings/Deinf)':<38s} | {t2_no_bi_hits:4d} / {valid_total:<5d} | {t2_pct:6.2f}% | {delta_t2:+5.2f}% ({t2_no_bi_hits - t1_hits:+d} cards)")
+        print(f"{'3. Tier 2 (Readings/Deinf/Concepts)':<38s} | {t2_no_bi_hits:4d} / {valid_total:<5d} | {t2_pct:6.2f}% | {delta_t2:+5.2f}% ({t2_no_bi_hits - t1_hits:+d} cards)")
         print(f"{'4. Bilingual Gloss (Definition Bridge)':<38s} | {cat_hits:4d} / {valid_total:<5d} | {full_pct:6.2f}% | {delta_bi:+5.2f}% ({cat_hits - t2_no_bi_hits:+d} cards)")
         print("-" * 72)
         print(f"Net Improvement: {cat_hits - cat_leg_baseline:+d} cards ({net_delta:+5.2f}% recall gain over Legacy)")
@@ -665,7 +675,8 @@ def run_evaluation(
         sys.exit(1)
 
 
-def main():
+def main() -> None:
+    """CLI entrypoint for AnkiConnect deck search recall evaluation."""
     parser = argparse.ArgumentParser(
         description="Evaluate and compare Irasutoya search recall against an Anki deck via AnkiConnect."
     )

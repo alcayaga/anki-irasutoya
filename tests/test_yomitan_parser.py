@@ -82,6 +82,26 @@ class TestYomitanParser(unittest.TestCase):
         self.assertEqual(meta_miru.verb_class, "v1")
         self.assertFalse(meta_miru.is_particle_or_aux)
 
+    def test_mixed_noun_and_affix_sense_not_marked_as_particle_or_aux(self):
+        """Test that a noun with a secondary or concurrent affix tag (e.g. n, suf) is NOT marked grammar."""
+        html_hito = (
+            '<div><ol>'
+            '<li><i>(1, n, suf, JMdict [2025-11-01])</i> <span>person</span></li>'
+            '</ol></div>'
+        )
+        meta_hito = parse_yomitan_html(html_hito)
+        self.assertIsNotNone(meta_hito)
+        self.assertFalse(meta_hito.is_particle_or_aux)
+
+        html_pure_suf = (
+            '<div><ol>'
+            '<li><i>(1, suf, uk, JMdict [2025-11-01])</i> <span>pluralizing suffix</span></li>'
+            '</ol></div>'
+        )
+        meta_pure_suf = parse_yomitan_html(html_pure_suf)
+        self.assertIsNotNone(meta_pure_suf)
+        self.assertTrue(meta_pure_suf.is_particle_or_aux)
+
     def test_forms_table(self):
         """Test extracting canonical ★ Kanji forms from formsTable and ignoring rare ones."""
         html_table = (
@@ -648,6 +668,23 @@ class TestYomitanParser(unittest.TestCase):
         )
         meta = parse_yomitan_html(html)
         self.assertEqual(meta.english_glosses, ["first definition", "second definition"])
+
+    def test_is_grammar_sense_with_pronoun_and_affixes(self) -> None:
+        """Verify is_grammar_sense treats pn as content POS, preserving lexical affix combinations."""
+        from addon.yomitan_parser import is_grammar_sense
+
+        # Standalone affix is grammar sense
+        self.assertTrue(is_grammar_sense({"pref"}))
+        self.assertTrue(is_grammar_sense({"suf"}))
+        # Affix with noun is content sense (not grammar sense)
+        self.assertFalse(is_grammar_sense({"pref", "n"}))
+        # Affix with pronoun is content sense (not grammar sense)
+        self.assertFalse(is_grammar_sense({"pref", "pn"}))
+        self.assertFalse(is_grammar_sense({"suf", "pn"}))
+        # Particles and copulas remain grammar senses regardless
+        self.assertTrue(is_grammar_sense({"prt", "n"}))
+        self.assertTrue(is_grammar_sense({"cop"}))
+        self.assertFalse(is_grammar_sense({"n"}))
 
 
 if __name__ == "__main__":

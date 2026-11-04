@@ -18,6 +18,7 @@ from addon.feed import IrasutoyaImage, ParsedPost
 from addon.synonyms import (
     lookup_concept_map,
     lookup_kaishi_concept,
+    lookup_llm_concept,
     lookup_sudachi_synonyms,
     lookup_synonyms,
 )
@@ -136,6 +137,51 @@ class TestSynonyms(unittest.TestCase):
             self.assertEqual(lookup_kaishi_concept("私"), ["自己紹介"])
             self.assertEqual(lookup_kaishi_concept("今"), ["時計"])
             self.assertEqual(lookup_kaishi_concept("亡くなる"), [])
+
+    def test_lookup_llm_concept_and_priority_order(self) -> None:
+        """Verify lookup_llm_concept filters for llm_concept and get_synonyms respects priority order."""
+        conn = sqlite3.connect(self.db_path)
+        write_synonyms(
+            conn,
+            source="llm_concept",
+            mapping={"傷薬": ["塗り薬"], "テスト語": ["LLMターゲット"]},
+        )
+        write_synonyms(
+            conn,
+            source="manual",
+            mapping={"テスト語": ["手動ターゲット"]},
+        )
+        write_synonyms(
+            conn,
+            source="donkuri/kaishi",
+            mapping={"テスト語": ["海志ターゲット"]},
+        )
+        write_synonyms(
+            conn,
+            source="sudachi",
+            mapping={"テスト語": ["須田知ターゲット"]},
+        )
+        write_synonyms(
+            conn,
+            source="bilingual_gloss",
+            mapping={"テスト語": ["二言語ターゲット"]},
+        )
+        conn.commit()
+        conn.close()
+
+        custom_store = CatalogStore(self.db_path)
+        with patch("addon.synonyms.default_store", return_value=custom_store):
+            # lookup_llm_concept filters only llm_concept
+            self.assertEqual(lookup_llm_concept("傷薬"), ["塗り薬"])
+            self.assertEqual(lookup_llm_concept("テスト語"), ["LLMターゲット"])
+            self.assertEqual(lookup_llm_concept("亡くなる"), [])
+
+            # get_synonyms returns sources in order: manual > donkuri/kaishi > sudachi > llm_concept > bilingual_gloss
+            all_targets = custom_store.get_index().get_synonyms("テスト語")
+            self.assertEqual(
+                all_targets,
+                ["手動ターゲット", "海志ターゲット", "須田知ターゲット", "LLMターゲット", "二言語ターゲット"],
+            )
 
     def test_lookup_sudachi_synonyms_source_filtering(self) -> None:
         """Verify lookup_sudachi_synonyms specifically filters for sudachi source mappings."""
@@ -730,6 +776,8 @@ class TestSynonyms(unittest.TestCase):
             z.writestr("collection.anki21b", b"small_compressed_data")
 
         class DummyInfo:
+            """Mock ZipInfo representing oversized file."""
+
             file_size: int = 60 * 1024 * 1024
 
         with patch.object(zipfile.ZipFile, "getinfo", return_value=DummyInfo()):
@@ -879,12 +927,16 @@ class TestSynonyms(unittest.TestCase):
         real_connect = sqlite3.connect
 
         class FailingVacuumConnection(sqlite3.Connection):
+            """Connection subclass simulating disk-full error on VACUUM."""
+
             def execute(self, sql: str, *parameters: Any) -> sqlite3.Cursor:
+                """Execute SQL query or raise on VACUUM."""
                 if "VACUUM" in sql.upper():
                     raise sqlite3.OperationalError("Simulated disk full during VACUUM")
                 return super().execute(sql, *parameters)
 
         def fake_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+            """Intercept connection creation to inject FailingVacuumConnection factory."""
             if args and "vacuum_fail_catalog" in str(args[0]):
                 kwargs["factory"] = FailingVacuumConnection
             return real_connect(*args, **kwargs)

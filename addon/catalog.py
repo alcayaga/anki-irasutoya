@@ -123,9 +123,10 @@ class CatalogIndex:
             "manual": 0,
             "donkuri/kaishi": 1,
             "sudachi": 2,
-            "bilingual_gloss": 3,
-            "wordnet_synonym": 4,
-            "wordnet_hypernym": 5,
+            "llm_concept": 3,
+            "bilingual_gloss": 4,
+            "wordnet_synonym": 5,
+            "wordnet_hypernym": 6,
         }
         for src in sorted(src_map, key=lambda s: (source_order.get(s, 99), s)):
             for t in src_map[src]:
