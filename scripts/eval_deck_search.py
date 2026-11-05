@@ -171,13 +171,18 @@ def fetch_deck_notes(
     deck_name: str,
     sort_field: Optional[str] = "FreqSort",
     limit: int = 50,
-    anki_url: str = "http://localhost:8765"
+    anki_url: str = "http://localhost:8765",
+    query: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Fetch and sort notes from the specified deck via AnkiConnect."""
-    escaped_deck = deck_name.replace('"', '\\"')
-    card_ids = anki_invoke("findCards", anki_url=anki_url, query=f'deck:"{escaped_deck}"')
+    if query:
+        search_query = query
+    else:
+        escaped_deck = deck_name.replace('"', '\\"')
+        search_query = f'deck:"{escaped_deck}"'
+    card_ids = anki_invoke("findCards", anki_url=anki_url, query=search_query)
     if not card_ids:
-        print(f"Warning: No cards found in deck '{deck_name}'.")
+        print(f"Warning: No cards found for query '{search_query}'.")
         return []
 
     cards_info = anki_invoke("cardsInfo", anki_url=anki_url, cards=card_ids)
@@ -242,6 +247,7 @@ def run_evaluation(
     anki_url: str = "http://localhost:8765",
     track_stages: bool = True,
     show_bilingual_hits: bool = True,
+    query: Optional[str] = None,
 ) -> None:
     """Run comparative evaluation between legacy, live, and offline catalog search.
 
@@ -258,11 +264,15 @@ def run_evaluation(
         anki_url: Local AnkiConnect HTTP URL.
         track_stages: Whether to calculate stage-by-stage incremental recall deltas.
         show_bilingual_hits: Whether to output the audit table of bilingual gloss hits.
+        query: Optional custom Anki search query (e.g. 'flag:4', overrides default deck query).
     """
     print("=" * 72)
     print("  IRASUTOYA SEARCH RECALL BENCHMARK (NON-DESTRUCTIVE DRY RUN)")
     print("=" * 72)
-    print(f"Deck:               {deck_name}")
+    if query:
+        print(f"Query:              {query}")
+    else:
+        print(f"Deck:               {deck_name}")
     print(f"Sort Field:         {sort_field}")
     print(f"Sample Limit:       {'All Notes' if limit <= 0 else limit}")
     print(f"Polite Delay:       {delay}s")
@@ -273,7 +283,7 @@ def run_evaluation(
     print("-" * 72)
 
     try:
-        notes = fetch_deck_notes(deck_name, sort_field=sort_field, limit=limit, anki_url=anki_url)
+        notes = fetch_deck_notes(deck_name, sort_field=sort_field, limit=limit, anki_url=anki_url, query=query)
     except Exception as e:
         print(f"\n[ERROR] {e}\n")
         sys.exit(1)
@@ -680,6 +690,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Evaluate and compare Irasutoya search recall against an Anki deck via AnkiConnect."
     )
+    parser.add_argument("--query", default=None, help="Custom Anki search query (e.g. 'flag:4', overrides --deck)")
     parser.add_argument("--deck", default="Mining", help="Anki deck name to evaluate (default: 'Mining')")
     parser.add_argument("--sort", default="FreqSort", help="Field to sort cards by (default: 'FreqSort')")
     parser.add_argument("--source-field", default=None, help="Source field to query (default: auto-detect Expression/Word)")
@@ -712,6 +723,7 @@ def main() -> None:
         anki_url=args.anki_url,
         track_stages=not args.no_stages,
         show_bilingual_hits=not args.no_bilingual_hits,
+        query=args.query,
     )
 
 
