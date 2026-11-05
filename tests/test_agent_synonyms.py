@@ -2423,8 +2423,9 @@ class TestPullModelsAndEmbedPresearch(unittest.TestCase):
         mock_conn = MagicMock()
         mock_conn.request.side_effect = TimeoutError("read timed out")
         client._connections["localhost:11434"] = mock_conn
-        with self.assertRaises(TimeoutError):
-            client.post_json("http://localhost:11434/api/chat", {"test": 123})
+        with patch("urllib.request.getproxies", return_value={}):
+            with self.assertRaises(TimeoutError):
+                client.post_json("http://localhost:11434/api/chat", {"test": 123})
         self.assertNotIn("localhost:11434", client._connections)
         mock_conn.close.assert_called_once()
 
