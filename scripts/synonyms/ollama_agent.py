@@ -49,16 +49,33 @@ __all__ = [
     "JAPANESE_CHAR_RE",
     "OLLAMA_SYSTEM_PROMPT",
     "SEARCH_CATALOG_TOOL",
+    "TEXT_ASSET_TERM_KEYWORDS",
     "VALID_JAPANESE_LATIN_ACRONYMS",
     "_KeepAliveJSONClient",
     "_contains_english_word",
     "_flush_llm_concepts",
+    "_is_disallowed_text_callout_target",
     "_parse_llm_json_response",
     "check_ollama_availability",
     "run_ollama_agent_batch",
     "run_ollama_compile",
     "search_catalog_for_agent",
 ]
+
+TEXT_ASSET_TERM_KEYWORDS: Tuple[str, ...] = ("文字", "フォント", "ロゴ")
+
+
+def _is_disallowed_text_callout_target(target: str, term: str) -> bool:
+    """Return True if target is an イラスト文字 asset for a term that does not denote text or fonts.
+
+    Args:
+        target: Cleaned catalog search target candidate.
+        term: Vocabulary term being compiled.
+
+    Returns:
+        True if target contains 'イラスト文字' and term contains none of TEXT_ASSET_TERM_KEYWORDS.
+    """
+    return "イラスト文字" in target and not any(kw in term for kw in TEXT_ASSET_TERM_KEYWORDS)
 
 
 
@@ -175,6 +192,7 @@ def run_ollama_agent_batch(
     embed_model: str = "qwen3-embedding:4b",
     on_match: Optional[Callable[..., None]] = None,
     on_reject: Optional[Callable[..., None]] = None,
+    on_unverified: Optional[Callable[[str, str], None]] = None,
 ) -> Tuple[Dict[str, List[str]], int]:
     """Run interactive agentic search loop via Ollama /api/chat with search_catalog tool.
 
@@ -191,6 +209,7 @@ def run_ollama_agent_batch(
         embed_model: Ollama embedding model tag.
         on_match: Optional callback invoked immediately with (term, targets, tier).
         on_reject: Optional callback invoked with (term, reason, tier).
+        on_unverified: Optional callback invoked with (term, reason) when visualizable targets are unverified in catalog.
 
     Returns:
         Tuple of (mappings_dict, failed_candidates_count).
@@ -489,6 +508,8 @@ def run_ollama_agent_batch(
                                         or _contains_english_word(clean_t)
                                     ):
                                         continue
+                                    if _is_disallowed_text_callout_target(clean_t, term):
+                                        continue
                                     results = filter_relevant_illustrations(index.search(clean_t), clean_t)
                                     if has_title_illustration_match(results, clean_t):
                                         if clean_t not in valid_targets:
@@ -523,22 +544,35 @@ def run_ollama_agent_batch(
                             else:
                                 if parsed.get("visualizable") is True:
                                     reason = f"unverified in catalog: proposed targets {parsed.get('targets', [])!r} (LLM reason: {parsed.get('reason', '')})"
-                                    tier = int(parsed.get("tier", 2)) if str(parsed.get("tier")) in ("1", "2") else 2
+                                    logger.info(
+                                        "Unverified target miss for '%s' (%d turns, %.2fs)\n  Reason: %s",
+                                        term,
+                                        _turn + 1,
+                                        elapsed,
+                                        reason,
+                                    )
+                                    if on_unverified:
+                                        on_unverified(term, reason)
+                                    elif on_reject:
+                                        if on_reject_arity >= 3:
+                                            on_reject(term, reason, 2)
+                                        else:
+                                            on_reject(term, reason)
                                 else:
                                     reason = str(parsed.get("reason", "non-visualizable")).strip() or "non-visualizable"
                                     tier = int(parsed.get("tier", 2)) if str(parsed.get("tier")) in ("1", "2") else 2
-                                logger.info(
-                                    "Rejected '%s' (%d turns, %.2fs)\n  Reason: %s",
-                                    term,
-                                    _turn + 1,
-                                    elapsed,
-                                    reason,
-                                )
-                                if on_reject:
-                                    if on_reject_arity >= 3:
-                                        on_reject(term, reason, tier)
-                                    else:
-                                        on_reject(term, reason)
+                                    logger.info(
+                                        "Rejected '%s' (%d turns, %.2fs)\n  Reason: %s",
+                                        term,
+                                        _turn + 1,
+                                        elapsed,
+                                        reason,
+                                    )
+                                    if on_reject:
+                                        if on_reject_arity >= 3:
+                                            on_reject(term, reason, tier)
+                                        else:
+                                            on_reject(term, reason)
                         break
                 else:
                     elapsed = time.monotonic() - t_start
@@ -565,6 +599,7 @@ def _flush_llm_concepts(
     tier2_map: Optional[Dict[str, List[str]]] = None,
     rejected_map: Optional[Dict[str, str]] = None,
     stale_map: Optional[Dict[str, Any]] = None,
+    unverified_map: Optional[Dict[str, str]] = None,
 ) -> None:
     """Atomically write compiled LLM concepts, Tier 2 concepts, rejected terms, and pending stale entries to JSON.
 
@@ -575,8 +610,10 @@ def _flush_llm_concepts(
         tier2_map: Optional mapping of Japanese term to Tier 2 visual exemplars.
         rejected_map: Optional mapping of rejected terms to explanation strings.
         stale_map: Optional mapping of unevaluated concepts with stale catalog targets.
+        unverified_map: Optional mapping of visualizable target misses for diagnostics.
     """
     rej = rejected_map or {}
+    unver = unverified_map or {}
     stale = stale_map or {}
     t2 = tier2_map or {}
     out_data = {
@@ -588,6 +625,8 @@ def _flush_llm_concepts(
         "tier2_concepts": {k: t2[k] for k in sorted(t2)},
         "rejected": {k: rej[k] for k in sorted(rej)},
     }
+    if unver:
+        out_data["unverified"] = {k: unver[k] for k in sorted(unver)}
     if stale:
         out_data["stale"] = {k: stale[k] for k in sorted(stale)}
     abs_path = os.path.abspath(out_path)
@@ -720,7 +759,9 @@ def run_ollama_compile(
     existing_concepts: Dict[str, List[str]] = {}
     existing_tier2_concepts: Dict[str, List[str]] = {}
     existing_rejected: Dict[str, str] = {}
+    existing_unverified: Dict[str, str] = {}
     stale_raw_concepts: Dict[str, Any] = {}
+    migrated_unverified = False
     if os.path.isfile(llm_out_path):
         try:
             with open(llm_out_path, "r", encoding="utf-8") as f:
@@ -760,6 +801,8 @@ def run_ollama_compile(
                         clean_ct = clean_search_query(str(ct))
                         if not clean_ct or clean_search_query(clean_ct) != clean_ct:
                             continue
+                        if _is_disallowed_text_callout_target(clean_ct, c_term):
+                            continue
                         res = filter_relevant_illustrations(index.search(clean_ct), clean_ct)
                         if res and has_title_illustration_match(res, clean_ct):
                             if clean_ct not in valid_c_targets:
@@ -783,12 +826,24 @@ def run_ollama_compile(
                     len(all_stale),
                     sorted(all_stale),
                 )
-            raw_rej = prev_data.get("rejected", {})
-            if isinstance(raw_rej, dict):
-                existing_rejected = {
-                    k: str(v) for k, v in raw_rej.items()
+            raw_unverified = prev_data.get("unverified", {})
+            if isinstance(raw_unverified, dict):
+                existing_unverified = {
+                    k: str(v) for k, v in raw_unverified.items()
                     if k not in existing_concepts and k not in existing_tier2_concepts
                 }
+            raw_rej = prev_data.get("rejected", {})
+            if isinstance(raw_rej, dict):
+                for k, v in raw_rej.items():
+                    if k in existing_concepts or k in existing_tier2_concepts:
+                        continue
+                    str_v = str(v)
+                    if str_v.startswith("unverified in catalog:"):
+                        migrated_unverified = True
+                        if k not in existing_unverified:
+                            existing_unverified[k] = str_v
+                    else:
+                        existing_rejected[k] = str_v
             elif isinstance(raw_rej, list):
                 existing_rejected = {
                     k: "rejected" for k in raw_rej
@@ -806,7 +861,7 @@ def run_ollama_compile(
         """Return unevaluated stale concepts outside the active 'concepts' key."""
         return {
             t: v for t, v in stale_raw_concepts.items()
-            if t not in existing_concepts and t not in existing_tier2_concepts and t not in existing_rejected
+            if t not in existing_concepts and t not in existing_tier2_concepts and t not in existing_rejected and t not in existing_unverified
         }
 
     # Initialize Hybrid Vector Index if enabled
@@ -833,9 +888,10 @@ def run_ollama_compile(
             logger.warning("Could not initialize vector index (%s); using pure lexical pre-search", vec_exc)
             vector_index = None
 
+    has_artifact_updates = bool(stale_raw_concepts or migrated_unverified)
     if not candidates:
         logger.warning("No candidates found to compile.")
-        if stale_raw_concepts:
+        if has_artifact_updates:
             try:
                 _flush_llm_concepts(
                     existing_concepts,
@@ -844,6 +900,7 @@ def run_ollama_compile(
                     tier2_map=existing_tier2_concepts,
                     rejected_map=existing_rejected,
                     stale_map=_pending_stale(),
+                    unverified_map=existing_unverified,
                 )
             except Exception as exc:
                 logger.error("Failed to persist revalidated concepts on empty candidates exit to %s: %s", llm_out_path, exc)
@@ -863,23 +920,24 @@ def run_ollama_compile(
         if not force_explicit:
             if c_term in existing_concepts or c_term in existing_tier2_concepts:
                 continue
-            if not recheck_rejected and c_term in existing_rejected:
+            if not recheck_rejected and (c_term in existing_rejected or c_term in existing_unverified):
                 continue
         seen_terms.add(c_term)
         remaining_candidates.append(c)
 
     logger.info(
-        "Candidate evaluation pool: %d candidates (%d Tier 1 concepts, %d Tier 2 concepts, %d rejected in %s, %d remaining)",
+        "Candidate evaluation pool: %d candidates (%d Tier 1 concepts, %d Tier 2 concepts, %d rejected, %d unverified in %s, %d remaining)",
         len(candidates),
         len(existing_concepts),
         len(existing_tier2_concepts),
         len(existing_rejected),
+        len(existing_unverified),
         llm_out_path,
         len(remaining_candidates),
     )
     if not remaining_candidates:
         logger.info("All %d candidates already evaluated. Nothing to do.", len(candidates))
-        if stale_raw_concepts:
+        if has_artifact_updates:
             try:
                 _flush_llm_concepts(
                     existing_concepts,
@@ -888,6 +946,7 @@ def run_ollama_compile(
                     tier2_map=existing_tier2_concepts,
                     rejected_map=existing_rejected,
                     stale_map=_pending_stale(),
+                    unverified_map=existing_unverified,
                 )
             except Exception as exc:
                 logger.error("Failed to persist revalidated concepts on early exit to %s: %s", llm_out_path, exc)
@@ -907,6 +966,7 @@ def run_ollama_compile(
             existing_tier2_concepts[term] = targets
             existing_concepts.pop(term, None)
         existing_rejected.pop(term, None)
+        existing_unverified.pop(term, None)
         stale_raw_concepts.pop(term, None)
         try:
             _flush_llm_concepts(
@@ -916,6 +976,7 @@ def run_ollama_compile(
                 tier2_map=existing_tier2_concepts,
                 rejected_map=existing_rejected,
                 stale_map=_pending_stale(),
+                unverified_map=existing_unverified,
             )
         except Exception as exc:
             logger.warning("Interim write failed for '%s': %s", term, exc)
@@ -937,6 +998,7 @@ def run_ollama_compile(
         evaluated_count += 1
         existing_concepts.pop(term, None)
         existing_tier2_concepts.pop(term, None)
+        existing_unverified.pop(term, None)
         stale_raw_concepts.pop(term, None)
         existing_rejected[term] = reason
         try:
@@ -947,9 +1009,34 @@ def run_ollama_compile(
                 tier2_map=existing_tier2_concepts,
                 rejected_map=existing_rejected,
                 stale_map=_pending_stale(),
+                unverified_map=existing_unverified,
             )
         except Exception as exc:
             logger.warning("Interim write failed for rejection '%s': %s", term, exc)
+
+    def _handle_unverified(term: str, reason: str) -> None:
+        """Persist unverified target miss immediately to disk for diagnostics."""
+        nonlocal evaluated_count
+        if not force_explicit and (term in existing_concepts or term in existing_tier2_concepts):
+            return
+        evaluated_count += 1
+        existing_concepts.pop(term, None)
+        existing_tier2_concepts.pop(term, None)
+        existing_rejected.pop(term, None)
+        stale_raw_concepts.pop(term, None)
+        existing_unverified[term] = reason
+        try:
+            _flush_llm_concepts(
+                existing_concepts,
+                llm_out_path,
+                ollama_model,
+                tier2_map=existing_tier2_concepts,
+                rejected_map=existing_rejected,
+                stale_map=_pending_stale(),
+                unverified_map=existing_unverified,
+            )
+        except Exception as exc:
+            logger.warning("Interim write failed for unverified '%s': %s", term, exc)
 
     compiled, failed_count = run_ollama_agent_batch(
         candidates=remaining_candidates,
@@ -961,6 +1048,7 @@ def run_ollama_compile(
         embed_model=embed_model,
         on_match=_handle_match,
         on_reject=_handle_reject,
+        on_unverified=_handle_unverified,
         store=store,
     )
     if failed_count > 0:
@@ -986,17 +1074,19 @@ def run_ollama_compile(
             tier2_map=existing_tier2_concepts,
             rejected_map=existing_rejected,
             stale_map=_pending_stale(),
+            unverified_map=existing_unverified,
         )
     except Exception as exc:
         logger.error("Failed to write final compiled concepts artifact to %s: %s", llm_out_path, exc)
         return False
 
     logger.info(
-        "Successfully evaluated candidates (%d new matches, %d T1, %d T2 concepts, %d rejected in %s)",
+        "Successfully evaluated candidates (%d new matches, %d T1, %d T2 concepts, %d rejected, %d unverified in %s)",
         len(compiled),
         len(existing_concepts),
         len(existing_tier2_concepts),
         len(existing_rejected),
+        len(existing_unverified),
         llm_out_path,
     )
     return True

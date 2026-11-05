@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Tuple
 
 from addon.catalog import (
     CatalogStore,
+    canonicalize_synonym_term,
     default_store,
     write_synonyms,
 )
@@ -357,9 +358,25 @@ def populate_llm_concepts(
 
     has_t1 = bool(data.get("concepts") or data.get("mappings"))
     has_t2 = bool(data.get("tier2_concepts"))
+    raw_rej = data.get("rejected")
 
-    if not has_t1 and not has_t2:
-        logger.error("No 'concepts' or 'tier2_concepts' found in %s", llm_json_path)
+    # Extract semantic rejections, filtering out unverified target misses
+    rejection_mapping: Dict[str, List[str]] = {}
+    if isinstance(raw_rej, dict):
+        for term, reason in sorted(raw_rej.items()):
+            clean_term = canonicalize_synonym_term(term)
+            clean_reason = str(reason).strip()
+            if (
+                clean_term
+                and clean_reason
+                and not clean_reason.startswith("unverified in catalog:")
+            ):
+                rejection_mapping[clean_term] = [clean_reason]
+
+    has_rej = bool(rejection_mapping)
+
+    if not has_t1 and not has_t2 and not has_rej:
+        logger.error("No 'concepts', 'tier2_concepts', or usable 'rejected' found in %s", llm_json_path)
         return False
 
     # Phase 1: Validate both Tier 1 and Tier 2 (if present) before mutating the catalog
@@ -426,6 +443,29 @@ def populate_llm_concepts(
         if not _clear_synonym_source(catalog_path, "llm_concept_tier2"):
             return False
 
+    if rejection_mapping:
+        try:
+            conn = sqlite3.connect(catalog_path)
+            try:
+                write_synonyms(conn, source="llm_rejected", mapping=rejection_mapping)
+                logger.info(
+                    "Compiled %d semantic rejections into synonyms (source='llm_rejected')",
+                    len(rejection_mapping),
+                )
+                conn.execute("PRAGMA journal_mode = DELETE")
+                conn.execute("VACUUM")
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.error("Failed to populate llm_rejected in %s: %s", catalog_path, exc)
+            return False
+        finally:
+            update_catalog_sha256(catalog_path)
+    else:
+        if not _clear_synonym_source(catalog_path, "llm_rejected"):
+            return False
+
     return True
 
 
@@ -471,6 +511,8 @@ def validate_catalog_synonyms(catalog_path: Optional[str] = None) -> bool:
 
     target_ok: Dict[str, bool] = {}
     for term, target, source, _ord in rows:
+        if source == "llm_rejected":
+            continue
         if target not in target_ok:
             results = filter_relevant_illustrations(index.search(target), target)
             target_ok[target] = has_title_illustration_match(results, target)

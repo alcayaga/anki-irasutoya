@@ -56,6 +56,18 @@ class TestEvalDeckSearch(unittest.TestCase):
         self.assertEqual(notes[1]["noteId"], 1001)
 
     @patch("scripts.eval_deck_search.anki_invoke")
+    def test_fetch_deck_notes_custom_query(self, mock_invoke: MagicMock) -> None:
+        """Verify fetch_deck_notes queries Anki with custom query when provided."""
+        mock_invoke.side_effect = [
+            [101],
+            [{"cardId": 101, "note": 1001, "fields": {"FreqSort": {"value": "1"}}}],
+            [{"noteId": 1001, "fields": {"Expression": {"value": "猫"}}}],
+        ]
+        notes = fetch_deck_notes("Mining", query="flag:4")
+        self.assertEqual(len(notes), 1)
+        mock_invoke.assert_any_call("findCards", anki_url="http://localhost:8765", query="flag:4")
+
+    @patch("scripts.eval_deck_search.anki_invoke")
     def test_fetch_deck_notes_501_chunk_boundary(self, mock_invoke: MagicMock) -> None:
         """Verify fetch_deck_notes splits 501 note IDs into chunks of 500 and 1."""
         cards = list(range(1, 502))
@@ -77,6 +89,20 @@ class TestEvalDeckSearch(unittest.TestCase):
         self.assertEqual(mock_invoke.call_count, 4)
         self.assertEqual(len(mock_invoke.call_args_list[2][1]["notes"]), 500)
         self.assertEqual(len(mock_invoke.call_args_list[3][1]["notes"]), 1)
+
+    @patch("scripts.eval_deck_search.fetch_deck_notes", return_value=[])
+    @patch("sys.stdout", new_callable=io.StringIO)
+    def test_run_evaluation_empty_query_scope_message(self, mock_stdout: io.StringIO, mock_fetch: MagicMock) -> None:
+        """Verify run_evaluation names custom query in empty-result message."""
+        run_evaluation("Mining", query="flag:4")
+        output = mock_stdout.getvalue()
+        self.assertIn("No notes available to evaluate in query 'flag:4'.", output)
+
+        mock_stdout.truncate(0)
+        mock_stdout.seek(0)
+        run_evaluation("Mining", query=None)
+        output_deck = mock_stdout.getvalue()
+        self.assertIn("No notes available to evaluate in deck 'Mining'.", output_deck)
 
     @patch("scripts.eval_deck_search.anki_invoke")
     @patch("sys.stdout", new_callable=io.StringIO)
