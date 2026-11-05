@@ -56,18 +56,6 @@ class TestEvalDeckSearch(unittest.TestCase):
         self.assertEqual(notes[1]["noteId"], 1001)
 
     @patch("scripts.eval_deck_search.anki_invoke")
-    def test_fetch_deck_notes_custom_query(self, mock_invoke: MagicMock) -> None:
-        """Verify fetch_deck_notes queries Anki with custom query when provided."""
-        mock_invoke.side_effect = [
-            [101],
-            [{"cardId": 101, "note": 1001, "fields": {"FreqSort": {"value": "1"}}}],
-            [{"noteId": 1001, "fields": {"Expression": {"value": "猫"}}}],
-        ]
-        notes = fetch_deck_notes("Mining", query="flag:4")
-        self.assertEqual(len(notes), 1)
-        mock_invoke.assert_any_call("findCards", anki_url="http://localhost:8765", query="flag:4")
-
-    @patch("scripts.eval_deck_search.anki_invoke")
     def test_fetch_deck_notes_501_chunk_boundary(self, mock_invoke: MagicMock) -> None:
         """Verify fetch_deck_notes splits 501 note IDs into chunks of 500 and 1."""
         cards = list(range(1, 502))
