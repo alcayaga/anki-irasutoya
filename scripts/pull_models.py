@@ -14,7 +14,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, Optional, Sequence, Set
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 logger = logging.getLogger("pull_models")
 
@@ -22,6 +22,167 @@ DEFAULT_MODELS_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "models.yml",
 )
+
+
+def _strip_yaml_comment(line: str) -> str:
+    """Strip inline YAML comments while respecting single and double quotes.
+
+    Args:
+        line: Raw line string.
+
+    Returns:
+        Line string without trailing comment.
+    """
+    in_quote: Optional[str] = None
+    for i, ch in enumerate(line):
+        if ch in ('"', "'"):
+            if in_quote is None:
+                in_quote = ch
+            elif in_quote == ch:
+                in_quote = None
+        elif ch == "#" and in_quote is None:
+            return line[:i]
+    return line
+
+
+def _parse_yaml_scalar(val: str) -> Any:
+    """Parse a primitive scalar YAML string value.
+
+    Args:
+        val: Stripped scalar value string.
+
+    Returns:
+        Parsed Python object (str, int, float, bool, or None).
+    """
+    val = val.strip()
+    if not val:
+        return ""
+    if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
+        return val[1:-1]
+    lower = val.lower()
+    if lower == "true":
+        return True
+    if lower == "false":
+        return False
+    if lower in ("null", "none", "~"):
+        return None
+    try:
+        if "." in val or "e" in lower:
+            return float(val)
+        return int(val)
+    except ValueError:
+        return val
+
+
+def _parse_simple_yaml(text: str) -> Dict[str, Any]:
+    """Parse a clean subset of YAML without external third-party dependencies.
+
+    Args:
+        text: YAML content string.
+
+    Returns:
+        Parsed dictionary structure.
+
+    Raises:
+        ValueError: If YAML syntax is invalid or root is not a dictionary.
+    """
+    raw_lines = text.splitlines()
+    processed_lines: List[Tuple[int, str]] = []
+    for line in raw_lines:
+        clean = _strip_yaml_comment(line)
+        if not clean.strip():
+            continue
+        indent = len(clean) - len(clean.lstrip(" "))
+        processed_lines.append((indent, clean.strip()))
+
+    if not processed_lines:
+        return {}
+
+    idx = 0
+
+    def parse_block(min_indent: int) -> Any:
+        nonlocal idx
+        if idx >= len(processed_lines):
+            return {}
+
+        cur_indent, cur_line = processed_lines[idx]
+        if cur_indent < min_indent:
+            return {}
+
+        is_list = cur_line.startswith("- ") or cur_line == "-"
+
+        if is_list:
+            res_list: List[Any] = []
+            while idx < len(processed_lines):
+                indent, line = processed_lines[idx]
+                if indent < min_indent:
+                    break
+                if not (line.startswith("- ") or line == "-"):
+                    break
+                rest = line[2:].strip() if line.startswith("- ") else ""
+                idx += 1
+                if not rest:
+                    child = parse_block(indent + 1)
+                    res_list.append(child)
+                elif ":" in rest:
+                    k, v = rest.split(":", 1)
+                    k = k.strip()
+                    v = v.strip()
+                    item_dict: Dict[str, Any] = {}
+                    if v:
+                        item_dict[k] = _parse_yaml_scalar(v)
+                    else:
+                        item_dict[k] = parse_block(indent + 2)
+                    child_indent = indent + 2
+                    while idx < len(processed_lines):
+                        next_indent, next_line = processed_lines[idx]
+                        if next_indent < child_indent:
+                            break
+                        if next_line.startswith("- ") or next_line == "-":
+                            break
+                        if ":" in next_line:
+                            nk, nv = next_line.split(":", 1)
+                            nk = nk.strip()
+                            nv = nv.strip()
+                            idx += 1
+                            if nv:
+                                item_dict[nk] = _parse_yaml_scalar(nv)
+                            else:
+                                item_dict[nk] = parse_block(next_indent + 1)
+                        else:
+                            idx += 1
+                    res_list.append(item_dict)
+                else:
+                    res_list.append(_parse_yaml_scalar(rest))
+            return res_list
+        else:
+            res_dict: Dict[str, Any] = {}
+            while idx < len(processed_lines):
+                indent, line = processed_lines[idx]
+                if indent < min_indent:
+                    break
+                if line.startswith("- ") or line == "-":
+                    break
+                if ":" not in line:
+                    idx += 1
+                    continue
+                k, v = line.split(":", 1)
+                k = k.strip()
+                v = v.strip()
+                idx += 1
+                if v:
+                    res_dict[k] = _parse_yaml_scalar(v)
+                else:
+                    if idx < len(processed_lines) and processed_lines[idx][0] > indent:
+                        res_dict[k] = parse_block(processed_lines[idx][0])
+                    else:
+                        res_dict[k] = None
+            return res_dict
+
+    result = parse_block(0)
+    if not isinstance(result, dict):
+        raise ValueError("Root YAML structure must be a dictionary")
+    return result
 
 
 def load_models_manifest(path: str = DEFAULT_MODELS_PATH) -> Dict[str, Any]:
@@ -43,18 +204,28 @@ def load_models_manifest(path: str = DEFAULT_MODELS_PATH) -> Dict[str, Any]:
     with open(path, "r", encoding="utf-8") as f:
         content = f.read()
 
-    try:
-        import yaml
-        try:
-            data = yaml.safe_load(content)
-        except Exception as exc:
-            raise ValueError(f"Failed to parse YAML manifest {path}: {exc}") from exc
-    except ImportError:
-        # Fallback to JSON parsing if YAML library is not available
+    data: Optional[Any] = None
+    if path.endswith(".json"):
         try:
             data = json.loads(content)
         except Exception as exc:
-            raise ValueError(f"Failed to parse manifest {path} as JSON/YAML: {exc}") from exc
+            raise ValueError(f"Failed to parse JSON manifest {path}: {exc}") from exc
+    else:
+        try:
+            import yaml
+
+            try:
+                data = yaml.safe_load(content)
+            except Exception as exc:
+                raise ValueError(f"Failed to parse YAML manifest {path}: {exc}") from exc
+        except ImportError:
+            try:
+                data = _parse_simple_yaml(content)
+            except Exception:
+                try:
+                    data = json.loads(content)
+                except Exception as exc:
+                    raise ValueError(f"Failed to parse manifest {path} as YAML/JSON: {exc}") from exc
 
     if not isinstance(data, dict):
         raise ValueError(f"Root manifest structure in {path} must be a dictionary")

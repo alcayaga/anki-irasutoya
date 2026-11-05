@@ -2168,6 +2168,16 @@ class TestPullModelsAndEmbedPresearch(unittest.TestCase):
         self.assertTrue(any(m.get("name") == "gemma4:26b" for m in cfg["models"]))
         self.assertTrue(any(m.get("name") == "qwen3-embedding:4b" for m in cfg["models"]))
 
+        # Verify manifest loading succeeds without PyYAML installed (stdlib fallback)
+        with unittest.mock.patch.dict("sys.modules", {"yaml": None}):
+            data_no_yaml = load_models_manifest(DEFAULT_MODELS_PATH)
+            cfg_no_yaml = data_no_yaml.get("ollama", data_no_yaml)
+            self.assertIn("models", cfg_no_yaml)
+            self.assertEqual(len(cfg_no_yaml["models"]), 2)
+            self.assertEqual(cfg_no_yaml["models"][0]["name"], "gemma4:26b")
+            self.assertEqual(cfg_no_yaml["models"][1]["name"], "qwen3-embedding:4b")
+            self.assertIsNone(cfg_no_yaml["models"][1]["fallback"])
+
         # Test non-existent file
         with self.assertRaises(FileNotFoundError):
             load_models_manifest(os.path.join(self.temp_dir.name, "nonexistent.yml"))
