@@ -3034,31 +3034,40 @@ class TestPullModelsAndEmbedPresearch(unittest.TestCase):
         """Verify resolve_valid_post_target resolves clean, runtime-valid targets for catalog posts."""
         conn = sqlite3.connect(self.db_path)
         cur = conn.cursor()
+        # Post 501: standard suffix '...のイラスト' where candidate matches illustration
         cur.execute(
             "INSERT INTO posts (id, blogger_id, title, description, published, updated, image_count) VALUES (501, 'b_501', '学校の建物のイラスト', '学校です', 'pub', 'upd', 1)",
         )
         cur.execute(
             "INSERT INTO images (id, post_id, key, ord, title, url) VALUES (501, 501, 'k501', 0, '学校の建物のイラスト', 'https://example.com/s0/501.png')",
         )
-        conn.commit()
-
-        store = CatalogStore(self.db_path)
-        index = store.get_index()
-
-        target = resolve_valid_post_target(501, "学校の建物のイラスト", index, conn)
-        self.assertEqual(target, "学校の建物")
-
-        # When post title lacks standard suffix, clean_search_query is used
+        # Post 502: lacks standard suffix, clean_search_query is used
         cur.execute(
             "INSERT INTO posts (id, blogger_id, title, description, published, updated, image_count) VALUES (502, 'b_502', '黒い猫', 'desc', 'pub', 'upd', 1)",
         )
         cur.execute(
             "INSERT INTO images (id, post_id, key, ord, title, url) VALUES (502, 502, 'k502', 0, '黒い猫のイラスト', 'https://example.com/s0/502.png')",
         )
+        # Post 503: primary title '色々な動物のイラスト' fails validation, but image title 'かわいい犬のイラスト' passes
+        cur.execute(
+            "INSERT INTO posts (id, blogger_id, title, description, published, updated, image_count) VALUES (503, 'b_503', '色々な動物のイラスト', '動物たちです', 'pub', 'upd', 1)",
+        )
+        cur.execute(
+            "INSERT INTO images (id, post_id, key, ord, title, url) VALUES (503, 503, 'k503', 0, 'かわいい犬のイラスト', 'https://example.com/s0/503.png')",
+        )
         conn.commit()
-        index_2 = store.get_index()
-        target_2 = resolve_valid_post_target(502, "黒い猫", index_2, conn)
-        self.assertEqual(target_2, "黒い猫")
+
+        store = CatalogStore(self.db_path)
+        index = store.get_index()
+
+        target_501 = resolve_valid_post_target(501, "学校の建物のイラスト", index, conn)
+        self.assertEqual(target_501, "学校の建物")
+
+        target_502 = resolve_valid_post_target(502, "黒い猫", index, conn)
+        self.assertEqual(target_502, "黒い猫")
+
+        target_503 = resolve_valid_post_target(503, "色々な動物のイラスト", index, conn)
+        self.assertEqual(target_503, "かわいい犬")
 
         # Without an in-memory index, returns clean primary
         target_no_index = resolve_valid_post_target(501, "学校の建物のイラスト", None, conn)
@@ -3156,7 +3165,10 @@ class TestPullModelsAndEmbedPresearch(unittest.TestCase):
                 }
             }
 
-        with patch("scripts.synonyms.common._KeepAliveJSONClient.post_json", side_effect=mock_post_json):
+        with (
+            patch("scripts.synonyms.ollama_agent.get_model_options_from_manifest", return_value={"num_predict": 123}),
+            patch("scripts.synonyms.common._KeepAliveJSONClient.post_json", side_effect=mock_post_json),
+        ):
             run_ollama_agent_batch(
                 candidates=[{"term": "はずがない", "reading": "はずがない"}],
                 catalog_path=self.db_path,
@@ -3165,7 +3177,7 @@ class TestPullModelsAndEmbedPresearch(unittest.TestCase):
         self.assertTrue(captured_payloads)
         opts = captured_payloads[0].get("options", {})
         self.assertIn("num_predict", opts)
-        self.assertEqual(opts["num_predict"], 200)
+        self.assertEqual(opts["num_predict"], 123)
 
     def test_run_ollama_agent_batch_clean_search_query_canonicalization(self) -> None:
         """Verify candidate targets with gender suffixes are canonicalized via clean_search_query."""
@@ -3207,6 +3219,30 @@ class TestPullModelsAndEmbedPresearch(unittest.TestCase):
             )
             self.assertEqual(len(mappings), 1)
             self.assertEqual(matched_targets, ["喜ぶ人のイラスト"])
+
+    def test_run_ollama_agent_batch_logs_warning_on_done_reason_length(self) -> None:
+        """Verify a warning is logged when Ollama response indicates truncation via done_reason='length'."""
+        mock_resp = {
+            "done_reason": "length",
+            "eval_count": 200,
+            "message": {
+                "role": "assistant",
+                "content": json.dumps({
+                    "reason": "直接一致",
+                    "visualizable": False,
+                }),
+            },
+        }
+
+        with (
+            patch("scripts.synonyms.common._KeepAliveJSONClient.post_json", return_value=mock_resp),
+            self.assertLogs(logger="synonyms.ollama_agent", level="WARNING") as cm,
+        ):
+            run_ollama_agent_batch(
+                candidates=[{"term": "はずがない", "reading": "はずがない"}],
+                catalog_path=self.db_path,
+            )
+        self.assertTrue(any("was truncated (done_reason='length'" in log_msg for log_msg in cm.output))
 
 
 if __name__ == "__main__":

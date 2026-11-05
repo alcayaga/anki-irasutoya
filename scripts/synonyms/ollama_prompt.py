@@ -224,24 +224,6 @@ def search_catalog_for_agent(
                         "post_description": (p_row[1][:120] if p_row and p_row[1] else ""),
                     }
         return {"query": query, "posts": posts, "runtime_top1_if_queried": top1}
-
-        top1 = None
-        if clean_q:
-            if index is None:
-                store = CatalogStore(catalog_path)
-                index = store.get_index()
-            if index is not None:
-                results = filter_relevant_illustrations(index.search(clean_q), clean_q)
-                if results and has_title_illustration_match(results, clean_q):
-                    best_img = rank_relevant_images(results, clean_q)[0]
-                    cur.execute("SELECT title, description FROM posts WHERE blogger_id = ?", (best_img.post_id,))
-                    p_row = cur.fetchone()
-                    top1 = {
-                        "matched_image_title": best_img.title,
-                        "post_title": p_row[0] if p_row else "",
-                        "post_description": (p_row[1][:120] if p_row and p_row[1] else ""),
-                    }
-        return {"query": query, "posts": posts, "runtime_top1_if_queried": top1}
     finally:
         if close_conn:
             conn.close()

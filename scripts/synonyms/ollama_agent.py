@@ -385,6 +385,15 @@ def run_ollama_agent_batch(
                         failed_candidates += 1
                         break
 
+                    done_reason = resp_data.get("done_reason")
+                    if done_reason == "length":
+                        logger.warning(
+                            "Ollama response for '%s' was truncated (done_reason='length', eval_count=%s, num_predict=%s)",
+                            term,
+                            resp_data.get("eval_count"),
+                            opt_num_predict,
+                        )
+
                     messages.append(msg)
                     tool_calls = msg.get("tool_calls")
                     if isinstance(tool_calls, list) and tool_calls:
