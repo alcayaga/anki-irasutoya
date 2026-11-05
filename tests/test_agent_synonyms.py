@@ -1,4 +1,6 @@
 """Unit tests for the local LLM visual concept compiler (scripts/agent_synonyms.py)."""
+import array
+import hashlib
 import io
 import json
 import os
@@ -6,7 +8,7 @@ import sqlite3
 import tempfile
 import unittest
 import urllib.error
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from unittest.mock import MagicMock, patch
 
 from addon.catalog import CatalogStore, write_posts
@@ -41,9 +43,12 @@ from scripts.synonyms.ollama_agent import (
     _parse_llm_json_response,
 )
 from scripts.synonyms.ollama_embed import (
+    QWEN3_SEARCH_INSTRUCT,
     CatalogVectorIndex,
     OllamaEmbedClient,
+    clean_post_for_embedding,
     format_candidate_context_block,
+    format_query_for_embedding,
     search_hybrid_presearch,
 )
 
@@ -2370,6 +2375,15 @@ class TestPullModelsAndEmbedPresearch(unittest.TestCase):
             self.assertEqual(resp, mock_body)
             mock_url.assert_called_once()
 
+        # Verify unexpected error closes and removes connection
+        mock_conn = MagicMock()
+        mock_conn.request.side_effect = TimeoutError("read timed out")
+        client._connections["localhost:11434"] = mock_conn
+        with self.assertRaises(TimeoutError):
+            client.post_json("http://localhost:11434/api/chat", {"test": 123})
+        self.assertNotIn("localhost:11434", client._connections)
+        mock_conn.close.assert_called_once()
+
         client.close()
 
     def test_ollama_embed_client_batch_and_single(self) -> None:
@@ -2447,6 +2461,7 @@ class TestPullModelsAndEmbedPresearch(unittest.TestCase):
                 client=embed_client,
                 cache_dir=self.temp_dir.name,
                 batch_size=10,
+                dimensions=2,
                 build_if_missing=True,
             )
             self.assertIsNotNone(idx)
@@ -2469,11 +2484,185 @@ class TestPullModelsAndEmbedPresearch(unittest.TestCase):
                     catalog_path=self.db_path,
                     client=embed_client,
                     cache_dir=self.temp_dir.name,
+                    dimensions=2,
                 )
                 mock_never.assert_not_called()
                 self.assertIsNotNone(cached_idx)
                 if cached_idx:
                     self.assertEqual(len(cached_idx.post_ids), 2)
+
+    def test_clean_post_for_embedding(self) -> None:
+        """Verify clean_post_for_embedding strips boilerplate and combines title with description."""
+        # 1. Title with のイラスト and description with boilerplate
+        t1 = "スクール水着のイラスト（上下セット）"
+        d1 = "体育の授業で着る紺色の水着のイラストです。"
+        res1 = clean_post_for_embedding(t1, d1)
+        self.assertEqual(res1, "スクール水着（上下セット）: 体育の授業で着る紺色の水着")
+
+        # 2. Description ending in を描いたイラストです
+        t2 = "猫のイラスト"
+        d2 = "可愛い子猫を描いたイラストです。"
+        res2 = clean_post_for_embedding(t2, d2)
+        self.assertEqual(res2, "猫: 可愛い子猫")
+
+        # 3. Description ending in のキャラクターです
+        t3 = "アマビエのイラスト"
+        d3 = "疫病退散のアマビエのキャラクターです。"
+        res3 = clean_post_for_embedding(t3, d3)
+        self.assertEqual(res3, "アマビエ: 疫病退散のアマビエ")
+
+        # 4. Title only
+        res4 = clean_post_for_embedding("犬のイラスト", "")
+        self.assertEqual(res4, "犬")
+
+        # 5. Empty title fallback
+        res5 = clean_post_for_embedding("", "猫のイラストです。")
+        self.assertEqual(res5, "猫")
+
+    def test_format_query_for_embedding(self) -> None:
+        """Verify format_query_for_embedding formats instruction header and English glosses."""
+        # 1. Term only with default instruction
+        q1 = format_query_for_embedding("猫")
+        self.assertIn(f"Instruct: {QWEN3_SEARCH_INSTRUCT}\nQuery: 猫", q1)
+
+        # 2. Term with English glosses
+        q2 = format_query_for_embedding("一喜一憂", english_glosses=["alternating between joy and grief", "mood swings"])
+        self.assertIn("Query: 一喜一憂 (alternating between joy and grief, mood swings)", q2)
+
+        # 3. Empty term returns empty string
+        self.assertEqual(format_query_for_embedding("   "), "")
+
+        # 4. Custom instruction
+        q4 = format_query_for_embedding("犬", instruct="Retrieve dog illustrations")
+        self.assertEqual(q4, "Instruct: Retrieve dog illustrations\nQuery: 犬")
+
+    def test_ollama_embed_client_chunk_bisect_and_dimensions(self) -> None:
+        """Verify OllamaEmbedClient bisects failing chunks and passes dimensions option."""
+        client = OllamaEmbedClient("http://localhost:11434")
+
+        calls: List[int] = []
+
+        def mock_post(url: str, payload: Dict[str, Any], timeout: Optional[float] = None) -> Dict[str, Any]:
+            """Mock post_json recording chunk lengths and bisecting."""
+            inputs = payload.get("input", [])
+            calls.append(len(inputs))
+            if len(inputs) >= 3:
+                raise urllib.error.HTTPError(url, 400, "Batch too large", {}, None)
+            return {"embeddings": [[1.0, 0.0] for _ in inputs]}
+
+        with patch.object(client._http_client, "post_json", side_effect=mock_post):
+            res = client.embed_batch(["1", "2", "3", "4"], batch_size=4, dimensions=512)
+            self.assertEqual(len(res), 4)
+            self.assertIn(4, calls)
+            self.assertEqual(calls.count(2), 2)
+
+        client.close()
+
+    def test_catalog_vector_index_partial_checkpoint_and_resume(self) -> None:
+        """Verify CatalogVectorIndex.build_or_load resumes from partial checkpoint files."""
+        embed_client = OllamaEmbedClient("http://localhost:11434")
+        cache_dir = self.temp_dir.name
+        clean_model = "qwen3-embedding_4b"
+        partial_base = os.path.join(cache_dir, f"catalog_post_embeddings_{clean_model}.partial")
+
+        # Pre-seed a partial checkpoint with 1 post completed out of 2
+        with open(self.db_path, "rb") as f_db:
+            h = hashlib.sha256(f_db.read()).hexdigest()
+
+        with open(f"{partial_base}.json", "w", encoding="utf-8") as f_meta:
+            json.dump({
+                "count": 1,
+                "dim": 2,
+                "catalog_sha256": h,
+                "model": "qwen3-embedding:4b",
+            }, f_meta)
+
+        with open(f"{partial_base}.bin", "wb") as f_bin:
+            arr = array.array("f", [1.0, 0.0])
+            arr.tofile(f_bin)
+
+        embed_calls: List[List[str]] = []
+
+        def mock_embed_batch(texts: Sequence[str], **kwargs: Any) -> List[List[float]]:
+            """Mock embed_batch tracking passed texts."""
+            embed_calls.append(list(texts))
+            return [[0.0, 1.0] for _ in texts]
+
+        with patch.object(embed_client, "embed_batch", side_effect=mock_embed_batch):
+            idx = CatalogVectorIndex.build_or_load(
+                catalog_path=self.db_path,
+                client=embed_client,
+                cache_dir=cache_dir,
+                batch_size=1,
+                dimensions=2,
+                build_if_missing=True,
+            )
+            self.assertIsNotNone(idx)
+            if idx:
+                self.assertEqual(len(idx.post_ids), 2)
+                # Verify that only the 2nd post was embedded
+                self.assertEqual(len(embed_calls), 1)
+                self.assertEqual(len(embed_calls[0]), 1)
+                # Verify partial files were cleaned up
+                self.assertFalse(os.path.isfile(f"{partial_base}.bin"))
+                self.assertFalse(os.path.isfile(f"{partial_base}.json"))
+
+    def test_run_ollama_agent_batch_upfront_embedding(self) -> None:
+        """Verify run_ollama_agent_batch pre-computes candidate embeddings up front in a single batch."""
+        cands = [
+            {"term": "猫", "reading": "ねこ", "frequency": 1, "english_glosses": ["cat"]},
+            {"term": "犬", "reading": "いぬ", "frequency": 2, "english_glosses": ["dog"]},
+        ]
+        match_payload = {
+            "message": {
+                "role": "assistant",
+                "content": '{"reason": "test", "visualizable": true, "targets": ["猫"], "tier": 1}',
+            }
+        }
+
+        class MockResp:
+            """Mock HTTP response."""
+
+            def __enter__(self) -> "MockResp":
+                """Enter context manager."""
+                return self
+
+            def __exit__(self, *args: Any) -> None:
+                """Exit context manager."""
+                pass
+
+            def read(self) -> bytes:
+                """Read response body."""
+                return json.dumps(match_payload).encode("utf-8")
+
+        mock_client = MagicMock(spec=OllamaEmbedClient)
+        mock_client.embed_batch.return_value = [[1.0, 0.0], [0.0, 1.0]]
+
+        mock_vector_idx = MagicMock(spec=CatalogVectorIndex)
+        mock_vector_idx.dim = 2
+        mock_vector_idx.search_similar.return_value = [(1, 0.9)]
+
+        with (
+            patch("urllib.request.urlopen", return_value=MockResp()),
+            patch("scripts.synonyms.ollama_agent.search_hybrid_presearch", return_value=[]) as mock_presearch,
+        ):
+            res, failed = run_ollama_agent_batch(
+                cands,
+                catalog_path=self.db_path,
+                vector_index=mock_vector_idx,
+                embed_client=mock_client,
+            )
+            # Upfront batch embedding should be called once for all 2 candidates
+            mock_client.embed_batch.assert_called_once()
+            called_texts = mock_client.embed_batch.call_args[0][0]
+            self.assertEqual(len(called_texts), 2)
+            self.assertIn("猫 (cat)", called_texts[0])
+            self.assertIn("犬 (dog)", called_texts[1])
+
+            # Presearch should receive the pre-computed query vectors
+            self.assertEqual(mock_presearch.call_count, 2)
+            self.assertEqual(mock_presearch.call_args_list[0][1].get("query_vector"), [1.0, 0.0])
+            self.assertEqual(mock_presearch.call_args_list[1][1].get("query_vector"), [0.0, 1.0])
 
     def test_search_hybrid_presearch_and_formatting(self) -> None:
         """Verify search_hybrid_presearch merges lexical and vector candidates and formats markdown block."""

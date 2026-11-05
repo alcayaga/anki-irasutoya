@@ -123,6 +123,8 @@ Manage local Ollama models used for visual concept compilation:
 
 ```bash
 python3 scripts/pull_models.py
+# Or under Conda with real-time output streaming:
+conda run --no-capture-output -n anki-irasutoya python scripts/pull_models.py
 ```
 
 For detailed developer setup, testing philosophies, and contribution standards, please refer to [CONTRIBUTING.md](CONTRIBUTING.md).

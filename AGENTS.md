@@ -70,7 +70,7 @@ The add-on ships with an immutable SQLite database at `addon/data/catalog.sqlite
 - **Docstrings, Type Hints & CodeRabbit:** The repository enforces strict code quality and docstring standards via CodeRabbit PR reviews. You **must** provide standard docstrings and explicit type annotations for every new function and class you write, **including** nested helper/mock functions inside your tests.
 
 ## 🛠️ General Guidelines
-- **Always use the Conda Environment:** Execute all Python, `pytest`/`unittest`, and `ruff` commands strictly via the `anki-irasutoya` Conda environment (e.g., `conda run -n anki-irasutoya pytest -v`). Running them globally may miss `aqt` or `ruff` dependencies.
+- **Always use the Conda Environment:** Execute all Python, `pytest`/`unittest`, and `ruff` commands strictly via the `anki-irasutoya` Conda environment (e.g., `conda run -n anki-irasutoya pytest -v`). Running them globally may miss `aqt` or `ruff` dependencies. Pass `--no-capture-output` (e.g., `conda run --no-capture-output -n anki-irasutoya ...`) when running CLI scripts interactively to avoid Conda subprocess output buffering.
 - **Python 3.9+ Compatibility:** CI executes hermetic unit tests across Python 3.9 through 3.13 (`.github/workflows/test.yml`). Maintain Python 3.9 syntax and typing compatibility across `addon/` (e.g., prefer `Optional`, `Union`, `List`, `Dict`, `Tuple`, `Sequence` from `typing` rather than unguarded Python 3.10+ `X | Y` syntax).
 - **Conventional Commits:** It is mandatory to use the Conventional Commits standard (e.g., `feat:`, `fix:`, `docs:`) for all commit messages. This standard must also be applied to branch naming (e.g., `feat/...`, `fix/...`, `docs/...`).
 

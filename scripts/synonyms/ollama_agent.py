@@ -1,5 +1,4 @@
 """Ollama LLM agent loop, search_catalog tool execution, and concept compilation."""
-import http.client
 import inspect
 import json
 import logging
@@ -15,6 +14,7 @@ from addon.catalog import CatalogStore
 from addon.ranking import has_title_illustration_match
 from scripts.synonyms.common import (
     DEFAULT_LLM_CONCEPTS_PATH,
+    _KeepAliveJSONClient,
     _readonly_catalog_uri,
     filter_relevant_illustrations,
 )
@@ -22,6 +22,7 @@ from scripts.synonyms.ollama_embed import (
     CatalogVectorIndex,
     OllamaEmbedClient,
     format_candidate_context_block,
+    format_query_for_embedding,
     search_hybrid_presearch,
 )
 from scripts.synonyms.ollama_prompt import (
@@ -57,100 +58,6 @@ __all__ = [
     "search_catalog_for_agent",
 ]
 
-
-class _KeepAliveJSONClient:
-    """Persistent HTTP/1.1 Keep-Alive connection client with urllib.request fallback."""
-
-    def __init__(self, timeout: float = 60.0) -> None:
-        """Initialize keep-alive HTTP client.
-
-        Args:
-            timeout: Network request timeout in seconds.
-        """
-        self._connections: Dict[str, http.client.HTTPConnection] = {}
-        self._timeout = timeout
-
-    def post_json(self, url: str, payload: Dict[str, Any], timeout: Optional[float] = None) -> Dict[str, Any]:
-        """Send POST request with JSON payload and return parsed JSON response.
-
-        Args:
-            url: Full target HTTP URL.
-            payload: JSON-serializable dictionary.
-            timeout: Optional per-request timeout.
-
-        Returns:
-            Parsed JSON dictionary from the response.
-        """
-        # If urllib.request.urlopen is patched in unit tests, route directly through it
-        if hasattr(urllib.request.urlopen, "mock_calls") or hasattr(urllib.request.urlopen, "assert_called"):
-            req = urllib.request.Request(
-                url,
-                data=json.dumps(payload).encode("utf-8"),
-                headers={"Content-Type": "application/json", "User-Agent": "anki-irasutoya/1.0"},
-            )
-            with urllib.request.urlopen(req, timeout=(timeout or self._timeout)) as resp:
-                return json.loads(resp.read().decode("utf-8"))
-
-        parsed = urllib.parse.urlparse(url)
-        host = parsed.hostname or "localhost"
-        port = parsed.port or (443 if parsed.scheme == "https" else 80)
-        netloc = f"{host}:{port}"
-        path = parsed.path or "/"
-        if parsed.query:
-            path = f"{path}?{parsed.query}"
-
-        data = json.dumps(payload).encode("utf-8")
-        headers = {
-            "Host": netloc,
-            "Content-Type": "application/json",
-            "User-Agent": "anki-irasutoya/1.0",
-            "Connection": "keep-alive",
-            "Content-Length": str(len(data)),
-        }
-
-        # Attempt with cached connection, retry once on disconnect
-        for attempt in range(2):
-            conn = self._connections.get(netloc)
-            if conn is None:
-                if parsed.scheme == "https":
-                    conn = http.client.HTTPSConnection(host, port, timeout=(timeout or self._timeout))
-                else:
-                    conn = http.client.HTTPConnection(host, port, timeout=(timeout or self._timeout))
-                self._connections[netloc] = conn
-
-            try:
-                conn.request("POST", path, body=data, headers=headers)
-                resp = conn.getresponse()
-                body = resp.read().decode("utf-8")
-                if resp.status >= 400:
-                    raise urllib.error.HTTPError(url, resp.status, body, resp.headers, None)
-                return json.loads(body)
-            except (http.client.CannotSendRequest, http.client.BadStatusLine, ConnectionResetError, BrokenPipeError):
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-                self._connections.pop(netloc, None)
-                if attempt == 1:
-                    # Final fallback to standard urllib.request
-                    req = urllib.request.Request(
-                        url,
-                        data=data,
-                        headers={"Content-Type": "application/json", "User-Agent": "anki-irasutoya/1.0"},
-                    )
-                    with urllib.request.urlopen(req, timeout=(timeout or self._timeout)) as resp_fb:
-                        return json.loads(resp_fb.read().decode("utf-8"))
-
-        return {}
-
-    def close(self) -> None:
-        """Close all persistent connections."""
-        for conn in self._connections.values():
-            try:
-                conn.close()
-            except Exception:
-                pass
-        self._connections.clear()
 
 
 def check_ollama_availability(
@@ -282,6 +189,28 @@ def run_ollama_agent_batch(
     on_match_arity = _determine_arity(on_match)
     on_reject_arity = _determine_arity(on_reject)
 
+    # Batch-embed all candidate queries up front if vector index is enabled
+    precomputed_vectors: Dict[str, Optional[List[float]]] = {}
+    if vector_index is not None and embed_client is not None and candidates:
+        logger.info("Pre-computing query embeddings for %d candidates...", len(candidates))
+        query_texts = [
+            format_query_for_embedding(c["term"], c.get("english_glosses"))
+            for c in candidates
+        ]
+        try:
+            raw_vectors = embed_client.embed_batch(
+                query_texts,
+                model=embed_model,
+                dimensions=vector_index.dim,
+            )
+            for c, vec in zip(candidates, raw_vectors):
+                precomputed_vectors[c["term"]] = vec if vec else None
+        except Exception as embed_err:
+            logger.warning(
+                "Upfront batch embedding failed: %s; falling back to per-candidate embedding",
+                embed_err,
+            )
+
     try:
         total = len(candidates)
         for idx, cand in enumerate(candidates, 1):
@@ -304,6 +233,8 @@ def run_ollama_agent_batch(
                     embed_model=embed_model,
                     conn=conn,
                     limit=5,
+                    english_glosses=cand.get("english_glosses"),
+                    query_vector=precomputed_vectors.get(term),
                 )
             except Exception as pre_exc:
                 logger.warning(

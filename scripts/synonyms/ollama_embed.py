@@ -7,6 +7,7 @@ import math
 import os
 import re
 import sqlite3
+import time
 import urllib.parse
 import urllib.request
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -18,17 +19,71 @@ except ImportError:
 
 from addon.catalog import CatalogIndex
 from addon.text_utils import clean_search_query
-from scripts.synonyms.common import _readonly_catalog_uri
+from scripts.synonyms.common import _KeepAliveJSONClient, _readonly_catalog_uri
 
 logger = logging.getLogger("synonyms.ollama_embed")
+
+QWEN3_SEARCH_INSTRUCT = (
+    "Given a Japanese vocabulary term, retrieve Japanese illustration descriptions "
+    "that visually depict the concept or a concrete scene for it"
+)
 
 __all__ = [
     "CatalogVectorIndex",
     "OllamaEmbedClient",
+    "QWEN3_SEARCH_INSTRUCT",
+    "clean_post_for_embedding",
     "format_candidate_context_block",
+    "format_query_for_embedding",
     "l2_normalize",
     "search_hybrid_presearch",
 ]
+
+
+def clean_post_for_embedding(title: str, description: str) -> str:
+    """Strip repetitive Irasutoya boilerplate from post title and description.
+
+    Args:
+        title: Post title (e.g. 'スクール水着のイラスト（上下セット）').
+        description: Post description text.
+
+    Returns:
+        Concise, semantically rich string combining title and description.
+    """
+    t = re.sub(r"のイラスト", "", title or "").strip()
+    d = (description or "").strip()
+    d = re.sub(r"を描いたイラストです。?$", "", d)
+    d = re.sub(r"の(イラスト|キャラクター)です。?$", "", d)
+    d = re.sub(r"イラストです。?$", "", d)
+    d = re.sub(r"です。?$", "", d).strip()
+    if t and d:
+        return f"{t}: {d}"
+    return t or d or (title or "").strip()
+
+
+def format_query_for_embedding(
+    term: str,
+    english_glosses: Optional[Sequence[str]] = None,
+    instruct: str = QWEN3_SEARCH_INSTRUCT,
+) -> str:
+    """Format a runtime search query with Qwen3-Embedding's instruction prefix.
+
+    Args:
+        term: Japanese vocabulary headword.
+        english_glosses: Optional list of English gloss definitions.
+        instruct: Task instruction header for asymmetric retrieval.
+
+    Returns:
+        Formatted instruction-aware query string.
+    """
+    clean_term = term.strip()
+    if not clean_term:
+        return ""
+    gloss_str = ", ".join(g.strip() for g in (english_glosses or [])[:3] if g and g.strip())
+    query_body = f"{clean_term} ({gloss_str})" if gloss_str else clean_term
+    if instruct:
+        return f"Instruct: {instruct}\nQuery: {query_body}"
+    return query_body
 
 
 def l2_normalize(vector: Sequence[float]) -> List[float]:
@@ -70,12 +125,55 @@ class OllamaEmbedClient:
         clean_base = f"{parsed.scheme}://{parsed.netloc}{path}" if parsed.netloc else "http://localhost:11434"
         self._embed_url = f"{clean_base.rstrip('/')}/api/embed"
         self._timeout = timeout
+        self._http_client = _KeepAliveJSONClient(timeout=timeout)
+
+    def _embed_chunk(
+        self,
+        chunk: Sequence[str],
+        model: str,
+        dimensions: int,
+        options: Dict[str, Any],
+    ) -> List[List[float]]:
+        """Embed a single chunk with bisect-retry on HTTP or network errors."""
+        payload: Dict[str, Any] = {
+            "model": model,
+            "input": list(chunk),
+            "dimensions": dimensions,
+            "options": options,
+        }
+        try:
+            resp_data = self._http_client.post_json(self._embed_url, payload, timeout=self._timeout)
+            embeddings = resp_data.get("embeddings", [])
+            if isinstance(embeddings, list) and len(embeddings) == len(chunk):
+                return [
+                    (l2_normalize(vec) if isinstance(vec, list) else [])
+                    for vec in embeddings
+                ]
+            logger.warning("Malformed 'embeddings' response for chunk of size %d", len(chunk))
+        except Exception as exc:
+            if len(chunk) > 1:
+                mid = len(chunk) // 2
+                logger.info(
+                    "Bisecting failed batch (%d items -> %d + %d): %s",
+                    len(chunk),
+                    mid,
+                    len(chunk) - mid,
+                    exc,
+                )
+                left = self._embed_chunk(chunk[:mid], model=model, dimensions=dimensions, options=options)
+                right = self._embed_chunk(chunk[mid:], model=model, dimensions=dimensions, options=options)
+                return left + right
+            logger.warning("Ollama /api/embed failed for single item '%s': %s", chunk[0][:50], exc)
+
+        return [[] for _ in chunk]
 
     def embed_batch(
         self,
         texts: Sequence[str],
         model: str = "qwen3-embedding:4b",
         batch_size: int = 100,
+        dimensions: int = 512,
+        options: Optional[Dict[str, Any]] = None,
     ) -> List[List[float]]:
         """Compute normalized vector embeddings for a batch of strings.
 
@@ -83,6 +181,8 @@ class OllamaEmbedClient:
             texts: Sequence of Japanese or English phrases to embed.
             model: Ollama embedding model name.
             batch_size: Maximum items per /api/embed HTTP request.
+            dimensions: Output embedding dimensionality (e.g. 512 for Matryoshka).
+            options: Optional Ollama options dict (defaults to {'num_ctx': 4096}).
 
         Returns:
             List of L2-normalized float embedding vectors.
@@ -91,40 +191,23 @@ class OllamaEmbedClient:
         if not clean_texts:
             return []
 
+        eff_options = {"num_ctx": 4096}
+        if options:
+            eff_options.update(options)
+
         results: List[List[float]] = []
         total_chunks = (len(clean_texts) + batch_size - 1) // batch_size
         for chunk_idx, i in enumerate(range(0, len(clean_texts), batch_size), start=1):
             chunk = clean_texts[i : i + batch_size]
-            payload = json.dumps({"model": model, "input": chunk}).encode("utf-8")
-            req = urllib.request.Request(
-                self._embed_url,
-                data=payload,
-                headers={"Content-Type": "application/json", "User-Agent": "anki-irasutoya/1.0"},
+            chunk_vectors = self._embed_chunk(
+                chunk,
+                model=model,
+                dimensions=dimensions,
+                options=eff_options,
             )
-            try:
-                with urllib.request.urlopen(req, timeout=self._timeout) as resp:
-                    resp_data = json.loads(resp.read().decode("utf-8"))
-            except Exception as exc:
-                logger.warning("Ollama /api/embed failed for batch of %d items: %s", len(chunk), exc)
-                return []
-
-            if not isinstance(resp_data, dict):
-                logger.warning("Malformed Ollama /api/embed response (not a dict)")
-                return []
-
-            embeddings = resp_data.get("embeddings", [])
-            if not isinstance(embeddings, list):
-                logger.warning("Malformed 'embeddings' field in /api/embed response")
-                return []
-
-            for raw_vec in embeddings:
-                if isinstance(raw_vec, list):
-                    results.append(l2_normalize(raw_vec))
-                else:
-                    results.append([])
-
+            results.extend(chunk_vectors)
             if total_chunks > 5 and (chunk_idx % 5 == 0 or chunk_idx == total_chunks):
-                logger.info("Embedded batch %d/%d (%d posts)", chunk_idx, total_chunks, len(results))
+                logger.info("Embedded batch %d/%d (%d items)", chunk_idx, total_chunks, len(results))
 
         return results
 
@@ -132,12 +215,16 @@ class OllamaEmbedClient:
         self,
         text: str,
         model: str = "qwen3-embedding:4b",
+        dimensions: int = 512,
+        options: Optional[Dict[str, Any]] = None,
     ) -> Optional[List[float]]:
         """Compute normalized embedding vector for a single string.
 
         Args:
             text: Text to embed.
             model: Ollama embedding model name.
+            dimensions: Output embedding dimensionality.
+            options: Optional Ollama options dict.
 
         Returns:
             L2-normalized float embedding vector, or None on failure.
@@ -145,8 +232,59 @@ class OllamaEmbedClient:
         clean = text.strip()
         if not clean:
             return None
-        res = self.embed_batch([clean], model=model, batch_size=1)
+        res = self.embed_batch(
+            [clean],
+            model=model,
+            batch_size=1,
+            dimensions=dimensions,
+            options=options,
+        )
         return res[0] if (res and len(res) == 1 and res[0]) else None
+
+    def close(self) -> None:
+        """Close persistent HTTP client connections."""
+        self._http_client.close()
+
+
+def _save_partial_checkpoint(
+    base_path: str,
+    embeddings: Sequence[Sequence[float]],
+    dim: int,
+    catalog_sha256: str,
+    model: str,
+) -> None:
+    """Save interim progress checkpoint to .partial.bin and .partial.json.
+
+    Args:
+        base_path: Base filesystem path without extension.
+        embeddings: Sequence of normalized embedding float vectors.
+        dim: Dimensionality of each vector.
+        catalog_sha256: Hash of the catalog SQLite file.
+        model: Embedding model name.
+    """
+    os.makedirs(os.path.dirname(os.path.abspath(base_path)), exist_ok=True)
+    meta_path = f"{base_path}.json"
+    bin_path = f"{base_path}.bin"
+
+    meta: Dict[str, Any] = {
+        "count": len(embeddings),
+        "dim": dim,
+        "catalog_sha256": catalog_sha256,
+        "model": model,
+    }
+    tmp_meta = f"{meta_path}.tmp"
+    with open(tmp_meta, "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    os.replace(tmp_meta, meta_path)
+
+    tmp_bin = f"{bin_path}.tmp"
+    with open(tmp_bin, "wb") as f_bin:
+        arr = array.array("f")
+        for vec in embeddings:
+            arr.extend(vec)
+        arr.tofile(f_bin)
+    os.replace(tmp_bin, bin_path)
 
 
 class CatalogVectorIndex:
@@ -258,6 +396,7 @@ class CatalogVectorIndex:
         model: str = "qwen3-embedding:4b",
         cache_dir: str = ".catalog_cache",
         batch_size: int = 100,
+        dimensions: int = 512,
         build_if_missing: bool = False,
     ) -> Optional["CatalogVectorIndex"]:
         """Load cached post embeddings or compute and index catalog posts.
@@ -268,6 +407,7 @@ class CatalogVectorIndex:
             model: Ollama embedding model tag.
             cache_dir: Directory for storing vector cache.
             batch_size: Embedding batch size.
+            dimensions: Target embedding vector dimensionality.
             build_if_missing: If True, builds vector index from scratch if cache is missing.
 
         Returns:
@@ -292,19 +432,32 @@ class CatalogVectorIndex:
             try:
                 with open(meta_path, "r", encoding="utf-8") as f:
                     meta = json.load(f)
-                if meta.get("catalog_sha256") == catalog_sha256:
-                    logger.info("Loaded cached vector index (%d posts, dim=%d) from %s", len(cached.post_ids), cached.dim, cache_base)
+                if meta.get("catalog_sha256") == catalog_sha256 and cached.dim == dimensions:
+                    logger.info(
+                        "Loaded cached vector index (%d posts, dim=%d) from %s",
+                        len(cached.post_ids),
+                        cached.dim,
+                        cache_base,
+                    )
                     return cached
-                logger.info("Catalog SHA256 changed; vector cache at %s is stale", cache_base)
+                logger.info("Catalog SHA256 or dimension changed; vector cache at %s is stale", cache_base)
             except Exception:
                 pass
 
         if not build_if_missing:
-            logger.info("Vector index cache not found at %s; using lexical pre-search (build with --build-vector-index)", cache_base)
+            logger.info(
+                "Vector index cache not found at %s; using lexical pre-search (build with --build-vector-index)",
+                cache_base,
+            )
             return None
 
         # Build vectors from scratch
-        logger.info("Building post vector index using model '%s' from %s...", model, catalog_path)
+        logger.info(
+            "Building post vector index using model '%s' (dim=%d) from %s...",
+            model,
+            dimensions,
+            catalog_path,
+        )
         conn = sqlite3.connect(_readonly_catalog_uri(catalog_path), uri=True)
         try:
             cur = conn.cursor()
@@ -318,17 +471,91 @@ class CatalogVectorIndex:
             return None
 
         post_ids = [r[0] for r in rows]
-        texts = [(f"{r[1]} — {r[2]}" if r[2] else r[1]) for r in rows]
+        texts = [clean_post_for_embedding(r[1], r[2]) for r in rows]
+        total_posts = len(post_ids)
 
-        embeddings = client.embed_batch(texts, model=model, batch_size=batch_size)
-        if not embeddings or len(embeddings) != len(post_ids):
-            logger.warning("Failed to compute complete embeddings for %d posts", len(post_ids))
-            return None
+        partial_base = f"{cache_base}.partial"
+        partial_bin = f"{partial_base}.bin"
+        partial_meta = f"{partial_base}.json"
+        embeddings: List[List[float]] = []
 
-        dim = len(embeddings[0])
-        if dim <= 0 or any(len(vec) != dim for vec in embeddings):
-            logger.warning("Inconsistent or empty embedding dimensions; skipping vector index build")
-            return None
+        if os.path.isfile(partial_bin) and os.path.isfile(partial_meta):
+            try:
+                with open(partial_meta, "r", encoding="utf-8") as f_pm:
+                    p_meta = json.load(f_pm)
+                p_sha = p_meta.get("catalog_sha256")
+                p_model = p_meta.get("model")
+                p_dim = int(p_meta.get("dim", 0))
+                p_count = int(p_meta.get("count", 0))
+                if (
+                    p_sha == catalog_sha256
+                    and p_model == model
+                    and p_dim == dimensions
+                    and 0 < p_count < total_posts
+                    and os.path.getsize(partial_bin) == p_count * p_dim * 4
+                ):
+                    with open(partial_bin, "rb") as f_pbin:
+                        arr = array.array("f")
+                        arr.fromfile(f_pbin, p_count * p_dim)
+                    for idx in range(p_count):
+                        embeddings.append(list(arr[idx * p_dim : (idx + 1) * p_dim]))
+                    logger.info(
+                        "Resuming vector index build from checkpoint: %d/%d posts completed",
+                        len(embeddings),
+                        total_posts,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to load partial checkpoint from %s: %s; restarting build",
+                    partial_base,
+                    exc,
+                )
+                embeddings.clear()
+
+        start_idx = len(embeddings)
+        t_start = time.monotonic()
+        posts_done_this_run = 0
+
+        for i in range(start_idx, total_posts, batch_size):
+            chunk_texts = texts[i : i + batch_size]
+            chunk_embs = client.embed_batch(
+                chunk_texts,
+                model=model,
+                batch_size=batch_size,
+                dimensions=dimensions,
+            )
+            if not chunk_embs or len(chunk_embs) != len(chunk_texts) or any(len(v) != dimensions for v in chunk_embs):
+                logger.error("Failed to compute valid embeddings for batch starting at index %d; stopping build", i)
+                return None
+            embeddings.extend(chunk_embs)
+            posts_done_this_run += len(chunk_texts)
+
+            elapsed = time.monotonic() - t_start
+            rate = posts_done_this_run / elapsed if elapsed > 0 else 0.0
+            remaining_posts = total_posts - len(embeddings)
+            eta_mins = (remaining_posts / rate) / 60.0 if rate > 0 else 0.0
+            current_batch = (len(embeddings) + batch_size - 1) // batch_size
+            total_batches = (total_posts + batch_size - 1) // batch_size
+            pct = (len(embeddings) / total_posts) * 100.0
+            logger.info(
+                "[%d/%d] Embedded %d/%d posts (%.1f%%) | %.1f posts/s | ETA %.1fm",
+                current_batch,
+                total_batches,
+                len(embeddings),
+                total_posts,
+                pct,
+                rate,
+                eta_mins,
+            )
+
+            if current_batch % 5 == 0 or len(embeddings) == total_posts:
+                _save_partial_checkpoint(
+                    partial_base,
+                    embeddings=embeddings,
+                    dim=dimensions,
+                    catalog_sha256=catalog_sha256,
+                    model=model,
+                )
 
         if np is not None:
             vectors = np.array(embeddings, dtype=np.float32)
@@ -337,10 +564,16 @@ class CatalogVectorIndex:
             for vec in embeddings:
                 vectors.extend(vec)
 
-        idx = cls(post_ids=post_ids, vectors=vectors, dim=dim)
+        idx = cls(post_ids=post_ids, vectors=vectors, dim=dimensions)
         try:
             idx.save(cache_base, meta_extra={"catalog_sha256": catalog_sha256, "model": model})
-            logger.info("Saved vector index (%d posts, dim=%d) to %s", len(post_ids), dim, cache_base)
+            logger.info("Saved vector index (%d posts, dim=%d) to %s", len(post_ids), dimensions, cache_base)
+            for p_file in (f"{partial_base}.bin", f"{partial_base}.json"):
+                try:
+                    if os.path.isfile(p_file):
+                        os.remove(p_file)
+                except Exception:
+                    pass
         except Exception as exc:
             logger.warning("Failed to save vector index cache: %s", exc)
 
@@ -396,6 +629,8 @@ def search_hybrid_presearch(
     embed_model: str = "qwen3-embedding:4b",
     conn: Optional[sqlite3.Connection] = None,
     limit: int = 5,
+    english_glosses: Optional[Sequence[str]] = None,
+    query_vector: Optional[Sequence[float]] = None,
 ) -> List[Dict[str, Any]]:
     """Perform upfront hybrid lexical + semantic pre-search over catalog posts.
 
@@ -408,6 +643,8 @@ def search_hybrid_presearch(
         embed_model: Ollama embedding model tag.
         conn: Optional SQLite connection.
         limit: Max combined candidates to return.
+        english_glosses: Optional sequence of English gloss definitions.
+        query_vector: Optional pre-computed query embedding vector.
 
     Returns:
         List of candidate post dictionaries with 'post_id', 'title', 'description',
@@ -470,8 +707,15 @@ def search_hybrid_presearch(
                             break
 
         # 2. Semantic Vector Similarity Pre-Search
-        if vector_index is not None and embed_client is not None and len(hits) < limit:
-            q_vec = embed_client.embed_single(clean_q, model=embed_model)
+        if vector_index is not None and len(hits) < limit:
+            q_vec = query_vector
+            if q_vec is None and embed_client is not None:
+                formatted_q = format_query_for_embedding(clean_q, english_glosses=english_glosses)
+                q_vec = embed_client.embed_single(
+                    formatted_q,
+                    model=embed_model,
+                    dimensions=vector_index.dim,
+                )
             if q_vec:
                 vector_hits = vector_index.search_similar(q_vec, top_k=limit)
                 for pid, _score in vector_hits:
