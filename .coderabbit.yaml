@@ -1,7 +1,31 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
-language: "en-US"
+early_access: true
+
 reviews:
+  profile: assertive
+  fail_commit_status: true
+  pre_merge_checks:
+    docstrings:
+      mode: error
+    title:
+      mode: error
+    description:
+      mode: error
+    issue_assessment:
+      mode: "warning"
+  auto_approvals:
+    enabled: true
+  finishing_touches:
+    unit_tests:
+      enabled: false
   path_filters:
-    - "!scripts/sources/llm_concepts.json"
-    - "!addon/data/catalog.sqlite"
-    - "!addon/data/catalog.sqlite.sha256"
+      - "!scripts/sources/llm_concepts.json"
+      - "!addon/data/catalog.sqlite"
+      - "!addon/data/catalog.sqlite.sha256"
+issue_enrichment:
+  auto_enrich:
+    enabled: true
+  planning:
+    auto_planning:
+      labels:
+        - enhancement
