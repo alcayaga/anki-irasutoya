@@ -866,6 +866,36 @@ class TestBuildSynonyms(unittest.TestCase):
         conn.close()
         self.assertEqual(rows, [("元々の語", "猫")])
 
+    def test_populate_llm_concepts_rejects_malformed_tier_structure(self) -> None:
+        """Verify populate_llm_concepts rejects non-dict concepts/tier2_concepts before clearing rows."""
+        # Pre-seed Tier 1 and Tier 2 concepts
+        init_json_path = os.path.join(self.temp_dir.name, "llm_init_struct.json")
+        with open(init_json_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "concepts": {"猫語": ["猫"]},
+                "tier2_concepts": {"心の中": ["猫"]},
+            }, f)
+        ok_init = populate_llm_concepts(self.db_path, init_json_path, min_matched=1, strict=True)
+        self.assertTrue(ok_init)
+
+        # Non-dict tier2_concepts (e.g. list, string, int) must be rejected
+        for bad_val in ([], "", 0, ["invalid"]):
+            bad_json_path = os.path.join(self.temp_dir.name, "llm_bad_t2.json")
+            with open(bad_json_path, "w", encoding="utf-8") as f:
+                json.dump({
+                    "concepts": {"猫語": ["猫"]},
+                    "tier2_concepts": bad_val,
+                }, f)
+            ok_bad = populate_llm_concepts(self.db_path, bad_json_path, min_matched=1, strict=True)
+            self.assertFalse(ok_bad)
+
+        # Verify catalog rows were NOT cleared
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT count(*) FROM synonyms WHERE source = 'llm_concept_tier2'")
+        self.assertEqual(cur.fetchone()[0], 1)
+        conn.close()
+
     def test_clear_synonym_source_edge_cases(self) -> None:
         """Verify _clear_synonym_source handles missing catalog and successfully clears existing source."""
         from scripts.synonyms.concepts import _clear_synonym_source

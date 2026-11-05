@@ -2175,6 +2175,11 @@ class TestPullModelsAndEmbedPresearch(unittest.TestCase):
         self.assertTrue(any(m.get("name") == "gemma4:26b" for m in cfg["models"]))
         self.assertTrue(any(m.get("name") == "qwen3-embedding:4b" for m in cfg["models"]))
 
+        # Test loading the repo's real models.yml without PyYAML via json.loads fallback
+        with patch.dict("sys.modules", {"yaml": None}):
+            data_no_yaml = load_models_manifest(DEFAULT_MODELS_PATH)
+            self.assertIn("models", data_no_yaml.get("ollama", data_no_yaml))
+
         # Verify JSON manifest saved with .yml or .json extension parses correctly
         json_yml_path = os.path.join(self.temp_dir.name, "json_manifest.json")
         with open(json_yml_path, "w", encoding="utf-8") as f:

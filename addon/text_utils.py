@@ -662,8 +662,8 @@ def generate_search_candidates(
     kaishi_lookup: Optional[Callable[[str], List[str]]] = None,
     sudachi_lookup: Optional[Callable[[str], List[str]]] = None,
     llm_lookup: Optional[Callable[[str], List[str]]] = None,
-    llm_tier2_lookup: Optional[Callable[[str], List[str]]] = None,
     bilingual_lookup: Optional[Callable[[Any, Optional[Any]], List[str]]] = None,
+    llm_tier2_lookup: Optional[Callable[[str], List[str]]] = None,
 ) -> List[Tuple[str, str, int]]:
     """Generate prioritized search candidate queries with confidence tiers.
     

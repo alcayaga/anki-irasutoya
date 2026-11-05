@@ -1,28 +1,33 @@
-# models.yml — Declarative local LLM model specifications for anki-irasutoya
-# Install models with: python scripts/pull_models.py
-
-ollama:
-  endpoint: "http://localhost:11434"
-  models:
-    - name: "gemma4:26b"
-      role: "chat"
-      description: "26B-A4B Mixture-of-Experts for visual concept compilation (5x–7x speedup over dense 31B)"
-      size_gb: 16.0
-      min_ram_gb: 24
-      options:
-        temperature_turn0: 0.1
-        temperature_turn1: 0.3
-        top_p: 0.9
-        seed: 42
-        num_ctx: 4096
-      fallback: "gemma4:31b"
-
-    - name: "qwen3-embedding:4b"
-      role: "embedding"
-      description: "4B text embedding model for semantic pre-search over catalog post titles & descriptions"
-      size_gb: 2.5
-      min_ram_gb: 4
-      dim: 1024
-      endpoint: "/api/embed"
-      batch_size: 100
-      fallback: null  # Graceful fallback to pure lexical substring matching
+{
+  "ollama": {
+    "endpoint": "http://localhost:11434",
+    "models": [
+      {
+        "name": "gemma4:26b",
+        "role": "chat",
+        "description": "26B-A4B Mixture-of-Experts for visual concept compilation (5x–7x speedup over dense 31B)",
+        "size_gb": 16.0,
+        "min_ram_gb": 24,
+        "options": {
+          "temperature_turn0": 0.1,
+          "temperature_turn1": 0.3,
+          "top_p": 0.9,
+          "seed": 42,
+          "num_ctx": 4096
+        },
+        "fallback": "gemma4:31b"
+      },
+      {
+        "name": "qwen3-embedding:4b",
+        "role": "embedding",
+        "description": "4B text embedding model for semantic pre-search over catalog post titles & descriptions",
+        "size_gb": 2.5,
+        "min_ram_gb": 4,
+        "dim": 1024,
+        "endpoint": "/api/embed",
+        "batch_size": 100,
+        "fallback": null
+      }
+    ]
+  }
+}

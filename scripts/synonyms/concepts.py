@@ -339,6 +339,11 @@ def populate_llm_concepts(
         logger.error("Root JSON structure in %s is not an object", llm_json_path)
         return False
 
+    for field in ("concepts", "mappings", "tier2_concepts"):
+        if field in data and not isinstance(data[field], dict):
+            logger.error("Invalid '%s' structure in %s: expected object", field, llm_json_path)
+            return False
+
     has_t1 = bool(data.get("concepts") or data.get("mappings"))
     has_t2 = bool(data.get("tier2_concepts"))
 
