@@ -138,6 +138,10 @@ def search_catalog_for_agent(
         conn = sqlite3.connect(_readonly_catalog_uri(catalog_path), uri=True)
         close_conn = True
 
+    if index is None:
+        store = CatalogStore(catalog_path)
+        index = store.get_index()
+
     try:
         cur = conn.cursor()
         escaped_q = (
@@ -166,10 +170,20 @@ def search_catalog_for_agent(
 
         # 1b. If fewer than limit, match description
         if len(posts) < limit:
-            cur.execute(
-                "SELECT id, title, description FROM posts WHERE description LIKE ? ESCAPE '\\' LIMIT ?",
-                (f"%{escaped_q}%", limit - len(posts)),
-            )
+            remaining = limit - len(posts)
+            if seen_post_ids:
+                excluded = sorted(seen_post_ids)
+                placeholders = ",".join("?" * len(excluded))
+                cur.execute(
+                    "SELECT id, title, description FROM posts "
+                    f"WHERE description LIKE ? ESCAPE '\\' AND id NOT IN ({placeholders}) LIMIT ?",
+                    (f"%{escaped_q}%", *excluded, remaining),
+                )
+            else:
+                cur.execute(
+                    "SELECT id, title, description FROM posts WHERE description LIKE ? ESCAPE '\\' LIMIT ?",
+                    (f"%{escaped_q}%", remaining),
+                )
             for pid, ptitle, pdesc in cur.fetchall():
                 if pid not in seen_post_ids:
                     seen_post_ids.add(pid)
@@ -208,21 +222,17 @@ def search_catalog_for_agent(
                                 break
 
         top1 = None
-        if clean_q:
-            if index is None:
-                store = CatalogStore(catalog_path)
-                index = store.get_index()
-            if index is not None:
-                results = filter_relevant_illustrations(index.search(clean_q), clean_q)
-                if results and has_title_illustration_match(results, clean_q):
-                    best_img = rank_relevant_images(results, clean_q)[0]
-                    cur.execute("SELECT title, description FROM posts WHERE blogger_id = ?", (best_img.post_id,))
-                    p_row = cur.fetchone()
-                    top1 = {
-                        "matched_image_title": best_img.title,
-                        "post_title": p_row[0] if p_row else "",
-                        "post_description": (p_row[1][:120] if p_row and p_row[1] else ""),
-                    }
+        if clean_q and index is not None:
+            results = filter_relevant_illustrations(index.search(clean_q), clean_q)
+            if results and has_title_illustration_match(results, clean_q):
+                best_img = rank_relevant_images(results, clean_q)[0]
+                cur.execute("SELECT title, description FROM posts WHERE blogger_id = ?", (best_img.post_id,))
+                p_row = cur.fetchone()
+                top1 = {
+                    "matched_image_title": best_img.title,
+                    "post_title": p_row[0] if p_row else "",
+                    "post_description": (p_row[1][:120] if p_row and p_row[1] else ""),
+                }
         return {"query": query, "posts": posts, "runtime_top1_if_queried": top1}
     finally:
         if close_conn:

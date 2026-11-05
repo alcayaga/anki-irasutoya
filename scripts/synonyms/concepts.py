@@ -135,6 +135,10 @@ def _populate_concept_json_mapping(
                 if strict:
                     validation_failures.append((clean_hw, "<empty>"))
                 continue
+            if clean_search_query(clean_tgt) != clean_tgt:
+                if strict:
+                    validation_failures.append((clean_hw, f"<non-idempotent: {clean_tgt}>"))
+                continue
             results = filter_relevant_illustrations(index.search(clean_tgt), clean_tgt)
             if not has_title_illustration_match(results, clean_tgt):
                 validation_failures.append((clean_hw, clean_tgt))

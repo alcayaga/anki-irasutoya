@@ -3069,9 +3069,13 @@ class TestPullModelsAndEmbedPresearch(unittest.TestCase):
         target_503 = resolve_valid_post_target(503, "色々な動物のイラスト", index, conn)
         self.assertEqual(target_503, "かわいい犬")
 
-        # Without an in-memory index, returns clean primary
+        # Without an in-memory index, returns None
         target_no_index = resolve_valid_post_target(501, "学校の建物のイラスト", None, conn)
-        self.assertEqual(target_no_index, "学校の建物")
+        self.assertIsNone(target_no_index)
+
+        # Non-matching title with no valid image returns None
+        target_unverified = resolve_valid_post_target(999, "完全な架空のタイトル", index, conn)
+        self.assertIsNone(target_unverified)
         conn.close()
 
     def test_search_hybrid_presearch_title_priority_and_seen_blogger_dedup(self) -> None:
@@ -3094,9 +3098,41 @@ class TestPullModelsAndEmbedPresearch(unittest.TestCase):
         )
         conn.commit()
 
+        stub_img1 = IrasutoyaImage(
+            "白い犬のイラスト",
+            "https://example.com/s0/602.png",
+            "",
+            "白い犬のイラスト",
+            post_id="b_602",
+        )
+        stub_img2 = IrasutoyaImage(
+            "白い犬のイラスト2",
+            "https://example.com/s0/602.png",
+            "",
+            "白い犬のイラスト2",
+            post_id="b_602",
+        )
+
+        class _StubCatalogIndex:
+            """Stub index returning multiple records sharing blogger_id 'b_602'."""
+
+            def search(self, query: str) -> List[IrasutoyaImage]:
+                """Return multiple illustrations sharing the same post_id/blogger_id."""
+                return [stub_img1, stub_img2]
+
+        lookups: List[str] = []
+
+        def _record_lookup(sql: str) -> None:
+            """Record statements that query posts by Blogger ID."""
+            if "FROM posts WHERE blogger_id" in sql:
+                lookups.append(sql)
+
+        conn.set_trace_callback(_record_lookup)
+
         hits = search_hybrid_presearch(
             term="白い犬",
             catalog_path=self.db_path,
+            index=_StubCatalogIndex(),  # type: ignore[arg-type]
             conn=conn,
             limit=5,
         )
@@ -3105,6 +3141,8 @@ class TestPullModelsAndEmbedPresearch(unittest.TestCase):
         # Title hit (602) must come before description-only hit (601)
         self.assertEqual(hits[0]["post_id"], 602)
         self.assertEqual(hits[1]["post_id"], 601)
+        # Since b_602 was already in seen_blogger_ids from the title hit, the stub index hit causes 0 extra lookups
+        self.assertEqual(len(lookups), 0)
 
     def test_search_catalog_for_agent_with_semantic_fallback(self) -> None:
         """Verify search_catalog_for_agent appends semantic vector hits when title matches are below limit."""
@@ -3243,6 +3281,39 @@ class TestPullModelsAndEmbedPresearch(unittest.TestCase):
                 catalog_path=self.db_path,
             )
         self.assertTrue(any("was truncated (done_reason='length'" in log_msg for log_msg in cm.output))
+
+    def test_ollama_embed_chunk_truncation_to_dimensions(self) -> None:
+        """Verify _embed_chunk truncates oversized embedding vectors before L2 normalization."""
+        from scripts.synonyms.ollama_embed import OllamaEmbedClient
+
+        client = OllamaEmbedClient(base_url="http://localhost:11434")
+        # Oversized 3D vector [3.0, 4.0, 12.0] truncated to 2D is [3.0, 4.0], normalized to [0.6, 0.8]
+        with patch.object(client._http_client, "post_json", return_value={"embeddings": [[3.0, 4.0, 12.0]]}):
+            result = client._embed_chunk(["test"], model="test-embed", dimensions=2, options={})
+            self.assertEqual(len(result), 1)
+            self.assertAlmostEqual(result[0][0], 0.6, places=5)
+            self.assertAlmostEqual(result[0][1], 0.8, places=5)
+
+    def test_clean_and_validate_concept_dict_rejects_non_idempotent_targets(self) -> None:
+        """Verify _populate_concept_json_mapping rejects targets whose clean_search_query value is non-idempotent."""
+        from scripts.synonyms.concepts import _populate_concept_json_mapping
+
+        with tempfile.NamedTemporaryFile("w", suffix=".json", encoding="utf-8", delete=False) as tf:
+            json.dump({"concepts": {"ペット": ["猫、犬/鳥"]}}, tf)
+            tf_path = tf.name
+
+        try:
+            success = _populate_concept_json_mapping(
+                catalog_path=self.db_path,
+                json_path=tf_path,
+                source="test",
+                min_matched=1,
+                validate_only=True,
+            )
+            self.assertFalse(success)
+        finally:
+            if os.path.exists(tf_path):
+                os.remove(tf_path)
 
 
 if __name__ == "__main__":

@@ -14,7 +14,7 @@
           "top_p": 0.9,
           "seed": 42,
           "num_ctx": 4096,
-          "num_predict": 200
+          "num_predict": 300
         },
         "fallback": "gemma4:31b"
       },

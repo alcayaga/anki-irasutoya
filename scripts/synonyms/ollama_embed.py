@@ -17,7 +17,7 @@ try:
 except ImportError:
     np = None
 
-from addon.catalog import CatalogIndex
+from addon.catalog import CatalogIndex, CatalogStore
 from addon.ranking import has_title_illustration_match
 from addon.text_utils import clean_search_query
 from scripts.synonyms.common import (
@@ -656,7 +656,7 @@ def resolve_valid_post_target(
     post_title: str,
     index: Optional[CatalogIndex],
     conn: sqlite3.Connection,
-) -> str:
+) -> Optional[str]:
     """Resolve a clean, runtime-valid search target string for a catalog post.
 
     Inspects the post title and associated image titles, canonicalizing candidates
@@ -670,14 +670,14 @@ def resolve_valid_post_target(
         conn: Open SQLite connection to catalog.sqlite.
 
     Returns:
-        A validated search target string if one passes, or fallback clean query.
+        A validated search target string if one passes, or None if no candidate passes.
     """
+    if index is None:
+        return None
+
     m = re.match(r"^(.+?)のイラスト(?:$|（)", post_title)
     primary = m.group(1) if m else post_title
     clean_primary = clean_search_query(primary)
-
-    if index is None:
-        return clean_primary or clean_search_query(post_title) or post_title
 
     if clean_primary:
         res = filter_relevant_illustrations(index.search(clean_primary), clean_primary)
@@ -692,7 +692,7 @@ def resolve_valid_post_target(
 
     try:
         cur = conn.cursor()
-        cur.execute("SELECT title FROM images WHERE post_id = ? ORDER BY id ASC LIMIT 5", (post_id,))
+        cur.execute("SELECT title FROM images WHERE post_id = ? ORDER BY id ASC", (post_id,))
         for (img_t,) in cur.fetchall():
             m_img = re.match(r"^(.+?)のイラスト(?:$|（)", img_t)
             c_img = clean_search_query(m_img.group(1) if m_img else img_t)
@@ -703,7 +703,7 @@ def resolve_valid_post_target(
     except Exception as exc:
         logger.debug("Failed image title lookup for post %d: %s", post_id, exc)
 
-    return clean_primary or clean_full or post_title
+    return None
 
 
 def search_hybrid_presearch(
@@ -749,6 +749,13 @@ def search_hybrid_presearch(
     seen_post_ids: Set[int] = set()
     seen_blogger_ids: Set[str] = set()
 
+    if index is None:
+        try:
+            store = CatalogStore(catalog_path)
+            index = store.get_index()
+        except Exception as exc:
+            logger.debug("Failed to load CatalogIndex in search_hybrid_presearch: %s", exc)
+
     try:
         cur = conn.cursor()
 
@@ -779,10 +786,20 @@ def search_hybrid_presearch(
 
         # 1b. If fewer than lexical_cap, search post description
         if len(hits) < lexical_cap:
-            cur.execute(
-                "SELECT id, blogger_id, title, description FROM posts WHERE description LIKE ? ESCAPE '\\' LIMIT ?",
-                (f"%{escaped_q}%", lexical_cap - len(hits)),
-            )
+            remaining = lexical_cap - len(hits)
+            if seen_post_ids:
+                excluded = sorted(seen_post_ids)
+                placeholders = ",".join("?" * len(excluded))
+                cur.execute(
+                    "SELECT id, blogger_id, title, description FROM posts "
+                    f"WHERE description LIKE ? ESCAPE '\\' AND id NOT IN ({placeholders}) LIMIT ?",
+                    (f"%{escaped_q}%", *excluded, remaining),
+                )
+            else:
+                cur.execute(
+                    "SELECT id, blogger_id, title, description FROM posts WHERE description LIKE ? ESCAPE '\\' LIMIT ?",
+                    (f"%{escaped_q}%", remaining),
+                )
             for pid, bid, ptitle, pdesc in cur.fetchall():
                 if pid not in seen_post_ids:
                     seen_post_ids.add(pid)
@@ -870,10 +887,13 @@ def format_candidate_context_block(hits: Sequence[Dict[str, Any]]) -> str:
 
     lines = ["Context: Candidate Catalog Illustrations:"]
     for i, h in enumerate(hits, 1):
-        target = h.get("suggested_target", "")
+        target = h.get("suggested_target")
         title = h.get("title", "")
         desc = h.get("description", "")
         desc_part = f" — {desc}" if desc else ""
-        lines.append(f"{i}. Target: 「{target}」 (Post: {title}{desc_part})")
+        if target:
+            lines.append(f"{i}. Target: 「{target}」 (Post: {title}{desc_part})")
+        else:
+            lines.append(f"{i}. Post: {title}{desc_part}")
 
     return "\n".join(lines)
