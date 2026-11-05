@@ -20,7 +20,7 @@ HIRAGANA_CHAR_RE = re.compile(r"[\u3040-\u309F]")
 # Exclude ゠ (U+30A0) and ・ (U+30FB); they are word separators, not Katakana letters.
 KATAKANA_CHAR_RE = re.compile(r"[\u30A1-\u30FA\u30FC-\u30FF]")
 
-DECORATIVE_NOISE_KEYWORDS = ("ライン素材", "背景", "フレーム", "枠", "テンプレート", "壁紙")
+DECORATIVE_NOISE_KEYWORDS = ("ライン素材", "フレーム", "枠", "テンプレート", "壁紙")
 TEXT_CALLOUT_KEYWORDS = ("イラスト文字",)
 SITUATIONAL_NOISE_KEYWORDS = ("事故", "トラブル", "失敗", "注意", "禁止", "マーク")
 VERB_TERMINAL_ENDINGS = ("う", "く", "ぐ", "す", "つ", "ぬ", "ぶ", "む", "る", "た", "だ")
@@ -850,6 +850,15 @@ def score_candidate_image(
         if noise in title and noise not in clean_q:
             score -= 60.0
 
+    if (
+        ("背景素材" in title or "背景パターン" in title)
+        and "イラスト" not in title
+        and "背景" not in clean_q
+    ):
+        score -= 60.0
+    elif "背景" in title and "背景" not in clean_q:
+        score -= 35.0
+
     # 7. Category-aware archetype scoring (modulated by POS, gated by title presence)
     cats = getattr(img, "categories", ())
     if cats:
@@ -885,7 +894,15 @@ def is_decorative_asset(img: IrasutoyaImage, query: str) -> bool:
     """Return True if image is a decorative asset (frame, border, wallpaper) not matching query."""
     clean_q = query.strip()
     title = img.title.strip()
-    return any(noise in title and noise not in clean_q for noise in DECORATIVE_NOISE_KEYWORDS)
+    if any(noise in title and noise not in clean_q for noise in DECORATIVE_NOISE_KEYWORDS):
+        return True
+    if (
+        ("背景素材" in title or "背景パターン" in title)
+        and "イラスト" not in title
+        and "背景" not in clean_q
+    ):
+        return True
+    return False
 
 
 def is_title_match(img: IrasutoyaImage, query: str) -> bool:
