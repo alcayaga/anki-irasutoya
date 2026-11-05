@@ -2178,6 +2178,13 @@ class TestPullModelsAndEmbedPresearch(unittest.TestCase):
             self.assertEqual(cfg_no_yaml["models"][1]["name"], "qwen3-embedding:4b")
             self.assertIsNone(cfg_no_yaml["models"][1]["fallback"])
 
+            # Verify JSON manifest saved with .yml extension parses correctly without PyYAML
+            json_yml_path = os.path.join(self.temp_dir.name, "json_manifest.yml")
+            with open(json_yml_path, "w", encoding="utf-8") as f:
+                json.dump({"ollama": {"models": [{"name": "test-model"}]}}, f)
+            data_json_yml = load_models_manifest(json_yml_path)
+            self.assertEqual(data_json_yml["ollama"]["models"][0]["name"], "test-model")
+
         # Test non-existent file
         with self.assertRaises(FileNotFoundError):
             load_models_manifest(os.path.join(self.temp_dir.name, "nonexistent.yml"))
@@ -2214,12 +2221,13 @@ class TestPullModelsAndEmbedPresearch(unittest.TestCase):
                 """Read response body."""
                 return json.dumps(mock_payload).encode("utf-8")
 
-        with patch("urllib.request.urlopen", return_value=MockResp()):
-            installed = get_installed_ollama_models("http://localhost:11434")
+        with patch("urllib.request.urlopen", return_value=MockResp()) as mock_urlopen:
+            installed = get_installed_ollama_models("http://proxy:8080/prefix")
             self.assertIn("gemma4:26b", installed)
             self.assertIn("qwen3-embedding:4b", installed)
             self.assertIn("custom-model:latest", installed)
             self.assertIn("custom-model", installed)
+            self.assertEqual(mock_urlopen.call_args[0][0].full_url, "http://proxy:8080/prefix/api/tags")
 
         # Verify error returns empty set
         with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("Refused")):
@@ -2254,10 +2262,11 @@ class TestPullModelsAndEmbedPresearch(unittest.TestCase):
         ]
         with (
             patch("scripts.pull_models.shutil.which", return_value=None),
-            patch("urllib.request.urlopen", return_value=MockStreamingResp(success_lines)),
+            patch("urllib.request.urlopen", return_value=MockStreamingResp(success_lines)) as mock_pull_open,
         ):
-            ok = pull_single_model("gemma4:26b")
+            ok = pull_single_model("gemma4:26b", ollama_url="http://proxy:8080/prefix")
             self.assertTrue(ok)
+            self.assertEqual(mock_pull_open.call_args[0][0].full_url, "http://proxy:8080/prefix/api/pull")
 
         error_lines = [
             b'{"status": "pulling manifest"}\n',

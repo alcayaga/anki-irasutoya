@@ -220,10 +220,10 @@ def load_models_manifest(path: str = DEFAULT_MODELS_PATH) -> Dict[str, Any]:
                 raise ValueError(f"Failed to parse YAML manifest {path}: {exc}") from exc
         except ImportError:
             try:
-                data = _parse_simple_yaml(content)
+                data = json.loads(content)
             except Exception:
                 try:
-                    data = json.loads(content)
+                    data = _parse_simple_yaml(content)
                 except Exception as exc:
                     raise ValueError(f"Failed to parse manifest {path} as YAML/JSON: {exc}") from exc
 
@@ -246,7 +246,11 @@ def get_installed_ollama_models(
         Set of exact model names installed locally.
     """
     parsed = urllib.parse.urlparse(ollama_url)
-    base_url = f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else "http://localhost:11434"
+    base_url = (
+        f"{parsed.scheme}://{parsed.netloc}{parsed.path.rstrip('/')}"
+        if parsed.netloc
+        else "http://localhost:11434"
+    )
     tags_url = f"{base_url.rstrip('/')}/api/tags"
 
     req = urllib.request.Request(tags_url, headers={"User-Agent": "anki-irasutoya/1.0"})
@@ -299,7 +303,11 @@ def pull_single_model(
     # HTTP API streaming fallback if ollama CLI is not found on PATH
     logger.info("Ollama CLI not found on PATH. Pulling '%s' via HTTP API...", model_name)
     parsed = urllib.parse.urlparse(ollama_url)
-    base_url = f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else "http://localhost:11434"
+    base_url = (
+        f"{parsed.scheme}://{parsed.netloc}{parsed.path.rstrip('/')}"
+        if parsed.netloc
+        else "http://localhost:11434"
+    )
     pull_url = f"{base_url.rstrip('/')}/api/pull"
 
     payload = json.dumps({"name": model_name, "stream": stream_progress}).encode("utf-8")
