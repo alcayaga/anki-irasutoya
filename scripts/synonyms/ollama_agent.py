@@ -226,11 +226,23 @@ def run_ollama_agent_batch(
     on_reject_arity = _determine_arity(on_reject)
 
     model_opts = get_model_options_from_manifest(model)
-    temp_t0 = float(model_opts.get("temperature_turn0", 0.1))
-    temp_t1 = float(model_opts.get("temperature_turn1", 0.3))
-    opt_top_p = float(model_opts.get("top_p", 0.9))
-    opt_seed = int(model_opts.get("seed", 42))
-    opt_num_ctx = int(model_opts.get("num_ctx", 4096))
+
+    def _opt(name: str, cast: Callable[[Any], Any], default: Any) -> Any:
+        """Return cast manifest option value with safe fallback to default on invalid or missing entries."""
+        raw_val = model_opts.get(name)
+        if raw_val is None:
+            return default
+        try:
+            return cast(raw_val)
+        except (TypeError, ValueError):
+            logger.warning("Invalid manifest option '%s'=%r for model '%s'; falling back to default %r", name, raw_val, model, default)
+            return default
+
+    temp_t0 = _opt("temperature_turn0", float, 0.1)
+    temp_t1 = _opt("temperature_turn1", float, 0.3)
+    opt_top_p = _opt("top_p", float, 0.9)
+    opt_seed = _opt("seed", int, 42)
+    opt_num_ctx = _opt("num_ctx", int, 4096)
 
     # Batch-embed all candidate queries up front if vector index is enabled
     precomputed_vectors: List[Optional[List[float]]] = [None] * len(candidates)

@@ -2903,6 +2903,24 @@ class TestPullModelsAndEmbedPresearch(unittest.TestCase):
         empty_opts = get_model_options_from_manifest("nonexistent-model")
         self.assertEqual(empty_opts, {})
 
+    def test_run_ollama_agent_batch_invalid_manifest_options_fallback(self) -> None:
+        """Verify run_ollama_agent_batch falls back gracefully to defaults when manifest options are malformed."""
+        invalid_opts = {
+            "temperature_turn0": "not-a-float",
+            "seed": None,
+            "num_ctx": "invalid",
+        }
+        with (
+            patch("scripts.synonyms.ollama_agent.get_model_options_from_manifest", return_value=invalid_opts),
+            patch("scripts.synonyms.common._KeepAliveJSONClient.post_json", return_value={"message": {"content": '{"reason": "x", "visualizable": false}'}}),
+        ):
+            mappings, fails = run_ollama_agent_batch(
+                candidates=[{"term": "テスト", "reading": "てすと"}],
+                catalog_path=self.db_path,
+            )
+            self.assertEqual(mappings, {})
+            self.assertEqual(fails, 0)
+
     def test_keepalive_client_proxy_routing(self) -> None:
         """Verify _KeepAliveJSONClient routes through urlopen when a proxy is configured."""
         client = _KeepAliveJSONClient()
