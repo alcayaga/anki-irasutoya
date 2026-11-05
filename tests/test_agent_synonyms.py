@@ -51,6 +51,7 @@ from scripts.synonyms.ollama_embed import (
     compute_catalog_posts_sha256,
     format_candidate_context_block,
     format_query_for_embedding,
+    resolve_valid_post_target,
     search_hybrid_presearch,
 )
 
@@ -3028,6 +3029,184 @@ class TestPullModelsAndEmbedPresearch(unittest.TestCase):
         sources = [h["source"] for h in hits]
         self.assertIn("semantic", sources)
         self.assertTrue(any(h["post_id"] == 999 for h in hits))
+
+    def test_resolve_valid_post_target(self) -> None:
+        """Verify resolve_valid_post_target resolves clean, runtime-valid targets for catalog posts."""
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO posts (id, blogger_id, title, description, published, updated, image_count) VALUES (501, 'b_501', '学校の建物のイラスト', '学校です', 'pub', 'upd', 1)",
+        )
+        cur.execute(
+            "INSERT INTO images (id, post_id, key, ord, title, url) VALUES (501, 501, 'k501', 0, '学校の建物のイラスト', 'https://example.com/s0/501.png')",
+        )
+        conn.commit()
+
+        store = CatalogStore(self.db_path)
+        index = store.get_index()
+
+        target = resolve_valid_post_target(501, "学校の建物のイラスト", index, conn)
+        self.assertEqual(target, "学校の建物")
+
+        # When post title lacks standard suffix, clean_search_query is used
+        cur.execute(
+            "INSERT INTO posts (id, blogger_id, title, description, published, updated, image_count) VALUES (502, 'b_502', '黒い猫', 'desc', 'pub', 'upd', 1)",
+        )
+        cur.execute(
+            "INSERT INTO images (id, post_id, key, ord, title, url) VALUES (502, 502, 'k502', 0, '黒い猫のイラスト', 'https://example.com/s0/502.png')",
+        )
+        conn.commit()
+        index_2 = store.get_index()
+        target_2 = resolve_valid_post_target(502, "黒い猫", index_2, conn)
+        self.assertEqual(target_2, "黒い猫")
+
+        # Without an in-memory index, returns clean primary
+        target_no_index = resolve_valid_post_target(501, "学校の建物のイラスト", None, conn)
+        self.assertEqual(target_no_index, "学校の建物")
+        conn.close()
+
+    def test_search_hybrid_presearch_title_priority_and_seen_blogger_dedup(self) -> None:
+        """Verify title lexical hits precede description hits and seen_blogger_ids prevents redundant queries."""
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        # Post matching only via description
+        cur.execute(
+            "INSERT INTO posts (id, blogger_id, title, description, published, updated, image_count) VALUES (601, 'b_601', '青空のイラスト', '白い犬が走っています', 'pub', 'upd', 1)",
+        )
+        cur.execute(
+            "INSERT INTO images (id, post_id, key, ord, title, url) VALUES (601, 601, 'k601', 0, '青空のイラスト', 'https://example.com/s0/601.png')",
+        )
+        # Post matching directly in title
+        cur.execute(
+            "INSERT INTO posts (id, blogger_id, title, description, published, updated, image_count) VALUES (602, 'b_602', '白い犬のイラスト', 'desc', 'pub', 'upd', 1)",
+        )
+        cur.execute(
+            "INSERT INTO images (id, post_id, key, ord, title, url) VALUES (602, 602, 'k602', 0, '白い犬のイラスト', 'https://example.com/s0/602.png')",
+        )
+        conn.commit()
+
+        hits = search_hybrid_presearch(
+            term="白い犬",
+            catalog_path=self.db_path,
+            conn=conn,
+            limit=5,
+        )
+        conn.close()
+        self.assertGreaterEqual(len(hits), 2)
+        # Title hit (602) must come before description-only hit (601)
+        self.assertEqual(hits[0]["post_id"], 602)
+        self.assertEqual(hits[1]["post_id"], 601)
+
+    def test_search_catalog_for_agent_with_semantic_fallback(self) -> None:
+        """Verify search_catalog_for_agent appends semantic vector hits when title matches are below limit."""
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO posts (id, blogger_id, title, description, published, updated, image_count) VALUES (701, 'b_701', '宇宙のイラスト', 'desc', 'pub', 'upd', 1)",
+        )
+        cur.execute(
+            "INSERT INTO images (id, post_id, key, ord, title, url) VALUES (701, 701, 'k701', 0, '宇宙のイラスト', 'https://example.com/s0/701.png')",
+        )
+        conn.commit()
+
+        class MockVecIdx:
+            """Mock vector index."""
+
+            dim = 512
+
+            def search_similar(self, vec: Any, top_k: int = 5) -> List[Tuple[int, float]]:
+                """Return mock hit 701."""
+                return [(701, 0.88)]
+
+        class MockEmbedClient:
+            """Mock embed client."""
+
+            def embed_single(self, text: str, model: str = "qwen3-embedding:4b", dimensions: int = 512) -> List[float]:
+                """Return dummy vector."""
+                return [0.1] * dimensions
+
+        res = search_catalog_for_agent(
+            catalog_path=self.db_path,
+            query="銀河",
+            limit=5,
+            conn=conn,
+            vector_index=MockVecIdx(),
+            embed_client=MockEmbedClient(),
+        )
+        conn.close()
+        post_ids = [p["post_id"] for p in res["posts"]]
+        self.assertIn(701, post_ids)
+
+    def test_num_predict_payload_forwarding(self) -> None:
+        """Verify run_ollama_agent_batch passes num_predict in generation options."""
+        captured_payloads: List[Dict[str, Any]] = []
+
+        def mock_post_json(url: str, payload: Dict[str, Any], timeout: float = 120.0) -> Dict[str, Any]:
+            """Capture payload and return rejection."""
+            captured_payloads.append(payload)
+            return {
+                "message": {
+                    "role": "assistant",
+                    "content": json.dumps({
+                        "reason": "非視覚的",
+                        "visualizable": False,
+                        "tier": 2,
+                        "targets": [],
+                    }),
+                }
+            }
+
+        with patch("scripts.synonyms.common._KeepAliveJSONClient.post_json", side_effect=mock_post_json):
+            run_ollama_agent_batch(
+                candidates=[{"term": "はずがない", "reading": "はずがない"}],
+                catalog_path=self.db_path,
+                model="gemma4:26b",
+            )
+        self.assertTrue(captured_payloads)
+        opts = captured_payloads[0].get("options", {})
+        self.assertIn("num_predict", opts)
+        self.assertEqual(opts["num_predict"], 200)
+
+    def test_run_ollama_agent_batch_clean_search_query_canonicalization(self) -> None:
+        """Verify candidate targets with gender suffixes are canonicalized via clean_search_query."""
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO posts (id, blogger_id, title, description, published, updated, image_count) VALUES (801, 'b_801', '喜ぶ人のイラスト', 'desc', 'pub', 'upd', 1)",
+        )
+        cur.execute(
+            "INSERT INTO images (id, post_id, key, ord, title, url) VALUES (801, 801, 'k801', 0, '喜ぶ人のイラスト', 'https://example.com/s0/801.png')",
+        )
+        conn.commit()
+        conn.close()
+
+        # LLM returns target with （女性） suffix
+        mock_resp = {
+            "message": {
+                "role": "assistant",
+                "content": json.dumps({
+                    "reason": "直接一致",
+                    "visualizable": True,
+                    "tier": 1,
+                    "targets": ["喜ぶ人のイラスト（女性）"],
+                }),
+            }
+        }
+
+        matched_targets: List[str] = []
+
+        def match_cb(term: str, targets: List[str], tier: int = 1) -> None:
+            """Collect matched targets."""
+            matched_targets.extend(targets)
+
+        with patch("scripts.synonyms.common._KeepAliveJSONClient.post_json", return_value=mock_resp):
+            mappings, fail = run_ollama_agent_batch(
+                candidates=[{"term": "喜ぶ", "reading": "よろこぶ"}],
+                catalog_path=self.db_path,
+                on_match=match_cb,
+            )
+            self.assertEqual(len(mappings), 1)
+            self.assertEqual(matched_targets, ["喜ぶ人のイラスト"])
 
 
 if __name__ == "__main__":

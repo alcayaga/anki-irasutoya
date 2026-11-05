@@ -13,6 +13,7 @@ from addon.catalog import (
     write_synonyms,
 )
 from addon.ranking import has_title_illustration_match
+from addon.text_utils import clean_search_query
 from addon.yomitan_parser import normalize_english_gloss
 from scripts.synonyms.common import (
     DEFAULT_CATALOG_PATH,
@@ -129,7 +130,7 @@ def _populate_concept_json_mapping(
                     continue
         valid_targets: List[str] = []
         for target in targets:
-            clean_tgt = str(target).strip()
+            clean_tgt = clean_search_query(str(target))
             if not clean_tgt:
                 if strict:
                     validation_failures.append((clean_hw, "<empty>"))
