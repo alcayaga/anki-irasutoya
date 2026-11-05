@@ -129,11 +129,32 @@ class CatalogIndex:
             "wordnet_hypernym": 6,
         }
         for src in sorted(src_map, key=lambda s: (source_order.get(s, 99), s)):
+            if src == "llm_rejected":
+                continue
             for t in src_map[src]:
                 if t not in seen:
                     seen.add(t)
                     results.append(t)
         return results
+
+    def is_rejected(self, term: str) -> bool:
+        """Return True if term was rejected by the LLM concept compiler as non-visual."""
+        if not term:
+            return False
+        clean = canonicalize_synonym_term(term)
+        if not clean or clean not in self._synonyms_by_term:
+            return False
+        return "llm_rejected" in self._synonyms_by_term[clean]
+
+    def get_rejection_reason(self, term: str) -> Optional[str]:
+        """Return the rejection reason string if term was rejected as non-visual, else None."""
+        if not term:
+            return None
+        clean = canonicalize_synonym_term(term)
+        if not clean or clean not in self._synonyms_by_term:
+            return None
+        reasons = self._synonyms_by_term[clean].get("llm_rejected", ())
+        return reasons[0] if reasons else None
 
     def __len__(self) -> int:
         """Return the total number of images indexed."""
