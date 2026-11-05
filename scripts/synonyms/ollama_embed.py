@@ -52,16 +52,19 @@ def compute_catalog_posts_sha256(catalog_path: str) -> str:
     """
     try:
         h = hashlib.sha256()
-        abs_cat = os.path.abspath(catalog_path)
-        with sqlite3.connect(f"file:{abs_cat}?mode=ro", uri=True) as conn:
+        conn = sqlite3.connect(_readonly_catalog_uri(catalog_path), uri=True)
+        try:
             cur = conn.cursor()
             cur.execute("SELECT id, title, description FROM posts ORDER BY id")
             for r in cur.fetchall():
                 h.update(str(r[0]).encode("utf-8"))
                 h.update(str(r[1] or "").encode("utf-8"))
                 h.update(str(r[2] or "").encode("utf-8"))
+        finally:
+            conn.close()
         return h.hexdigest()
-    except Exception:
+    except Exception as exc:
+        logger.warning("Failed to fingerprint catalog posts in %s: %s", catalog_path, exc)
         return ""
 
 

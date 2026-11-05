@@ -34,6 +34,7 @@ def _populate_concept_json_mapping(
     concept_key: str = "concepts",
     validate_canonical_headwords: bool = False,
     strict: bool = True,
+    validate_only: bool = False,
 ) -> bool:
     """Validate JSON visual concepts against catalog illustration titles and populate synonyms.
 
@@ -45,6 +46,7 @@ def _populate_concept_json_mapping(
         concept_key: Key in the JSON dictionary to extract concepts from (default: 'concepts').
         validate_canonical_headwords: If True, validates headwords match canonical English glosses.
         strict: If True, requires 100% of targets to validate against the catalog.
+        validate_only: If True, validates concepts without modifying the catalog database.
 
     Returns:
         True if all targets validated and populated successfully, False otherwise.
@@ -189,6 +191,9 @@ def _populate_concept_json_mapping(
         )
         return False
 
+    if validate_only:
+        return True
+
     # Connect to catalog and write synonyms
     logger.info("Writing %d validated %s concept mappings into %s...", len(clean_mapping), source, catalog_path)
     try:
@@ -264,6 +269,36 @@ def populate_bilingual_glosses(
     )
 
 
+def _clear_synonym_source(catalog_path: str, source: str) -> bool:
+    """Delete all synonym rows for a source and refresh the catalog SHA256 sidecar.
+
+    Args:
+        catalog_path: Path to catalog.sqlite to update.
+        source: Source identifier to delete from synonyms table.
+
+    Returns:
+        True if rows were cleared (or already empty) and sidecar refreshed, False on error.
+    """
+    if not os.path.isfile(catalog_path):
+        logger.error("Catalog database not found: %s", catalog_path)
+        return False
+    try:
+        conn = sqlite3.connect(catalog_path)
+        try:
+            conn.execute("DELETE FROM synonyms WHERE source = ?", (source,))
+            conn.commit()
+            conn.execute("PRAGMA journal_mode = DELETE")
+            conn.execute("VACUUM")
+            conn.commit()
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        logger.error("Failed to clear '%s' synonyms in %s: %s", source, catalog_path, exc)
+        return False
+    update_catalog_sha256(catalog_path)
+    return True
+
+
 def populate_llm_concepts(
     catalog_path: str,
     llm_json_path: str,
@@ -299,6 +334,7 @@ def populate_llm_concepts(
         logger.error("No 'concepts' or 'tier2_concepts' found in %s", llm_json_path)
         return False
 
+    # Phase 1: Validate both Tier 1 and Tier 2 (if present) before mutating the catalog
     if has_t1:
         ok_t1 = _populate_concept_json_mapping(
             catalog_path=catalog_path,
@@ -308,13 +344,10 @@ def populate_llm_concepts(
             concept_key="concepts",
             validate_canonical_headwords=False,
             strict=strict,
+            validate_only=True,
         )
         if not ok_t1:
             return False
-    else:
-        with sqlite3.connect(catalog_path) as conn:
-            conn.execute("DELETE FROM synonyms WHERE source = 'llm_concept'")
-            conn.commit()
 
     if has_t2:
         ok_t2 = _populate_concept_json_mapping(
@@ -325,13 +358,45 @@ def populate_llm_concepts(
             concept_key="tier2_concepts",
             validate_canonical_headwords=False,
             strict=strict,
+            validate_only=True,
+        )
+        if not ok_t2:
+            return False
+
+    # Phase 2: Apply mutations (write or clear) once both tiers have passed validation
+    if has_t1:
+        ok_t1 = _populate_concept_json_mapping(
+            catalog_path=catalog_path,
+            json_path=llm_json_path,
+            source="llm_concept",
+            min_matched=min_matched,
+            concept_key="concepts",
+            validate_canonical_headwords=False,
+            strict=strict,
+            validate_only=False,
+        )
+        if not ok_t1:
+            return False
+    else:
+        if not _clear_synonym_source(catalog_path, "llm_concept"):
+            return False
+
+    if has_t2:
+        ok_t2 = _populate_concept_json_mapping(
+            catalog_path=catalog_path,
+            json_path=llm_json_path,
+            source="llm_concept_tier2",
+            min_matched=1,
+            concept_key="tier2_concepts",
+            validate_canonical_headwords=False,
+            strict=strict,
+            validate_only=False,
         )
         if not ok_t2:
             return False
     else:
-        with sqlite3.connect(catalog_path) as conn:
-            conn.execute("DELETE FROM synonyms WHERE source = 'llm_concept_tier2'")
-            conn.commit()
+        if not _clear_synonym_source(catalog_path, "llm_concept_tier2"):
+            return False
 
     return True
 

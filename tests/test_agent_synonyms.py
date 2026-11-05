@@ -2650,6 +2650,14 @@ class TestPullModelsAndEmbedPresearch(unittest.TestCase):
                 self.assertFalse(os.path.isfile(f"{partial_base}.bin"))
                 self.assertFalse(os.path.isfile(f"{partial_base}.json"))
 
+    def test_compute_catalog_posts_sha256_handles_error(self) -> None:
+        """Verify compute_catalog_posts_sha256 returns empty string on missing or invalid database."""
+        missing_db = os.path.join(self.temp_dir.name, "does_not_exist.sqlite")
+        with self.assertLogs("synonyms.ollama_embed", level="WARNING") as cm:
+            res = compute_catalog_posts_sha256(missing_db)
+            self.assertEqual(res, "")
+            self.assertTrue(any("Failed to fingerprint catalog posts" in log for log in cm.output))
+
     def test_run_ollama_agent_batch_upfront_embedding(self) -> None:
         """Verify run_ollama_agent_batch pre-computes candidate embeddings up front in a single batch."""
         cands = [

@@ -37,6 +37,9 @@ class TestTextUtils(unittest.TestCase):
         l_patcher = patch("addon.text_utils.lookup_llm_concept", return_value=[])
         l_patcher.start()
         self.addCleanup(l_patcher.stop)
+        l2_patcher = patch("addon.text_utils.lookup_llm_concept_tier2", return_value=[])
+        l2_patcher.start()
+        self.addCleanup(l2_patcher.stop)
 
     def test_empty_and_none(self):
         """Test handling of None and empty string inputs."""

@@ -670,12 +670,12 @@ def generate_search_candidates(
     Tiers:
         Tier 1 (Safe Lexical & Morphological): Zero homophone risk. Always automatic in both Batch & UI.
                        (NFKC, Kanji numerals, Bikago prefixes, compound verb reductions, verb past/volitional forms, loanword Katakana,
-                        Yomitan uk orthography kana readings, formsTable ★ canonical kanji variants).
+                        direct verified LLM concept matches, Yomitan uk orthography kana readings, formsTable ★ canonical kanji variants).
         Tier 2 (Phonetic & Reading Fallbacks): Readings from separate note fields,
                        same-field furigana, verb masu-stems, Katakana chōonpu expansion, heuristic compound deinflection,
                        Yomitan sense-specific kanji (esp.), Yomitan cross-references (see:),
                        curated visual concept maps, Kaishi 1.5k concept bridges, SudachiDict synonym bridges,
-                       LLM-curated visual concept maps, bilingual English definition gloss bridges.
+                       LLM visual exemplars / prototypical scenes, bilingual English definition gloss bridges.
     
     Args:
         raw_source: Raw text or HTML from the source field.
@@ -686,7 +686,8 @@ def generate_search_candidates(
         concept_lookup: Optional callable mapping a headword to a list of target concept strings.
         kaishi_lookup: Optional callable mapping a headword to a list of Kaishi 1.5k target strings.
         sudachi_lookup: Optional callable mapping a headword to a list of Sudachi synonym target strings.
-        llm_lookup: Optional callable mapping a headword to a list of LLM-curated visual concept target strings.
+        llm_lookup: Optional callable mapping a headword to a list of LLM-curated direct visual concept target strings (Tier 1).
+        llm_tier2_lookup: Optional callable mapping a headword to a list of LLM Tier 2 visual exemplar target strings.
         bilingual_lookup: Optional callable mapping a note and optional Yomitan metadata to bilingual concept target strings.
 
     Returns:
@@ -774,6 +775,7 @@ def generate_search_candidates(
 
     # Tier 1 direct LLM-curated visual concept mapping on primary surface (e.g. 新札 -> 新紙幣, 傷薬 -> 軟膏)
     def _lookup_llm_t1(term: str) -> List[str]:
+        """Query injected Tier 1 LLM lookup callable or catalog store."""
         if llm_lookup is not None:
             return llm_lookup(term)
         if store is not None:
