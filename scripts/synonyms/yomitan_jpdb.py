@@ -13,7 +13,11 @@ import urllib.request
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from addon.catalog import CatalogStore
-from addon.ranking import has_title_illustration_match
+from addon.ranking import (
+    _is_canonical_mark_title,
+    has_title_illustration_match,
+    is_callout_asset,
+)
 from addon.text_utils import generate_search_candidates, is_grammar_function_word
 from addon.yomitan_parser import VERB_POS_PATTERN, YomitanMetadata, is_grammar_sense
 from scripts.synonyms.common import (
@@ -26,6 +30,58 @@ logger = logging.getLogger("synonyms.yomitan_jpdb")
 JPDB_FREQ_RAW_URL = (
     "https://raw.githubusercontent.com/Kuuuube/yomitan-dictionaries/main/data/jpdb_v2.2_freq_list_2024-10-13.csv"
 )
+
+CANONICAL_TITLE_RE = re.compile(
+    r"^(?:お|ご|かわいい|可愛い|いろいろな|色々な|様々な|さまざまな)?(.+?)のイラスト(?:$|[（(])"
+)
+
+
+def is_canonical_illustration_title(title: Optional[str], query: str) -> bool:
+    """Return True if title names an archetypal illustration specifically of query.
+
+    Matches patterns like '{query}のイラスト', 'お{query}のイラスト',
+    'かわいい{query}のイラスト', '{query}のイラスト（...）', '{query}', or canonical marks,
+    while excluding situational compounds (e.g. '卒業するアイドルのイラスト' for '卒業',
+    '自転車の手信号のイラスト（停止）' for '停止').
+
+    Args:
+        title: Illustration title or post title from the catalog.
+        query: Japanese term or vocabulary query.
+
+    Returns:
+        True if the title denotes an archetypal, canonical representation of query.
+    """
+    if not title or not query:
+        return False
+    t = title.strip()
+    q = query.strip()
+    if not t or not q:
+        return False
+
+    # Check canonical mark (e.g. 禁止マーク for 禁止)
+    if _is_canonical_mark_title(t, q):
+        return True
+
+    # Exact title or parenthesized variant (e.g. "電話（女性）" for "電話")
+    t_cf = t.casefold()
+    q_cf = q.casefold()
+    if t_cf == q_cf or t_cf.startswith(f"{q_cf}（") or t_cf.startswith(f"{q_cf}("):
+        return True
+    if t in (f"お{q}", f"ご{q}") or t.startswith(f"お{q}（") or t.startswith(f"ご{q}（"):
+        return True
+
+    # Check canonical pattern with prefixes and optional parenthesized suffix
+    m = CANONICAL_TITLE_RE.match(t)
+    if m:
+        head = m.group(1).strip()
+        head_cf = head.casefold()
+        if head == q or head_cf == q_cf:
+            return True
+        # Allow polite prefixes in query vs head (e.g. query "茶", head "お茶")
+        if head in (f"お{q}", f"ご{q}") or q in (f"お{head}", f"ご{head}"):
+            return True
+
+    return False
 
 
 def _is_valid_jpdb_header_or_row(first_line: str) -> bool:
@@ -582,11 +638,21 @@ def load_jpdb_candidates(
             if mode != "all":
                 if mode == "non-tier1":
                     t1_cands = generate_search_candidates(term, allow_tier2=False, store=store)
-                    has_t1 = any(
-                        has_title_illustration_match(filter_relevant_illustrations(index.search(c[0]), c[0]), c[0])
-                        for c in t1_cands
-                    )
-                    if has_t1:
+                    has_canonical_t1 = False
+                    for c in t1_cands:
+                        clean_c = c[0]
+                        hits = filter_relevant_illustrations(index.search(clean_c), clean_c)
+                        if any(
+                            not is_callout_asset(img, clean_c)
+                            and (
+                                is_canonical_illustration_title(img.title, clean_c)
+                                or (img.post_title and is_canonical_illustration_title(img.post_title, clean_c))
+                            )
+                            for img in hits
+                        ):
+                            has_canonical_t1 = True
+                            break
+                    if has_canonical_t1:
                         continue
                 elif mode == "unmatched":
                     all_cands = generate_search_candidates(term, allow_tier2=True, store=store)
