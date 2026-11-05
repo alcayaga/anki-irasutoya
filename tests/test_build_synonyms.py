@@ -875,8 +875,9 @@ class TestBuildSynonyms(unittest.TestCase):
         self.assertFalse(_clear_synonym_source(missing_cat, "llm_concept"))
         self.assertFalse(os.path.exists(missing_cat))
 
-        # 2. Existing catalog with rows is cleared and sha256 refreshed
+        # 2. Existing catalog with rows is cleared, sha256 refreshed, and meta.synonym_sources updated
         conn = sqlite3.connect(self.db_path)
+        write_synonyms(conn, source="keep_source", mapping={"犬": ["猫"]})
         write_synonyms(conn, source="to_clear", mapping={"テスト": ["猫"]})
         conn.close()
 
@@ -887,6 +888,11 @@ class TestBuildSynonyms(unittest.TestCase):
         cur = conn.cursor()
         cur.execute("SELECT count(*) FROM synonyms WHERE source = 'to_clear'")
         self.assertEqual(cur.fetchone()[0], 0)
+        cur.execute("SELECT count(*) FROM synonyms WHERE source = 'keep_source'")
+        self.assertEqual(cur.fetchone()[0], 1)
+        cur.execute("SELECT value FROM meta WHERE key = 'synonym_sources'")
+        meta_sources = cur.fetchone()[0]
+        self.assertEqual(meta_sources, "keep_source")
         conn.close()
 
         # 3. Catalog without synonyms table succeeds without raising OperationalError

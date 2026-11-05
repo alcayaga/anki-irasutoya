@@ -1923,6 +1923,7 @@ class TestOllamaAgentCompiler(unittest.TestCase):
             patch("scripts.synonyms.ollama_agent._fetch_yomitan_term_entries", return_value=([], True)),
             patch("scripts.synonyms.yomitan_jpdb._fetch_yomitan_term_entries", return_value=([], True)),
             patch("scripts.synonyms.ollama_agent.check_ollama_availability", return_value=(True, None)),
+            patch("scripts.synonyms.ollama_agent.run_ollama_agent_batch") as mock_batch,
         ):
             ok = run_ollama_compile(
                 catalog_path=self.db_path,
@@ -1931,6 +1932,10 @@ class TestOllamaAgentCompiler(unittest.TestCase):
                 cache_dir=self.temp_dir.name,
             )
             self.assertFalse(ok)
+            mock_batch.assert_not_called()
+
+        with open(llm_out, "r", encoding="utf-8") as f:
+            self.assertEqual(json.load(f).get("tier2_concepts"), ["not_a_dict"])
 
     def test_run_ollama_compile_aborts_on_deferred_candidates(self) -> None:
         """Verify run_ollama_compile returns False when candidates are deferred due to Yomitan outage."""
@@ -2904,11 +2909,15 @@ class TestPullModelsAndEmbedPresearch(unittest.TestCase):
         self.assertEqual(empty_opts, {})
 
     def test_run_ollama_agent_batch_invalid_manifest_options_fallback(self) -> None:
-        """Verify run_ollama_agent_batch falls back gracefully to defaults when manifest options are malformed."""
+        """Verify run_ollama_agent_batch falls back gracefully to defaults when manifest options are malformed or non-finite."""
         invalid_opts = {
             "temperature_turn0": "not-a-float",
             "seed": None,
             "num_ctx": "invalid",
+            "temperature_turn1": float("nan"),
+            "temperature_turn2": float("inf"),
+            "repeat_penalty": float("-inf"),
+            "top_k": "1e1000",
         }
         with (
             patch("scripts.synonyms.ollama_agent.get_model_options_from_manifest", return_value=invalid_opts),

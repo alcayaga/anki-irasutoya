@@ -290,6 +290,14 @@ def _clear_synonym_source(catalog_path: str, source: str) -> bool:
             ).fetchone()
             if has_table:
                 conn.execute("DELETE FROM synonyms WHERE source = ?", (source,))
+                # Recompute meta.synonym_sources within the same transaction
+                cur = conn.cursor()
+                cur.execute("SELECT DISTINCT source FROM synonyms ORDER BY source ASC")
+                sources = [r[0] for r in cur.fetchall()]
+                cur.execute(
+                    "INSERT OR REPLACE INTO meta (key, value) VALUES ('synonym_sources', ?)",
+                    (",".join(sources),),
+                )
                 conn.commit()
             conn.execute("PRAGMA journal_mode = DELETE")
             conn.execute("VACUUM")

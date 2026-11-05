@@ -2,6 +2,7 @@
 import inspect
 import json
 import logging
+import math
 import os
 import sqlite3
 import time
@@ -233,9 +234,25 @@ def run_ollama_agent_batch(
         if raw_val is None:
             return default
         try:
-            return cast(raw_val)
-        except (TypeError, ValueError):
-            logger.warning("Invalid manifest option '%s'=%r for model '%s'; falling back to default %r", name, raw_val, model, default)
+            val = cast(raw_val)
+            if isinstance(val, (int, float)) and not math.isfinite(val):
+                logger.warning(
+                    "Non-finite manifest option '%s'=%r for model '%s'; falling back to default %r",
+                    name,
+                    raw_val,
+                    model,
+                    default,
+                )
+                return default
+            return val
+        except (TypeError, ValueError, OverflowError):
+            logger.warning(
+                "Invalid manifest option '%s'=%r for model '%s'; falling back to default %r",
+                name,
+                raw_val,
+                model,
+                default,
+            )
             return default
 
     temp_t0 = _opt("temperature_turn0", float, 0.1)
