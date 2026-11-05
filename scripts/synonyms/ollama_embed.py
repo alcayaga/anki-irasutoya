@@ -749,14 +749,14 @@ def search_hybrid_presearch(
     seen_post_ids: Set[int] = set()
     seen_blogger_ids: Set[str] = set()
 
-    if index is None:
-        try:
-            store = CatalogStore(catalog_path)
-            index = store.get_index()
-        except Exception as exc:
-            logger.debug("Failed to load CatalogIndex in search_hybrid_presearch: %s", exc)
-
     try:
+        if index is None:
+            try:
+                store = CatalogStore(catalog_path)
+                index = store.get_index()
+            except Exception as exc:
+                logger.debug("Failed to load CatalogIndex in search_hybrid_presearch: %s", exc)
+
         cur = conn.cursor()
 
         # 1. Lexical Substring & Exact Match on Post Title First, then Description

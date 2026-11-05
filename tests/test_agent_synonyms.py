@@ -3303,14 +3303,16 @@ class TestPullModelsAndEmbedPresearch(unittest.TestCase):
             tf_path = tf.name
 
         try:
-            success = _populate_concept_json_mapping(
-                catalog_path=self.db_path,
-                json_path=tf_path,
-                source="test",
-                min_matched=1,
-                validate_only=True,
-            )
+            with self.assertLogs("synonyms.concepts", level="ERROR") as cm:
+                success = _populate_concept_json_mapping(
+                    catalog_path=self.db_path,
+                    json_path=tf_path,
+                    source="test",
+                    min_matched=1,
+                    validate_only=True,
+                )
             self.assertFalse(success)
+            self.assertTrue(any("<non-idempotent" in msg for msg in cm.output))
         finally:
             if os.path.exists(tf_path):
                 os.remove(tf_path)

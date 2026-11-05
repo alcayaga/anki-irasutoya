@@ -482,7 +482,12 @@ def run_ollama_agent_batch(
                                 valid_targets = []
                                 for t in targets:
                                     clean_t = clean_search_query(str(t))
-                                    if not clean_t or not JAPANESE_CHAR_RE.search(clean_t) or _contains_english_word(clean_t):
+                                    if (
+                                        not clean_t
+                                        or clean_search_query(clean_t) != clean_t
+                                        or not JAPANESE_CHAR_RE.search(clean_t)
+                                        or _contains_english_word(clean_t)
+                                    ):
                                         continue
                                     results = filter_relevant_illustrations(index.search(clean_t), clean_t)
                                     if has_title_illustration_match(results, clean_t):
@@ -753,7 +758,7 @@ def run_ollama_compile(
                     valid_c_targets: List[str] = []
                     for ct in c_targets:
                         clean_ct = clean_search_query(str(ct))
-                        if not clean_ct:
+                        if not clean_ct or clean_search_query(clean_ct) != clean_ct:
                             continue
                         res = filter_relevant_illustrations(index.search(clean_ct), clean_ct)
                         if res and has_title_illustration_match(res, clean_ct):

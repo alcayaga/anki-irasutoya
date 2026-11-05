@@ -138,11 +138,11 @@ def search_catalog_for_agent(
         conn = sqlite3.connect(_readonly_catalog_uri(catalog_path), uri=True)
         close_conn = True
 
-    if index is None:
-        store = CatalogStore(catalog_path)
-        index = store.get_index()
-
     try:
+        if index is None:
+            store = CatalogStore(catalog_path)
+            index = store.get_index()
+
         cur = conn.cursor()
         escaped_q = (
             clean_q.replace("\\", "\\\\")
