@@ -95,6 +95,7 @@ class TestEvalDeckSearch(unittest.TestCase):
     def test_run_evaluation_empty_query_scope_message(self, mock_stdout: io.StringIO, mock_fetch: MagicMock) -> None:
         """Verify run_evaluation names custom query in empty-result message."""
         run_evaluation("Mining", query="flag:4")
+        self.assertEqual(mock_fetch.call_args[1]["query"], "flag:4")
         output = mock_stdout.getvalue()
         self.assertIn("No notes available to evaluate in query 'flag:4'.", output)
 

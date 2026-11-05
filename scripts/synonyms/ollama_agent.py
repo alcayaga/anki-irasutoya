@@ -16,6 +16,8 @@ from addon.ranking import has_title_illustration_match
 from addon.text_utils import clean_search_query
 from scripts.synonyms.common import (
     DEFAULT_LLM_CONCEPTS_PATH,
+    TEXT_ASSET_TERM_KEYWORDS,
+    _is_disallowed_text_callout_target,
     _KeepAliveJSONClient,
     _readonly_catalog_uri,
     filter_relevant_illustrations,
@@ -61,22 +63,6 @@ __all__ = [
     "run_ollama_compile",
     "search_catalog_for_agent",
 ]
-
-TEXT_ASSET_TERM_KEYWORDS: Tuple[str, ...] = ("文字", "フォント", "ロゴ")
-
-
-def _is_disallowed_text_callout_target(target: str, term: str) -> bool:
-    """Return True if target is an イラスト文字 asset for a term that does not denote text or fonts.
-
-    Args:
-        target: Cleaned catalog search target candidate.
-        term: Vocabulary term being compiled.
-
-    Returns:
-        True if target contains 'イラスト文字' and term contains none of TEXT_ASSET_TERM_KEYWORDS.
-    """
-    return "イラスト文字" in target and not any(kw in term for kw in TEXT_ASSET_TERM_KEYWORDS)
-
 
 
 def check_ollama_availability(
@@ -762,6 +748,7 @@ def run_ollama_compile(
     existing_unverified: Dict[str, str] = {}
     stale_raw_concepts: Dict[str, Any] = {}
     migrated_unverified = False
+    has_dropped_targets = False
     if os.path.isfile(llm_out_path):
         try:
             with open(llm_out_path, "r", encoding="utf-8") as f:
@@ -815,6 +802,9 @@ def run_ollama_compile(
 
             existing_concepts, stale1 = _validate_concept_dict(raw_concepts)
             existing_tier2_concepts, stale2 = _validate_concept_dict(raw_tier2)
+            has_dropped_targets = bool(
+                existing_concepts != raw_concepts or existing_tier2_concepts != raw_tier2
+            )
 
             all_stale = stale1 | stale2
             if all_stale:
@@ -888,7 +878,7 @@ def run_ollama_compile(
             logger.warning("Could not initialize vector index (%s); using pure lexical pre-search", vec_exc)
             vector_index = None
 
-    has_artifact_updates = bool(stale_raw_concepts or migrated_unverified)
+    has_artifact_updates = bool(stale_raw_concepts or migrated_unverified or has_dropped_targets)
     if not candidates:
         logger.warning("No candidates found to compile.")
         if has_artifact_updates:

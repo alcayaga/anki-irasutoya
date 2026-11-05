@@ -5,7 +5,7 @@ import os
 import sqlite3
 import sys
 import urllib.request
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from addon.catalog import (
     CatalogStore,
@@ -18,6 +18,7 @@ from addon.text_utils import clean_search_query
 from addon.yomitan_parser import normalize_english_gloss
 from scripts.synonyms.common import (
     DEFAULT_CATALOG_PATH,
+    _is_disallowed_text_callout_target,
     filter_relevant_illustrations,
     update_catalog_sha256,
 )
@@ -145,6 +146,9 @@ def _populate_concept_json_mapping(
                         clean_tgt,
                         clean_hw,
                     )
+                continue
+            if _is_disallowed_text_callout_target(clean_tgt, clean_hw):
+                validation_failures.append((clean_hw, f"<disallowed text callout: {clean_tgt}>"))
                 continue
             results = filter_relevant_illustrations(index.search(clean_tgt), clean_tgt)
             if not has_title_illustration_match(results, clean_tgt):
@@ -360,14 +364,26 @@ def populate_llm_concepts(
     has_t2 = bool(data.get("tier2_concepts"))
     raw_rej = data.get("rejected")
 
-    # Extract semantic rejections, filtering out unverified target misses
+    positive_keys: Set[str] = set()
+    for field in ("concepts", "mappings", "tier2_concepts"):
+        field_dict = data.get(field)
+        if isinstance(field_dict, dict):
+            for term in field_dict:
+                k = canonicalize_synonym_term(term)
+                if k:
+                    positive_keys.add(k)
+
+    # Extract semantic rejections, filtering out unverified target misses and accepted concepts
     rejection_mapping: Dict[str, List[str]] = {}
     if isinstance(raw_rej, dict):
         for term, reason in sorted(raw_rej.items()):
+            if not isinstance(reason, str):
+                continue
             clean_term = canonicalize_synonym_term(term)
-            clean_reason = str(reason).strip()
+            clean_reason = reason.strip()
             if (
                 clean_term
+                and clean_term not in positive_keys
                 and clean_reason
                 and not clean_reason.startswith("unverified in catalog:")
             ):

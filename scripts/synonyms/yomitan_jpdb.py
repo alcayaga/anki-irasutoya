@@ -18,7 +18,12 @@ from addon.ranking import (
     has_title_illustration_match,
     is_callout_asset,
 )
-from addon.text_utils import generate_search_candidates, is_grammar_function_word
+from addon.text_utils import (
+    BIKAGO_PREFIX_WORDS,
+    HONORIFIC_STRIP_BLOCKLIST,
+    generate_search_candidates,
+    is_grammar_function_word,
+)
 from addon.yomitan_parser import VERB_POS_PATTERN, YomitanMetadata, is_grammar_sense
 from scripts.synonyms.common import (
     _readonly_catalog_uri,
@@ -32,8 +37,25 @@ JPDB_FREQ_RAW_URL = (
 )
 
 CANONICAL_TITLE_RE = re.compile(
-    r"^(?:お|ご|かわいい|可愛い|いろいろな|色々な|様々な|さまざまな)?(.+?)のイラスト(?:$|[（(])"
+    r"^(?:かわいい|可愛い|いろいろな|色々な|様々な|さまざまな)?(.+?)のイラスト(?:$|[（(])"
 )
+
+
+def _is_polite_bare_pair(head: str, query: str) -> bool:
+    """Return True if head and query form a valid polite-prefix pair (excluding lexical collisions like 玉/お玉).
+
+    Args:
+        head: Extracted title headword.
+        query: Japanese term or vocabulary query.
+
+    Returns:
+        True if one is a valid polite-prefixed form of the other.
+    """
+    if head in (f"お{query}", f"ご{query}"):
+        return query in BIKAGO_PREFIX_WORDS or (len(query) >= 2 and query not in HONORIFIC_STRIP_BLOCKLIST)
+    if query in (f"お{head}", f"ご{head}"):
+        return head in BIKAGO_PREFIX_WORDS or (len(head) >= 2 and head not in HONORIFIC_STRIP_BLOCKLIST)
+    return False
 
 
 def is_canonical_illustration_title(title: Optional[str], query: str) -> bool:
@@ -67,7 +89,10 @@ def is_canonical_illustration_title(title: Optional[str], query: str) -> bool:
     q_cf = q.casefold()
     if t_cf == q_cf or t_cf.startswith(f"{q_cf}（") or t_cf.startswith(f"{q_cf}("):
         return True
-    if t in (f"お{q}", f"ご{q}") or t.startswith(f"お{q}（") or t.startswith(f"ご{q}（"):
+    if _is_polite_bare_pair(t, q) or (
+        t.startswith((f"お{q}（", f"お{q}(", f"ご{q}（", f"ご{q}("))
+        and (q in BIKAGO_PREFIX_WORDS or (len(q) >= 2 and q not in HONORIFIC_STRIP_BLOCKLIST))
+    ):
         return True
 
     # Check canonical pattern with prefixes and optional parenthesized suffix
@@ -78,7 +103,7 @@ def is_canonical_illustration_title(title: Optional[str], query: str) -> bool:
         if head == q or head_cf == q_cf:
             return True
         # Allow polite prefixes in query vs head (e.g. query "茶", head "お茶")
-        if head in (f"お{q}", f"ご{q}") or q in (f"お{head}", f"ご{head}"):
+        if _is_polite_bare_pair(head, q):
             return True
 
     return False
