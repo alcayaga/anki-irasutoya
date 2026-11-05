@@ -679,13 +679,13 @@ def resolve_valid_post_target(
     primary = m.group(1) if m else post_title
     clean_primary = clean_search_query(primary)
 
-    if clean_primary:
+    if clean_primary and clean_search_query(clean_primary) == clean_primary:
         res = filter_relevant_illustrations(index.search(clean_primary), clean_primary)
         if res and has_title_illustration_match(res, clean_primary):
             return clean_primary
 
     clean_full = clean_search_query(post_title)
-    if clean_full:
+    if clean_full and clean_search_query(clean_full) == clean_full:
         res = filter_relevant_illustrations(index.search(clean_full), clean_full)
         if res and has_title_illustration_match(res, clean_full):
             return clean_full
@@ -696,7 +696,7 @@ def resolve_valid_post_target(
         for (img_t,) in cur.fetchall():
             m_img = re.match(r"^(.+?)のイラスト(?:$|（)", img_t)
             c_img = clean_search_query(m_img.group(1) if m_img else img_t)
-            if c_img:
+            if c_img and clean_search_query(c_img) == c_img:
                 res = filter_relevant_illustrations(index.search(c_img), c_img)
                 if res and has_title_illustration_match(res, c_img):
                     return c_img

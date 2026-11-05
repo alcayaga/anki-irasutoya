@@ -3076,6 +3076,10 @@ class TestPullModelsAndEmbedPresearch(unittest.TestCase):
         # Non-matching title with no valid image returns None
         target_unverified = resolve_valid_post_target(999, "完全な架空のタイトル", index, conn)
         self.assertIsNone(target_unverified)
+
+        # Non-idempotent candidate is rejected and returns None
+        target_non_idempotent = resolve_valid_post_target(504, "猫、犬/鳥のイラスト", index, conn)
+        self.assertIsNone(target_non_idempotent)
         conn.close()
 
     def test_search_hybrid_presearch_title_priority_and_seen_blogger_dedup(self) -> None:
