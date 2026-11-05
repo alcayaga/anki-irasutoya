@@ -13,6 +13,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple, Un
 
 from addon.catalog import CatalogStore
 from addon.ranking import has_title_illustration_match
+from addon.text_utils import clean_search_query
 from scripts.synonyms.common import (
     DEFAULT_LLM_CONCEPTS_PATH,
     _KeepAliveJSONClient,
@@ -260,6 +261,7 @@ def run_ollama_agent_batch(
     opt_top_p = _opt("top_p", float, 0.9)
     opt_seed = _opt("seed", int, 42)
     opt_num_ctx = _opt("num_ctx", int, 4096)
+    opt_num_predict = _opt("num_predict", int, 200)
 
     # Batch-embed all candidate queries up front if vector index is enabled
     precomputed_vectors: List[Optional[List[float]]] = [None] * len(candidates)
@@ -350,6 +352,7 @@ def run_ollama_agent_batch(
                             "top_p": opt_top_p,
                             "seed": opt_seed,
                             "num_ctx": opt_num_ctx,
+                            "num_predict": opt_num_predict,
                         },
                     }
                     try:
@@ -381,6 +384,15 @@ def run_ollama_agent_batch(
                         logger.warning("Malformed Ollama response for '%s' (message missing or not a dict); skipping", term)
                         failed_candidates += 1
                         break
+
+                    done_reason = resp_data.get("done_reason")
+                    if done_reason == "length":
+                        logger.warning(
+                            "Ollama response for '%s' was truncated (done_reason='length', eval_count=%s, num_predict=%s)",
+                            term,
+                            resp_data.get("eval_count"),
+                            opt_num_predict,
+                        )
 
                     messages.append(msg)
                     tool_calls = msg.get("tool_calls")
@@ -421,6 +433,9 @@ def run_ollama_agent_batch(
                                         limit=5,
                                         index=index,
                                         conn=conn,
+                                        vector_index=vector_index,
+                                        embed_client=embed_client,
+                                        embed_model=embed_model,
                                     )
                                 )
                             tool_msg: Dict[str, Any] = {
@@ -466,12 +481,18 @@ def run_ollama_agent_batch(
                                     break
                                 valid_targets = []
                                 for t in targets:
-                                    clean_t = str(t).strip()
-                                    if not clean_t or not JAPANESE_CHAR_RE.search(clean_t) or _contains_english_word(clean_t):
+                                    clean_t = clean_search_query(str(t))
+                                    if (
+                                        not clean_t
+                                        or clean_search_query(clean_t) != clean_t
+                                        or not JAPANESE_CHAR_RE.search(clean_t)
+                                        or _contains_english_word(clean_t)
+                                    ):
                                         continue
                                     results = filter_relevant_illustrations(index.search(clean_t), clean_t)
                                     if has_title_illustration_match(results, clean_t):
-                                        valid_targets.append(clean_t)
+                                        if clean_t not in valid_targets:
+                                            valid_targets.append(clean_t)
                                 if valid_targets:
                                     mappings[term] = valid_targets
                                     elapsed = time.monotonic() - t_start
@@ -736,12 +757,13 @@ def run_ollama_compile(
                         continue
                     valid_c_targets: List[str] = []
                     for ct in c_targets:
-                        clean_ct = str(ct).strip()
-                        if not clean_ct:
+                        clean_ct = clean_search_query(str(ct))
+                        if not clean_ct or clean_search_query(clean_ct) != clean_ct:
                             continue
                         res = filter_relevant_illustrations(index.search(clean_ct), clean_ct)
                         if res and has_title_illustration_match(res, clean_ct):
-                            valid_c_targets.append(clean_ct)
+                            if clean_ct not in valid_c_targets:
+                                valid_c_targets.append(clean_ct)
                     if valid_c_targets:
                         valid_map[c_term] = valid_c_targets
                     else:

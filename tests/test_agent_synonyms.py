@@ -51,6 +51,7 @@ from scripts.synonyms.ollama_embed import (
     compute_catalog_posts_sha256,
     format_candidate_context_block,
     format_query_for_embedding,
+    resolve_valid_post_target,
     search_hybrid_presearch,
 )
 
@@ -3028,6 +3029,297 @@ class TestPullModelsAndEmbedPresearch(unittest.TestCase):
         sources = [h["source"] for h in hits]
         self.assertIn("semantic", sources)
         self.assertTrue(any(h["post_id"] == 999 for h in hits))
+
+    def test_resolve_valid_post_target(self) -> None:
+        """Verify resolve_valid_post_target resolves clean, runtime-valid targets for catalog posts."""
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        # Post 501: standard suffix '...のイラスト' where candidate matches illustration
+        cur.execute(
+            "INSERT INTO posts (id, blogger_id, title, description, published, updated, image_count) VALUES (501, 'b_501', '学校の建物のイラスト', '学校です', 'pub', 'upd', 1)",
+        )
+        cur.execute(
+            "INSERT INTO images (id, post_id, key, ord, title, url) VALUES (501, 501, 'k501', 0, '学校の建物のイラスト', 'https://example.com/s0/501.png')",
+        )
+        # Post 502: lacks standard suffix, clean_search_query is used
+        cur.execute(
+            "INSERT INTO posts (id, blogger_id, title, description, published, updated, image_count) VALUES (502, 'b_502', '黒い猫', 'desc', 'pub', 'upd', 1)",
+        )
+        cur.execute(
+            "INSERT INTO images (id, post_id, key, ord, title, url) VALUES (502, 502, 'k502', 0, '黒い猫のイラスト', 'https://example.com/s0/502.png')",
+        )
+        # Post 503: primary title '色々な動物のイラスト' fails validation, but image title 'かわいい犬のイラスト' passes
+        cur.execute(
+            "INSERT INTO posts (id, blogger_id, title, description, published, updated, image_count) VALUES (503, 'b_503', '色々な動物のイラスト', '動物たちです', 'pub', 'upd', 1)",
+        )
+        cur.execute(
+            "INSERT INTO images (id, post_id, key, ord, title, url) VALUES (503, 503, 'k503', 0, 'かわいい犬のイラスト', 'https://example.com/s0/503.png')",
+        )
+        conn.commit()
+
+        store = CatalogStore(self.db_path)
+        index = store.get_index()
+
+        target_501 = resolve_valid_post_target(501, "学校の建物のイラスト", index, conn)
+        self.assertEqual(target_501, "学校の建物")
+
+        target_502 = resolve_valid_post_target(502, "黒い猫", index, conn)
+        self.assertEqual(target_502, "黒い猫")
+
+        target_503 = resolve_valid_post_target(503, "色々な動物のイラスト", index, conn)
+        self.assertEqual(target_503, "かわいい犬")
+
+        # Without an in-memory index, returns None
+        target_no_index = resolve_valid_post_target(501, "学校の建物のイラスト", None, conn)
+        self.assertIsNone(target_no_index)
+
+        # Non-matching title with no valid image returns None
+        target_unverified = resolve_valid_post_target(999, "完全な架空のタイトル", index, conn)
+        self.assertIsNone(target_unverified)
+
+        # Non-idempotent candidate is rejected and returns None
+        target_non_idempotent = resolve_valid_post_target(504, "猫、犬/鳥のイラスト", index, conn)
+        self.assertIsNone(target_non_idempotent)
+        conn.close()
+
+    def test_search_hybrid_presearch_title_priority_and_seen_blogger_dedup(self) -> None:
+        """Verify title lexical hits precede description hits and seen_blogger_ids prevents redundant queries."""
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        # Post matching only via description
+        cur.execute(
+            "INSERT INTO posts (id, blogger_id, title, description, published, updated, image_count) VALUES (601, 'b_601', '青空のイラスト', '白い犬が走っています', 'pub', 'upd', 1)",
+        )
+        cur.execute(
+            "INSERT INTO images (id, post_id, key, ord, title, url) VALUES (601, 601, 'k601', 0, '青空のイラスト', 'https://example.com/s0/601.png')",
+        )
+        # Post matching directly in title
+        cur.execute(
+            "INSERT INTO posts (id, blogger_id, title, description, published, updated, image_count) VALUES (602, 'b_602', '白い犬のイラスト', 'desc', 'pub', 'upd', 1)",
+        )
+        cur.execute(
+            "INSERT INTO images (id, post_id, key, ord, title, url) VALUES (602, 602, 'k602', 0, '白い犬のイラスト', 'https://example.com/s0/602.png')",
+        )
+        conn.commit()
+
+        stub_img1 = IrasutoyaImage(
+            "白い犬のイラスト",
+            "https://example.com/s0/602.png",
+            "",
+            "白い犬のイラスト",
+            post_id="b_602",
+        )
+        stub_img2 = IrasutoyaImage(
+            "白い犬のイラスト2",
+            "https://example.com/s0/602.png",
+            "",
+            "白い犬のイラスト2",
+            post_id="b_602",
+        )
+
+        class _StubCatalogIndex:
+            """Stub index returning multiple records sharing blogger_id 'b_602'."""
+
+            def search(self, query: str) -> List[IrasutoyaImage]:
+                """Return multiple illustrations sharing the same post_id/blogger_id."""
+                return [stub_img1, stub_img2]
+
+        lookups: List[str] = []
+
+        def _record_lookup(sql: str) -> None:
+            """Record statements that query posts by Blogger ID."""
+            if "FROM posts WHERE blogger_id" in sql:
+                lookups.append(sql)
+
+        conn.set_trace_callback(_record_lookup)
+
+        hits = search_hybrid_presearch(
+            term="白い犬",
+            catalog_path=self.db_path,
+            index=_StubCatalogIndex(),  # type: ignore[arg-type]
+            conn=conn,
+            limit=5,
+        )
+        conn.close()
+        self.assertGreaterEqual(len(hits), 2)
+        # Title hit (602) must come before description-only hit (601)
+        self.assertEqual(hits[0]["post_id"], 602)
+        self.assertEqual(hits[1]["post_id"], 601)
+        # Since b_602 was already in seen_blogger_ids from the title hit, the stub index hit causes 0 extra lookups
+        self.assertEqual(len(lookups), 0)
+
+    def test_search_catalog_for_agent_with_semantic_fallback(self) -> None:
+        """Verify search_catalog_for_agent appends semantic vector hits when title matches are below limit."""
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO posts (id, blogger_id, title, description, published, updated, image_count) VALUES (701, 'b_701', '宇宙のイラスト', 'desc', 'pub', 'upd', 1)",
+        )
+        cur.execute(
+            "INSERT INTO images (id, post_id, key, ord, title, url) VALUES (701, 701, 'k701', 0, '宇宙のイラスト', 'https://example.com/s0/701.png')",
+        )
+        conn.commit()
+
+        class MockVecIdx:
+            """Mock vector index."""
+
+            dim = 512
+
+            def search_similar(self, vec: Any, top_k: int = 5) -> List[Tuple[int, float]]:
+                """Return mock hit 701."""
+                return [(701, 0.88)]
+
+        class MockEmbedClient:
+            """Mock embed client."""
+
+            def embed_single(self, text: str, model: str = "qwen3-embedding:4b", dimensions: int = 512) -> List[float]:
+                """Return dummy vector."""
+                return [0.1] * dimensions
+
+        res = search_catalog_for_agent(
+            catalog_path=self.db_path,
+            query="銀河",
+            limit=5,
+            conn=conn,
+            vector_index=MockVecIdx(),
+            embed_client=MockEmbedClient(),
+        )
+        conn.close()
+        post_ids = [p["post_id"] for p in res["posts"]]
+        self.assertIn(701, post_ids)
+
+    def test_num_predict_payload_forwarding(self) -> None:
+        """Verify run_ollama_agent_batch passes num_predict in generation options."""
+        captured_payloads: List[Dict[str, Any]] = []
+
+        def mock_post_json(url: str, payload: Dict[str, Any], timeout: float = 120.0) -> Dict[str, Any]:
+            """Capture payload and return rejection."""
+            captured_payloads.append(payload)
+            return {
+                "message": {
+                    "role": "assistant",
+                    "content": json.dumps({
+                        "reason": "非視覚的",
+                        "visualizable": False,
+                        "tier": 2,
+                        "targets": [],
+                    }),
+                }
+            }
+
+        with (
+            patch("scripts.synonyms.ollama_agent.get_model_options_from_manifest", return_value={"num_predict": 123}),
+            patch("scripts.synonyms.common._KeepAliveJSONClient.post_json", side_effect=mock_post_json),
+        ):
+            run_ollama_agent_batch(
+                candidates=[{"term": "はずがない", "reading": "はずがない"}],
+                catalog_path=self.db_path,
+                model="gemma4:26b",
+            )
+        self.assertTrue(captured_payloads)
+        opts = captured_payloads[0].get("options", {})
+        self.assertIn("num_predict", opts)
+        self.assertEqual(opts["num_predict"], 123)
+
+    def test_run_ollama_agent_batch_clean_search_query_canonicalization(self) -> None:
+        """Verify candidate targets with gender suffixes are canonicalized via clean_search_query."""
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO posts (id, blogger_id, title, description, published, updated, image_count) VALUES (801, 'b_801', '喜ぶ人のイラスト', 'desc', 'pub', 'upd', 1)",
+        )
+        cur.execute(
+            "INSERT INTO images (id, post_id, key, ord, title, url) VALUES (801, 801, 'k801', 0, '喜ぶ人のイラスト', 'https://example.com/s0/801.png')",
+        )
+        conn.commit()
+        conn.close()
+
+        # LLM returns target with （女性） suffix
+        mock_resp = {
+            "message": {
+                "role": "assistant",
+                "content": json.dumps({
+                    "reason": "直接一致",
+                    "visualizable": True,
+                    "tier": 1,
+                    "targets": ["喜ぶ人のイラスト（女性）"],
+                }),
+            }
+        }
+
+        matched_targets: List[str] = []
+
+        def match_cb(term: str, targets: List[str], tier: int = 1) -> None:
+            """Collect matched targets."""
+            matched_targets.extend(targets)
+
+        with patch("scripts.synonyms.common._KeepAliveJSONClient.post_json", return_value=mock_resp):
+            mappings, fail = run_ollama_agent_batch(
+                candidates=[{"term": "喜ぶ", "reading": "よろこぶ"}],
+                catalog_path=self.db_path,
+                on_match=match_cb,
+            )
+            self.assertEqual(len(mappings), 1)
+            self.assertEqual(matched_targets, ["喜ぶ人のイラスト"])
+
+    def test_run_ollama_agent_batch_logs_warning_on_done_reason_length(self) -> None:
+        """Verify a warning is logged when Ollama response indicates truncation via done_reason='length'."""
+        mock_resp = {
+            "done_reason": "length",
+            "eval_count": 200,
+            "message": {
+                "role": "assistant",
+                "content": json.dumps({
+                    "reason": "直接一致",
+                    "visualizable": False,
+                }),
+            },
+        }
+
+        with (
+            patch("scripts.synonyms.common._KeepAliveJSONClient.post_json", return_value=mock_resp),
+            self.assertLogs(logger="synonyms.ollama_agent", level="WARNING") as cm,
+        ):
+            run_ollama_agent_batch(
+                candidates=[{"term": "はずがない", "reading": "はずがない"}],
+                catalog_path=self.db_path,
+            )
+        self.assertTrue(any("was truncated (done_reason='length'" in log_msg for log_msg in cm.output))
+
+    def test_ollama_embed_chunk_truncation_to_dimensions(self) -> None:
+        """Verify _embed_chunk truncates oversized embedding vectors before L2 normalization."""
+        from scripts.synonyms.ollama_embed import OllamaEmbedClient
+
+        client = OllamaEmbedClient(base_url="http://localhost:11434")
+        # Oversized 3D vector [3.0, 4.0, 12.0] truncated to 2D is [3.0, 4.0], normalized to [0.6, 0.8]
+        with patch.object(client._http_client, "post_json", return_value={"embeddings": [[3.0, 4.0, 12.0]]}):
+            result = client._embed_chunk(["test"], model="test-embed", dimensions=2, options={})
+            self.assertEqual(len(result), 1)
+            self.assertAlmostEqual(result[0][0], 0.6, places=5)
+            self.assertAlmostEqual(result[0][1], 0.8, places=5)
+
+    def test_clean_and_validate_concept_dict_rejects_non_idempotent_targets(self) -> None:
+        """Verify _populate_concept_json_mapping rejects targets whose clean_search_query value is non-idempotent."""
+        from scripts.synonyms.concepts import _populate_concept_json_mapping
+
+        with tempfile.NamedTemporaryFile("w", suffix=".json", encoding="utf-8", delete=False) as tf:
+            json.dump({"concepts": {"ペット": ["猫、犬/鳥"]}}, tf)
+            tf_path = tf.name
+
+        try:
+            with self.assertLogs("synonyms.concepts", level="ERROR") as cm:
+                success = _populate_concept_json_mapping(
+                    catalog_path=self.db_path,
+                    json_path=tf_path,
+                    source="test",
+                    min_matched=1,
+                    validate_only=True,
+                )
+            self.assertFalse(success)
+            self.assertTrue(any("<non-idempotent" in msg for msg in cm.output))
+        finally:
+            if os.path.exists(tf_path):
+                os.remove(tf_path)
 
 
 if __name__ == "__main__":

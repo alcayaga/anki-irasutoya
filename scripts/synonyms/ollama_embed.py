@@ -10,16 +10,21 @@ import sqlite3
 import time
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 try:
     import numpy as np
 except ImportError:
     np = None
 
-from addon.catalog import CatalogIndex
+from addon.catalog import CatalogIndex, CatalogStore
+from addon.ranking import has_title_illustration_match
 from addon.text_utils import clean_search_query
-from scripts.synonyms.common import _KeepAliveJSONClient, _readonly_catalog_uri
+from scripts.synonyms.common import (
+    _KeepAliveJSONClient,
+    _readonly_catalog_uri,
+    filter_relevant_illustrations,
+)
 
 logger = logging.getLogger("synonyms.ollama_embed")
 
@@ -37,6 +42,7 @@ __all__ = [
     "format_candidate_context_block",
     "format_query_for_embedding",
     "l2_normalize",
+    "resolve_valid_post_target",
     "search_hybrid_presearch",
 ]
 
@@ -174,7 +180,7 @@ class OllamaEmbedClient:
             embeddings = resp_data.get("embeddings", [])
             if isinstance(embeddings, list) and len(embeddings) == len(chunk):
                 return [
-                    (l2_normalize(vec) if isinstance(vec, list) else [])
+                    (l2_normalize(vec[:dimensions]) if isinstance(vec, list) else [])
                     for vec in embeddings
                 ]
             logger.warning("Malformed 'embeddings' response for chunk of size %d", len(chunk))
@@ -645,6 +651,61 @@ class CatalogVectorIndex:
         return scores_list[:top_k]
 
 
+def resolve_valid_post_target(
+    post_id: int,
+    post_title: str,
+    index: Optional[CatalogIndex],
+    conn: sqlite3.Connection,
+) -> Optional[str]:
+    """Resolve a clean, runtime-valid search target string for a catalog post.
+
+    Inspects the post title and associated image titles, canonicalizing candidates
+    via clean_search_query() and validating that the target produces title
+    illustration matches in the catalog index.
+
+    Args:
+        post_id: SQLite integer posts.id.
+        post_title: Title of the Blogger post.
+        index: Optional pre-loaded CatalogIndex for runtime validation.
+        conn: Open SQLite connection to catalog.sqlite.
+
+    Returns:
+        A validated search target string if one passes, or None if no candidate passes.
+    """
+    if index is None:
+        return None
+
+    m = re.match(r"^(.+?)のイラスト(?:$|（)", post_title)
+    primary = m.group(1) if m else post_title
+    clean_primary = clean_search_query(primary)
+
+    if clean_primary and clean_search_query(clean_primary) == clean_primary:
+        res = filter_relevant_illustrations(index.search(clean_primary), clean_primary)
+        if res and has_title_illustration_match(res, clean_primary):
+            return clean_primary
+
+    clean_full = clean_search_query(post_title)
+    if clean_full and clean_search_query(clean_full) == clean_full:
+        res = filter_relevant_illustrations(index.search(clean_full), clean_full)
+        if res and has_title_illustration_match(res, clean_full):
+            return clean_full
+
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT title FROM images WHERE post_id = ? ORDER BY id ASC", (post_id,))
+        for (img_t,) in cur.fetchall():
+            m_img = re.match(r"^(.+?)のイラスト(?:$|（)", img_t)
+            c_img = clean_search_query(m_img.group(1) if m_img else img_t)
+            if c_img and clean_search_query(c_img) == c_img:
+                res = filter_relevant_illustrations(index.search(c_img), c_img)
+                if res and has_title_illustration_match(res, c_img):
+                    return c_img
+    except Exception as exc:
+        logger.debug("Failed image title lookup for post %d: %s", post_id, exc)
+
+    return None
+
+
 def search_hybrid_presearch(
     term: str,
     catalog_path: str,
@@ -685,25 +746,36 @@ def search_hybrid_presearch(
         close_conn = True
 
     hits: List[Dict[str, Any]] = []
-    seen_post_ids = set()
+    seen_post_ids: Set[int] = set()
+    seen_blogger_ids: Set[str] = set()
 
     try:
+        if index is None:
+            try:
+                store = CatalogStore(catalog_path)
+                index = store.get_index()
+            except Exception as exc:
+                logger.debug("Failed to load CatalogIndex in search_hybrid_presearch: %s", exc)
+
         cur = conn.cursor()
 
-        # 1. Lexical Substring & Exact Match on Post Title / Description
+        # 1. Lexical Substring & Exact Match on Post Title First, then Description
         has_semantic = vector_index is not None and (query_vector is not None or embed_client is not None)
         lexical_cap = max(1, limit - 2) if has_semantic else limit
 
         escaped_q = clean_q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+        # 1a. Match post title first (direct high-precision hits)
         cur.execute(
-            "SELECT id, blogger_id, title, description FROM posts WHERE title LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\' LIMIT ?",
-            (f"%{escaped_q}%", f"%{escaped_q}%", lexical_cap),
+            "SELECT id, blogger_id, title, description FROM posts WHERE title LIKE ? ESCAPE '\\' LIMIT ?",
+            (f"%{escaped_q}%", lexical_cap),
         )
-        for pid, _bid, ptitle, pdesc in cur.fetchall():
+        for pid, bid, ptitle, pdesc in cur.fetchall():
             if pid not in seen_post_ids:
                 seen_post_ids.add(pid)
-                m = re.match(r"^(.+?)のイラスト(?:$|（)", ptitle)
-                suggested = m.group(1) if m else ptitle
+                if bid:
+                    seen_blogger_ids.add(str(bid))
+                suggested = resolve_valid_post_target(pid, ptitle, index, conn)
                 hits.append({
                     "post_id": pid,
                     "title": ptitle,
@@ -712,18 +784,48 @@ def search_hybrid_presearch(
                     "source": "lexical",
                 })
 
+        # 1b. If fewer than lexical_cap, search post description
+        if len(hits) < lexical_cap:
+            remaining = lexical_cap - len(hits)
+            if seen_post_ids:
+                excluded = sorted(seen_post_ids)
+                placeholders = ",".join("?" * len(excluded))
+                cur.execute(
+                    "SELECT id, blogger_id, title, description FROM posts "
+                    f"WHERE description LIKE ? ESCAPE '\\' AND id NOT IN ({placeholders}) LIMIT ?",
+                    (f"%{escaped_q}%", *excluded, remaining),
+                )
+            else:
+                cur.execute(
+                    "SELECT id, blogger_id, title, description FROM posts WHERE description LIKE ? ESCAPE '\\' LIMIT ?",
+                    (f"%{escaped_q}%", remaining),
+                )
+            for pid, bid, ptitle, pdesc in cur.fetchall():
+                if pid not in seen_post_ids:
+                    seen_post_ids.add(pid)
+                    if bid:
+                        seen_blogger_ids.add(str(bid))
+                    suggested = resolve_valid_post_target(pid, ptitle, index, conn)
+                    hits.append({
+                        "post_id": pid,
+                        "title": ptitle,
+                        "description": (pdesc[:120] if pdesc else ""),
+                        "suggested_target": suggested,
+                        "source": "lexical",
+                    })
+
         # Also inspect in-memory index if lexical query yielded few hits
         if len(hits) < lexical_cap and index is not None:
             records = index.search(clean_q)
             for rec in records:
-                if rec.post_id and rec.post_id not in seen_post_ids:
+                if rec.post_id and rec.post_id not in seen_blogger_ids:
+                    seen_blogger_ids.add(rec.post_id)
                     # Look up post details by blogger_id
                     cur.execute("SELECT id, title, description FROM posts WHERE blogger_id = ?", (rec.post_id,))
                     p_row = cur.fetchone()
                     if p_row and p_row[0] not in seen_post_ids:
                         seen_post_ids.add(p_row[0])
-                        m = re.match(r"^(.+?)のイラスト(?:$|（)", p_row[1])
-                        suggested = m.group(1) if m else p_row[1]
+                        suggested = resolve_valid_post_target(p_row[0], p_row[1], index, conn)
                         hits.append({
                             "post_id": p_row[0],
                             "title": p_row[1],
@@ -745,19 +847,20 @@ def search_hybrid_presearch(
                     dimensions=vector_index.dim,
                 )
             if q_vec:
-                vector_hits = vector_index.search_similar(q_vec, top_k=limit)
+                vector_hits = vector_index.search_similar(q_vec, top_k=limit * 2)
                 for pid, _score in vector_hits:
                     if pid not in seen_post_ids:
-                        cur.execute("SELECT id, title, description FROM posts WHERE id = ?", (pid,))
+                        cur.execute("SELECT id, blogger_id, title, description FROM posts WHERE id = ?", (pid,))
                         p_row = cur.fetchone()
                         if p_row:
                             seen_post_ids.add(pid)
-                            m = re.match(r"^(.+?)のイラスト(?:$|（)", p_row[1])
-                            suggested = m.group(1) if m else p_row[1]
+                            if p_row[1]:
+                                seen_blogger_ids.add(str(p_row[1]))
+                            suggested = resolve_valid_post_target(p_row[0], p_row[2], index, conn)
                             hits.append({
                                 "post_id": p_row[0],
-                                "title": p_row[1],
-                                "description": (p_row[2][:120] if p_row[2] else ""),
+                                "title": p_row[2],
+                                "description": (p_row[3][:120] if p_row[3] else ""),
                                 "suggested_target": suggested,
                                 "source": "semantic",
                             })
@@ -784,10 +887,13 @@ def format_candidate_context_block(hits: Sequence[Dict[str, Any]]) -> str:
 
     lines = ["Context: Candidate Catalog Illustrations:"]
     for i, h in enumerate(hits, 1):
-        target = h.get("suggested_target", "")
+        target = h.get("suggested_target")
         title = h.get("title", "")
         desc = h.get("description", "")
         desc_part = f" — {desc}" if desc else ""
-        lines.append(f"{i}. Target: 「{target}」 (Post: {title}{desc_part})")
+        if target:
+            lines.append(f"{i}. Target: 「{target}」 (Post: {title}{desc_part})")
+        else:
+            lines.append(f"{i}. Post: {title}{desc_part}")
 
     return "\n".join(lines)
