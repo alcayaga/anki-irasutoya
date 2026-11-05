@@ -51,6 +51,9 @@ jobs:
       - name: Validate Python syntax compilation
         run: python -m compileall -q .
 
+      - name: Install dependencies
+        run: pip install pyyaml
+
       - name: Run Hermetic Unit Tests
         run: python -m unittest discover -s tests -p "test_*.py" -v
 
@@ -89,7 +92,7 @@ jobs:
       - name: Install Anki desktop GUI dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install aqt
+          pip install aqt pyyaml
 
       - name: Run Full Test Suite under Xvfb
         shell: bash

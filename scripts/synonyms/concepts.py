@@ -311,6 +311,10 @@ def populate_llm_concepts(
         )
         if not ok_t1:
             return False
+    else:
+        with sqlite3.connect(catalog_path) as conn:
+            conn.execute("DELETE FROM synonyms WHERE source = 'llm_concept'")
+            conn.commit()
 
     if has_t2:
         ok_t2 = _populate_concept_json_mapping(
@@ -324,6 +328,10 @@ def populate_llm_concepts(
         )
         if not ok_t2:
             return False
+    else:
+        with sqlite3.connect(catalog_path) as conn:
+            conn.execute("DELETE FROM synonyms WHERE source = 'llm_concept_tier2'")
+            conn.commit()
 
     return True
 

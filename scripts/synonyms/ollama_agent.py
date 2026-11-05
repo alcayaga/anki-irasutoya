@@ -124,6 +124,42 @@ def check_ollama_availability(
     return True, None
 
 
+def get_model_options_from_manifest(
+    model_name: str,
+    manifest_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Retrieve model generation options from declarative models manifest if available.
+
+    Args:
+        model_name: Name of the Ollama model.
+        manifest_path: Optional path to models.yml.
+
+    Returns:
+        Dictionary of generation options.
+    """
+    path = manifest_path or os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "models.yml",
+    )
+    if not os.path.isfile(path):
+        return {}
+    try:
+        from scripts.pull_models import load_models_manifest
+
+        manifest = load_models_manifest(path)
+        cfg = manifest.get("ollama", manifest) if isinstance(manifest.get("ollama"), dict) else manifest
+        models = cfg.get("models", [])
+        if isinstance(models, list):
+            for m in models:
+                if isinstance(m, dict) and m.get("name") == model_name:
+                    opts = m.get("options")
+                    if isinstance(opts, dict):
+                        return dict(opts)
+    except Exception as exc:
+        logger.debug("Could not read options for model %s from %s: %s", model_name, path, exc)
+    return {}
+
+
 def run_ollama_agent_batch(
     candidates: Sequence[Dict[str, Any]],
     catalog_path: str,
@@ -189,8 +225,15 @@ def run_ollama_agent_batch(
     on_match_arity = _determine_arity(on_match)
     on_reject_arity = _determine_arity(on_reject)
 
+    model_opts = get_model_options_from_manifest(model)
+    temp_t0 = float(model_opts.get("temperature_turn0", 0.1))
+    temp_t1 = float(model_opts.get("temperature_turn1", 0.3))
+    opt_top_p = float(model_opts.get("top_p", 0.9))
+    opt_seed = int(model_opts.get("seed", 42))
+    opt_num_ctx = int(model_opts.get("num_ctx", 4096))
+
     # Batch-embed all candidate queries up front if vector index is enabled
-    precomputed_vectors: Dict[str, Optional[List[float]]] = {}
+    precomputed_vectors: List[Optional[List[float]]] = [None] * len(candidates)
     if vector_index is not None and embed_client is not None and candidates:
         logger.info("Pre-computing query embeddings for %d candidates...", len(candidates))
         query_texts = [
@@ -203,8 +246,8 @@ def run_ollama_agent_batch(
                 model=embed_model,
                 dimensions=vector_index.dim,
             )
-            for c, vec in zip(candidates, raw_vectors):
-                precomputed_vectors[c["term"]] = vec if vec else None
+            for i, vec in enumerate(raw_vectors):
+                precomputed_vectors[i] = vec if vec else None
         except Exception as embed_err:
             logger.warning(
                 "Upfront batch embedding failed: %s; falling back to per-candidate embedding",
@@ -234,7 +277,7 @@ def run_ollama_agent_batch(
                     conn=conn,
                     limit=5,
                     english_glosses=cand.get("english_glosses"),
-                    query_vector=precomputed_vectors.get(term),
+                    query_vector=precomputed_vectors[idx - 1] if idx - 1 < len(precomputed_vectors) else None,
                 )
             except Exception as pre_exc:
                 logger.warning(
@@ -274,10 +317,10 @@ def run_ollama_agent_batch(
                         "stream": False,
                         "think": False,
                         "options": {
-                            "temperature": 0.1 if _turn == 0 else 0.3,
-                            "top_p": 0.9,
-                            "seed": 42,
-                            "num_ctx": 4096,
+                            "temperature": temp_t0 if _turn == 0 else temp_t1,
+                            "top_p": opt_top_p,
+                            "seed": opt_seed,
+                            "num_ctx": opt_num_ctx,
                         },
                     }
                     try:
@@ -377,8 +420,8 @@ def run_ollama_agent_batch(
                                 break
 
                             reason = str(parsed.get("reason", "")).strip()
-                            raw_tier = parsed.get("tier", 1)
-                            tier = int(raw_tier) if str(raw_tier) in ("1", "2") else 1
+                            raw_tier = parsed.get("tier", 2)
+                            tier = int(raw_tier) if str(raw_tier) in ("1", "2") else 2
 
                             if raw_vis is True:
                                 targets = parsed.get("targets", [])

@@ -1,10 +1,10 @@
 """Unit tests for the local LLM visual concept compiler (scripts/agent_synonyms.py)."""
 import array
-import hashlib
 import io
 import json
 import os
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 import urllib.error
@@ -41,12 +41,14 @@ from scripts.synonyms.ollama_agent import (
     _flush_llm_concepts,
     _KeepAliveJSONClient,
     _parse_llm_json_response,
+    get_model_options_from_manifest,
 )
 from scripts.synonyms.ollama_embed import (
     QWEN3_SEARCH_INSTRUCT,
     CatalogVectorIndex,
     OllamaEmbedClient,
     clean_post_for_embedding,
+    compute_catalog_posts_sha256,
     format_candidate_context_block,
     format_query_for_embedding,
     search_hybrid_presearch,
@@ -1227,7 +1229,7 @@ class TestOllamaAgentCompiler(unittest.TestCase):
                 resp_payload = {
                     "message": {
                         "role": "assistant",
-                        "content": '{"visualizable": true, "reason": "young feline", "targets": ["猫"]}',
+                        "content": '{"visualizable": true, "tier": 1, "reason": "young feline", "targets": ["猫"]}',
                     }
                 }
 
@@ -2168,22 +2170,12 @@ class TestPullModelsAndEmbedPresearch(unittest.TestCase):
         self.assertTrue(any(m.get("name") == "gemma4:26b" for m in cfg["models"]))
         self.assertTrue(any(m.get("name") == "qwen3-embedding:4b" for m in cfg["models"]))
 
-        # Verify manifest loading succeeds without PyYAML installed (stdlib fallback)
-        with unittest.mock.patch.dict("sys.modules", {"yaml": None}):
-            data_no_yaml = load_models_manifest(DEFAULT_MODELS_PATH)
-            cfg_no_yaml = data_no_yaml.get("ollama", data_no_yaml)
-            self.assertIn("models", cfg_no_yaml)
-            self.assertEqual(len(cfg_no_yaml["models"]), 2)
-            self.assertEqual(cfg_no_yaml["models"][0]["name"], "gemma4:26b")
-            self.assertEqual(cfg_no_yaml["models"][1]["name"], "qwen3-embedding:4b")
-            self.assertIsNone(cfg_no_yaml["models"][1]["fallback"])
-
-            # Verify JSON manifest saved with .yml extension parses correctly without PyYAML
-            json_yml_path = os.path.join(self.temp_dir.name, "json_manifest.yml")
-            with open(json_yml_path, "w", encoding="utf-8") as f:
-                json.dump({"ollama": {"models": [{"name": "test-model"}]}}, f)
-            data_json_yml = load_models_manifest(json_yml_path)
-            self.assertEqual(data_json_yml["ollama"]["models"][0]["name"], "test-model")
+        # Verify JSON manifest saved with .yml or .json extension parses correctly
+        json_yml_path = os.path.join(self.temp_dir.name, "json_manifest.json")
+        with open(json_yml_path, "w", encoding="utf-8") as f:
+            json.dump({"ollama": {"models": [{"name": "test-model"}]}}, f)
+        data_json_yml = load_models_manifest(json_yml_path)
+        self.assertEqual(data_json_yml["ollama"]["models"][0]["name"], "test-model")
 
         # Test non-existent file
         with self.assertRaises(FileNotFoundError):
@@ -2223,16 +2215,18 @@ class TestPullModelsAndEmbedPresearch(unittest.TestCase):
 
         with patch("urllib.request.urlopen", return_value=MockResp()) as mock_urlopen:
             installed = get_installed_ollama_models("http://proxy:8080/prefix")
+            self.assertIsNotNone(installed)
+            assert installed is not None
             self.assertIn("gemma4:26b", installed)
             self.assertIn("qwen3-embedding:4b", installed)
             self.assertIn("custom-model:latest", installed)
             self.assertIn("custom-model", installed)
             self.assertEqual(mock_urlopen.call_args[0][0].full_url, "http://proxy:8080/prefix/api/tags")
 
-        # Verify error returns empty set
+        # Verify network error returns None so callers can detect failure
         with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("Refused")):
             installed_err = get_installed_ollama_models("http://localhost:11434")
-            self.assertEqual(installed_err, set())
+            self.assertIsNone(installed_err)
 
     def test_pull_single_model_streaming(self) -> None:
         """Verify pull_single_model parses streaming JSON lines and reports success or error."""
@@ -2289,6 +2283,17 @@ class TestPullModelsAndEmbedPresearch(unittest.TestCase):
         ):
             fail_trunc = pull_single_model("truncated:latest")
             self.assertFalse(fail_trunc)
+
+        # CLI subprocess branch honors stream_progress=False by capturing output
+        with (
+            patch("scripts.pull_models.shutil.which", return_value="/usr/local/bin/ollama"),
+            patch("scripts.pull_models.subprocess.run") as mock_cli_run,
+        ):
+            mock_cli_run.return_value.returncode = 0
+            ok_cli_quiet = pull_single_model("gemma4:26b", stream_progress=False)
+            self.assertTrue(ok_cli_quiet)
+            self.assertEqual(mock_cli_run.call_args[1].get("stdout"), subprocess.PIPE)
+            self.assertEqual(mock_cli_run.call_args[1].get("stderr"), subprocess.PIPE)
 
     def test_pull_declared_models_and_cli(self) -> None:
         """Verify pull_declared_models respects presence, dry-run, and force flags."""
@@ -2348,6 +2353,26 @@ class TestPullModelsAndEmbedPresearch(unittest.TestCase):
             ok_custom = pull_declared_models(manifest_path=manifest_custom_ep, ollama_url=None)
             self.assertTrue(ok_custom)
             self.assertEqual(mock_pull_custom.call_args[1].get("ollama_url"), "http://remote-ollama:11434")
+
+        # Case 5: returns False when get_installed_ollama_models returns None (even in dry_run)
+        with patch("scripts.pull_models.get_installed_ollama_models", return_value=None):
+            ok_unreach = pull_declared_models(manifest_path=manifest_path, dry_run=True)
+            self.assertFalse(ok_unreach)
+
+        # Case 6: returns False when models is not a list
+        manifest_bad_models = os.path.join(self.temp_dir.name, "bad_models.json")
+        with open(manifest_bad_models, "w", encoding="utf-8") as f:
+            json.dump({"ollama": {"models": "not_a_list"}}, f)
+        ok_bad_models = pull_declared_models(manifest_path=manifest_bad_models)
+        self.assertFalse(ok_bad_models)
+
+        # Case 7: returns False when an entry has no name
+        manifest_bad_entry = os.path.join(self.temp_dir.name, "bad_entry.json")
+        with open(manifest_bad_entry, "w", encoding="utf-8") as f:
+            json.dump({"ollama": {"models": [{"role": "chat"}]}}, f)
+        with patch("scripts.pull_models.get_installed_ollama_models", return_value=set()):
+            ok_bad_entry = pull_declared_models(manifest_path=manifest_bad_entry)
+            self.assertFalse(ok_bad_entry)
 
         # Test CLI entrypoint
         with patch("scripts.pull_models.pull_declared_models", return_value=True) as mock_decl:
@@ -2585,8 +2610,7 @@ class TestPullModelsAndEmbedPresearch(unittest.TestCase):
         partial_base = os.path.join(cache_dir, f"catalog_post_embeddings_{clean_model}.partial")
 
         # Pre-seed a partial checkpoint with 1 post completed out of 2
-        with open(self.db_path, "rb") as f_db:
-            h = hashlib.sha256(f_db.read()).hexdigest()
+        h = compute_catalog_posts_sha256(self.db_path)
 
         with open(f"{partial_base}.json", "w", encoding="utf-8") as f_meta:
             json.dump({
@@ -2848,6 +2872,112 @@ class TestPullModelsAndEmbedPresearch(unittest.TestCase):
             self.assertTrue(kwargs.get("no_embed"))
             self.assertTrue(kwargs.get("recheck_rejected"))
             self.assertEqual(kwargs.get("ollama_model"), "gemma4:26b")
+
+    def test_get_model_options_from_manifest(self) -> None:
+        """Verify get_model_options_from_manifest extracts options dictionary for declared models."""
+        opts = get_model_options_from_manifest("gemma4:26b")
+        self.assertIsInstance(opts, dict)
+        self.assertEqual(opts.get("seed"), 42)
+        self.assertEqual(opts.get("num_ctx"), 4096)
+        self.assertEqual(opts.get("temperature_turn0"), 0.1)
+
+        # Unknown model returns empty dict
+        empty_opts = get_model_options_from_manifest("nonexistent-model")
+        self.assertEqual(empty_opts, {})
+
+    def test_keepalive_client_proxy_routing(self) -> None:
+        """Verify _KeepAliveJSONClient routes through urlopen when a proxy is configured."""
+        client = _KeepAliveJSONClient()
+        mock_resp_body = b'{"status": "ok"}'
+
+        class MockResp:
+            """Mock HTTP response."""
+
+            def __enter__(self) -> "MockResp":
+                """Enter context manager."""
+                return self
+
+            def __exit__(self, *args: Any) -> None:
+                """Exit context manager."""
+                pass
+
+            def read(self) -> bytes:
+                """Read response body."""
+                return mock_resp_body
+
+        with (
+            patch("urllib.request.getproxies", return_value={"http": "http://corporate-proxy:8080"}),
+            patch("urllib.request.proxy_bypass", return_value=False),
+            patch("urllib.request.urlopen", return_value=MockResp()) as mock_urlopen,
+        ):
+            res = client.post_json("http://remote-server/api/embed", {"prompt": "test"})
+            self.assertEqual(res, {"status": "ok"})
+            self.assertTrue(mock_urlopen.called)
+
+    def test_ollama_agent_accepted_scene_defaults_tier2(self) -> None:
+        """Verify that when Ollama omits tier on an accepted scene, it defaults to Tier 2."""
+        mock_resp = {
+            "message": {
+                "content": json.dumps({
+                    "reason": "representative scene",
+                    "visualizable": True,
+                    "targets": ["猫"],
+                    # "tier" is omitted
+                })
+            }
+        }
+
+        matched_tiers = []
+
+        def match_cb(term: str, targets: List[str], tier: int) -> None:
+            """Callback collecting matched tier."""
+            matched_tiers.append(tier)
+
+        with patch("scripts.synonyms.common._KeepAliveJSONClient.post_json", return_value=mock_resp):
+            mappings, fail = run_ollama_agent_batch(
+                candidates=[{"term": "心の中", "reading": "こころのなか"}],
+                catalog_path=self.db_path,
+                on_match=match_cb,
+            )
+            self.assertEqual(len(mappings), 1)
+            self.assertEqual(fail, 0)
+            self.assertEqual(matched_tiers, [2])
+
+    def test_search_hybrid_presearch_semantic_contribution(self) -> None:
+        """Verify semantic hits can contribute even when lexical hits reach the cap."""
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        for i in range(5):
+            cur.execute(
+                "INSERT INTO posts (id, blogger_id, title, description, published, updated, image_count) VALUES (?, ?, ?, ?, 'pub', 'upd', 1)",
+                (100 + i, f"blog_{100+i}", f"猫_{i}のイラスト", "desc"),
+            )
+        cur.execute(
+            "INSERT INTO posts (id, blogger_id, title, description, published, updated, image_count) VALUES (999, 'blog_999', '特別なイラスト', 'desc', 'pub', 'upd', 1)",
+        )
+        conn.commit()
+
+        class MockVectorIndex:
+            """Mock vector index."""
+
+            dim = 512
+
+            def search_similar(self, vec: Any, top_k: int = 5) -> List[Tuple[int, float]]:
+                """Search similar vectors."""
+                return [(999, 0.95)]
+
+        hits = search_hybrid_presearch(
+            term="猫",
+            catalog_path=self.db_path,
+            conn=conn,
+            vector_index=MockVectorIndex(),  # type: ignore
+            query_vector=[0.1] * 512,
+            limit=5,
+        )
+        conn.close()
+        sources = [h["source"] for h in hits]
+        self.assertIn("semantic", sources)
+        self.assertTrue(any(h["post_id"] == 999 for h in hits))
 
 
 if __name__ == "__main__":

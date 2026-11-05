@@ -33,11 +33,36 @@ __all__ = [
     "OllamaEmbedClient",
     "QWEN3_SEARCH_INSTRUCT",
     "clean_post_for_embedding",
+    "compute_catalog_posts_sha256",
     "format_candidate_context_block",
     "format_query_for_embedding",
     "l2_normalize",
     "search_hybrid_presearch",
 ]
+
+
+def compute_catalog_posts_sha256(catalog_path: str) -> str:
+    """Compute deterministic SHA-256 fingerprint of catalog posts embedding fields.
+
+    Args:
+        catalog_path: Path to catalog.sqlite.
+
+    Returns:
+        Hexadecimal SHA-256 digest string.
+    """
+    try:
+        h = hashlib.sha256()
+        abs_cat = os.path.abspath(catalog_path)
+        with sqlite3.connect(f"file:{abs_cat}?mode=ro", uri=True) as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT id, title, description FROM posts ORDER BY id")
+            for r in cur.fetchall():
+                h.update(str(r[0]).encode("utf-8"))
+                h.update(str(r[1] or "").encode("utf-8"))
+                h.update(str(r[2] or "").encode("utf-8"))
+        return h.hexdigest()
+    except Exception:
+        return ""
 
 
 def clean_post_for_embedding(title: str, description: str) -> str:
@@ -416,15 +441,8 @@ class CatalogVectorIndex:
         clean_model = re.sub(r"[^\w\-.]+", "_", model)
         cache_base = os.path.join(cache_dir, f"catalog_post_embeddings_{clean_model}")
 
-        # Compute catalog sha256 to ensure cache validity
-        try:
-            h = hashlib.sha256()
-            with open(catalog_path, "rb") as f_cat:
-                while chunk := f_cat.read(131072):
-                    h.update(chunk)
-            catalog_sha256 = h.hexdigest()
-        except Exception:
-            catalog_sha256 = ""
+        # Compute deterministic fingerprint of embedding inputs (posts id, title, description)
+        catalog_sha256 = compute_catalog_posts_sha256(catalog_path)
 
         cached = cls.load(cache_base)
         if cached is not None and catalog_sha256:
@@ -432,7 +450,11 @@ class CatalogVectorIndex:
             try:
                 with open(meta_path, "r", encoding="utf-8") as f:
                     meta = json.load(f)
-                if meta.get("catalog_sha256") == catalog_sha256 and cached.dim == dimensions:
+                if (
+                    meta.get("catalog_sha256") == catalog_sha256
+                    and meta.get("model") == model
+                    and cached.dim == dimensions
+                ):
                     logger.info(
                         "Loaded cached vector index (%d posts, dim=%d) from %s",
                         len(cached.post_ids),
@@ -666,10 +688,13 @@ def search_hybrid_presearch(
         cur = conn.cursor()
 
         # 1. Lexical Substring & Exact Match on Post Title / Description
+        has_semantic = vector_index is not None and (query_vector is not None or embed_client is not None)
+        lexical_cap = max(1, limit - 2) if has_semantic else limit
+
         escaped_q = clean_q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         cur.execute(
             "SELECT id, blogger_id, title, description FROM posts WHERE title LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\' LIMIT ?",
-            (f"%{escaped_q}%", f"%{escaped_q}%", limit),
+            (f"%{escaped_q}%", f"%{escaped_q}%", lexical_cap),
         )
         for pid, _bid, ptitle, pdesc in cur.fetchall():
             if pid not in seen_post_ids:
@@ -685,7 +710,7 @@ def search_hybrid_presearch(
                 })
 
         # Also inspect in-memory index if lexical query yielded few hits
-        if len(hits) < limit and index is not None:
+        if len(hits) < lexical_cap and index is not None:
             records = index.search(clean_q)
             for rec in records:
                 if rec.post_id and rec.post_id not in seen_post_ids:
@@ -703,11 +728,11 @@ def search_hybrid_presearch(
                             "suggested_target": suggested,
                             "source": "lexical",
                         })
-                        if len(hits) >= limit:
+                        if len(hits) >= lexical_cap:
                             break
 
         # 2. Semantic Vector Similarity Pre-Search
-        if vector_index is not None and len(hits) < limit:
+        if has_semantic and len(hits) < limit and vector_index is not None:
             q_vec = query_vector
             if q_vec is None and embed_client is not None:
                 formatted_q = format_query_for_embedding(clean_q, english_glosses=english_glosses)

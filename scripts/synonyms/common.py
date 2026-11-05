@@ -128,6 +128,20 @@ class _KeepAliveJSONClient:
             path = f"{path}?{parsed.query}"
 
         data = json.dumps(payload).encode("utf-8")
+
+        # If a proxy is configured for this scheme/host, route through proxy-aware urllib
+        proxies = urllib.request.getproxies()
+        has_proxy = bool(proxies.get(parsed.scheme)) and not urllib.request.proxy_bypass(host)
+        if has_proxy:
+            req = urllib.request.Request(
+                url,
+                data=data,
+                headers={"Content-Type": "application/json", "User-Agent": "anki-irasutoya/1.0"},
+            )
+            with urllib.request.urlopen(req, timeout=(timeout or self._timeout)) as resp:
+                body = resp.read().decode("utf-8")
+                return json.loads(body)
+
         headers = {
             "Host": netloc,
             "Content-Type": "application/json",

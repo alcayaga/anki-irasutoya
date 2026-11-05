@@ -810,7 +810,14 @@ class TestBuildSynonyms(unittest.TestCase):
         ])
 
     def test_populate_llm_concepts_tier2_only_succeeds(self) -> None:
-        """Verify populate_llm_concepts succeeds when concepts is empty but tier2_concepts is populated."""
+        """Verify populate_llm_concepts succeeds when concepts is empty and clears stale tier 1 rows."""
+        # First populate with Tier 1 concept
+        init_json_path = os.path.join(self.temp_dir.name, "llm_concepts_t1_init.json")
+        with open(init_json_path, "w", encoding="utf-8") as f:
+            json.dump({"concepts": {"子猫": ["猫"]}}, f)
+        ok_init = populate_llm_concepts(self.db_path, init_json_path, min_matched=1, strict=True)
+        self.assertTrue(ok_init)
+
         json_path = os.path.join(self.temp_dir.name, "llm_concepts_t2_only.json")
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump({
@@ -823,10 +830,13 @@ class TestBuildSynonyms(unittest.TestCase):
 
         conn = sqlite3.connect(self.db_path)
         cur = conn.cursor()
+        cur.execute("SELECT term, target, source FROM synonyms WHERE source = 'llm_concept'")
+        rows_t1 = cur.fetchall()
         cur.execute("SELECT term, target, source FROM synonyms WHERE source = 'llm_concept_tier2'")
-        rows = cur.fetchall()
+        rows_t2 = cur.fetchall()
         conn.close()
-        self.assertEqual(rows, [("心の中", "猫", "llm_concept_tier2")])
+        self.assertEqual(rows_t1, [], "Stale llm_concept rows should be cleared when concepts is empty")
+        self.assertEqual(rows_t2, [("心の中", "猫", "llm_concept_tier2")])
 
     def test_populate_concept_json_mapping_strict_vs_non_strict(self) -> None:
         """Verify _populate_concept_json_mapping handles strict vs CI-resilient 95% threshold."""
