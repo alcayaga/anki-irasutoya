@@ -889,6 +889,14 @@ class TestBuildSynonyms(unittest.TestCase):
         self.assertEqual(cur.fetchone()[0], 0)
         conn.close()
 
+        # 3. Catalog without synonyms table succeeds without raising OperationalError
+        no_syn_db = os.path.join(self.temp_dir.name, "no_synonyms.sqlite")
+        conn = sqlite3.connect(no_syn_db)
+        conn.execute("CREATE TABLE posts (id INTEGER PRIMARY KEY, title TEXT)")
+        conn.commit()
+        conn.close()
+        self.assertTrue(_clear_synonym_source(no_syn_db, "llm_concept"))
+
     def test_populate_concept_json_mapping_strict_vs_non_strict(self) -> None:
         """Verify _populate_concept_json_mapping handles strict vs CI-resilient 95% threshold."""
         # 19 valid targets ('猫') and 1 invalid target ('存在しないターゲット') = 95.0% valid

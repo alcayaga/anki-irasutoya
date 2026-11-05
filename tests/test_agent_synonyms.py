@@ -2188,6 +2188,15 @@ class TestPullModelsAndEmbedPresearch(unittest.TestCase):
         with self.assertRaises(ValueError):
             load_models_manifest(invalid_path)
 
+        # Test missing PyYAML on non-JSON YAML content raises clear error
+        yaml_path = os.path.join(self.temp_dir.name, "manifest.yml")
+        with open(yaml_path, "w", encoding="utf-8") as f:
+            f.write("ollama:\n  models:\n    - name: test\n")
+        with patch.dict("sys.modules", {"yaml": None}):
+            with self.assertRaises(ValueError) as ctx:
+                load_models_manifest(yaml_path)
+            self.assertIn("PyYAML is not installed", str(ctx.exception))
+
     def test_get_installed_ollama_models_handling(self) -> None:
         """Verify get_installed_ollama_models parses tags and normalizes :latest tag suffix."""
         mock_payload = {

@@ -285,8 +285,12 @@ def _clear_synonym_source(catalog_path: str, source: str) -> bool:
     try:
         conn = sqlite3.connect(catalog_path)
         try:
-            conn.execute("DELETE FROM synonyms WHERE source = ?", (source,))
-            conn.commit()
+            has_table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='synonyms'"
+            ).fetchone()
+            if has_table:
+                conn.execute("DELETE FROM synonyms WHERE source = ?", (source,))
+                conn.commit()
             conn.execute("PRAGMA journal_mode = DELETE")
             conn.execute("VACUUM")
             conn.commit()

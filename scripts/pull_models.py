@@ -61,7 +61,10 @@ def load_models_manifest(path: str = DEFAULT_MODELS_PATH) -> Dict[str, Any]:
             try:
                 data = json.loads(content)
             except Exception as exc:
-                raise ValueError(f"Failed to parse manifest {path} as YAML/JSON: {exc}") from exc
+                raise ValueError(
+                    f"Failed to parse manifest {path}: PyYAML is not installed and the file is not valid JSON "
+                    f"(install with 'pip install pyyaml'): {exc}"
+                ) from exc
 
     if not isinstance(data, dict):
         raise ValueError(f"Root manifest structure in {path} must be a dictionary")
