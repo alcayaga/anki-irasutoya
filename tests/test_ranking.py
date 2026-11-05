@@ -85,8 +85,8 @@ class TestRanking(unittest.TestCase):
         ranked = rank_relevant_images([callout, scene_low, scene_archetype], "合格")
         self.assertEqual(ranked, [scene_archetype, scene_low, callout])
 
-    def test_is_decorative_asset(self):
-        """Verify decorative noise detection for frames, borders, and templates."""
+    def test_is_decorative_asset(self) -> None:
+        """Verify decorative noise detection for frames, borders, templates, and generic background textures."""
         frame_img = IrasutoyaImage("花のフレーム", "https://example.com/f.png", "https://example.com/t.png", "花")
         self.assertTrue(is_decorative_asset(frame_img, "花"))
         # Explicit search for frame should not be treated as unwanted decorative noise
@@ -94,6 +94,68 @@ class TestRanking(unittest.TestCase):
 
         cat_img = IrasutoyaImage("かわいい猫のイラスト", "https://example.com/c.png", "https://example.com/t.png", "猫")
         self.assertFalse(is_decorative_asset(cat_img, "猫"))
+
+        # Scenery and room illustrations titled Xのイラスト（背景素材） or Xの背景イラスト are valid illustrations
+        grass_img = IrasutoyaImage("草原のイラスト（背景素材）", "https://example.com/g.png", "https://example.com/tg.png", "草原")
+        self.assertFalse(is_decorative_asset(grass_img, "草原"))
+        horizon_img = IrasutoyaImage("水平線のイラスト（背景素材）", "https://example.com/h.png", "https://example.com/th.png", "水平線")
+        self.assertFalse(is_decorative_asset(horizon_img, "水平線"))
+        room_img = IrasutoyaImage("病室のイラスト（背景素材）", "https://example.com/r.png", "https://example.com/tr.png", "病室")
+        self.assertFalse(is_decorative_asset(room_img, "病室"))
+        grass_bg_img = IrasutoyaImage("草原の背景イラスト", "https://example.com/gb.png", "https://example.com/tgb.png", "草原")
+        self.assertFalse(is_decorative_asset(grass_bg_img, "草原"))
+
+        # Generic background texture patterns without subject illustration are decorative assets
+        pipe_texture = IrasutoyaImage("配管パイプの背景素材", "https://example.com/p.png", "https://example.com/tp.png", "配管パイプ")
+        self.assertTrue(is_decorative_asset(pipe_texture, "配管パイプ"))
+        effect_texture = IrasutoyaImage("いろいろな効果線が描かれた背景素材", "https://example.com/e.png", "https://example.com/te.png", "効果線")
+        self.assertTrue(is_decorative_asset(effect_texture, "効果線"))
+        pattern_texture = IrasutoyaImage("いろいろな空の背景パターン", "https://example.com/s.png", "https://example.com/ts.png", "空")
+        self.assertTrue(is_decorative_asset(pattern_texture, "空"))
+
+        # Explicit search for '背景' or '背景素材' allows background assets
+        self.assertFalse(is_decorative_asset(pipe_texture, "背景"))
+        self.assertFalse(is_decorative_asset(pipe_texture, "背景素材"))
+
+    def test_background_illustration_penalty_and_standalone_priority(self) -> None:
+        """Verify standalone illustrations outrank background scenery variants, while scenery remains positive."""
+        img_standalone = IrasutoyaImage(
+            title="学校の建物のイラスト",
+            image_url="https://example.com/bldg.png",
+            thumb_url="https://example.com/tbldg.png",
+            post_title="学校の建物のイラスト",
+        )
+        img_background = IrasutoyaImage(
+            title="学校の建物のイラスト（背景素材）",
+            image_url="https://example.com/bg.png",
+            thumb_url="https://example.com/tbg.png",
+            post_title="学校の建物のイラスト（背景素材）",
+        )
+        score_std = score_candidate_image(img_standalone, "学校")
+        score_bg = score_candidate_image(img_background, "学校")
+        self.assertGreater(score_std, score_bg)
+        self.assertGreater(score_std - score_bg, 30.0)
+
+        # Scenery illustration without standalone counterpart maintains strong positive score
+        img_grassland = IrasutoyaImage(
+            title="草原のイラスト（背景素材）",
+            image_url="https://example.com/grass.png",
+            thumb_url="https://example.com/tgrass.png",
+            post_title="草原のイラスト（背景素材）",
+            categories=("植物", "風景"),
+        )
+        score_grass = score_candidate_image(img_grassland, "草原")
+        self.assertGreater(score_grass, 50.0)
+
+        # Direct search for '背景' does not apply the background penalty to canonical background illustrations
+        img_canonical_bg = IrasutoyaImage(
+            title="背景のイラスト",
+            image_url="https://example.com/cbg.png",
+            thumb_url="https://example.com/tcbg.png",
+            post_title="背景のイラスト",
+        )
+        score_direct_bg = score_candidate_image(img_canonical_bg, "背景")
+        self.assertGreater(score_direct_bg, 100.0)
 
     def test_is_image_relevant(self):
         """Verify image relevance checking against queries, preventing multi-image post mismatches."""
@@ -1158,11 +1220,25 @@ class TestRanking(unittest.TestCase):
             is_single_image_post=True,
         )
         real_scene = IrasutoyaImage("お墓のイラスト", "https://example.com/4.png", "https://example.com/t.png", "お墓のイラスト")
+        grass_scene = IrasutoyaImage(
+            "草原のイラスト（背景素材）",
+            "https://example.com/5.png",
+            "https://example.com/t.png",
+            "草原のイラスト（背景素材）",
+        )
+        pipe_texture = IrasutoyaImage(
+            "配管パイプの背景素材",
+            "https://example.com/6.png",
+            "https://example.com/t.png",
+            "配管パイプの背景素材",
+        )
 
         self.assertFalse(has_title_illustration_match([callout], "今"))
         self.assertFalse(has_title_illustration_match([decorative], "今"))
         self.assertFalse(has_title_illustration_match([desc_only], "死ぬ"))
         self.assertTrue(has_title_illustration_match([callout, desc_only, real_scene], "墓"))
+        self.assertTrue(has_title_illustration_match([grass_scene], "草原"))
+        self.assertFalse(has_title_illustration_match([pipe_texture], "配管パイプ"))
         self.assertFalse(has_title_illustration_match([], "テスト"))
 
     def test_pronouns_description_blocklist(self) -> None:
