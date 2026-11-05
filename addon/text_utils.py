@@ -9,6 +9,7 @@ from .synonyms import (
     lookup_concept_map,
     lookup_kaishi_concept,
     lookup_llm_concept,
+    lookup_llm_concept_tier2,
     lookup_sudachi_synonyms,
 )
 from .yomitan_parser import (
@@ -662,18 +663,19 @@ def generate_search_candidates(
     sudachi_lookup: Optional[Callable[[str], List[str]]] = None,
     llm_lookup: Optional[Callable[[str], List[str]]] = None,
     bilingual_lookup: Optional[Callable[[Any, Optional[Any]], List[str]]] = None,
+    llm_tier2_lookup: Optional[Callable[[str], List[str]]] = None,
 ) -> List[Tuple[str, str, int]]:
     """Generate prioritized search candidate queries with confidence tiers.
     
     Tiers:
         Tier 1 (Safe Lexical & Morphological): Zero homophone risk. Always automatic in both Batch & UI.
                        (NFKC, Kanji numerals, Bikago prefixes, compound verb reductions, verb past/volitional forms, loanword Katakana,
-                        Yomitan uk orthography kana readings, formsTable ★ canonical kanji variants).
+                        direct verified LLM concept matches, Yomitan uk orthography kana readings, formsTable ★ canonical kanji variants).
         Tier 2 (Phonetic & Reading Fallbacks): Readings from separate note fields,
                        same-field furigana, verb masu-stems, Katakana chōonpu expansion, heuristic compound deinflection,
                        Yomitan sense-specific kanji (esp.), Yomitan cross-references (see:),
                        curated visual concept maps, Kaishi 1.5k concept bridges, SudachiDict synonym bridges,
-                       LLM-curated visual concept maps, bilingual English definition gloss bridges.
+                       LLM visual exemplars / prototypical scenes, bilingual English definition gloss bridges.
     
     Args:
         raw_source: Raw text or HTML from the source field.
@@ -684,7 +686,8 @@ def generate_search_candidates(
         concept_lookup: Optional callable mapping a headword to a list of target concept strings.
         kaishi_lookup: Optional callable mapping a headword to a list of Kaishi 1.5k target strings.
         sudachi_lookup: Optional callable mapping a headword to a list of Sudachi synonym target strings.
-        llm_lookup: Optional callable mapping a headword to a list of LLM-curated visual concept target strings.
+        llm_lookup: Optional callable mapping a headword to a list of LLM-curated direct visual concept target strings (Tier 1).
+        llm_tier2_lookup: Optional callable mapping a headword to a list of LLM Tier 2 visual exemplar target strings.
         bilingual_lookup: Optional callable mapping a note and optional Yomitan metadata to bilingual concept target strings.
 
     Returns:
@@ -769,6 +772,18 @@ def generate_search_candidates(
         and not _should_suppress_katakana_conversion(surface, yomitan_meta)
     ):
         add(to_katakana(surface), "loanword_katakana", 1)
+
+    # Tier 1 direct LLM-curated visual concept mapping on primary surface (e.g. 新札 -> 新紙幣, 傷薬 -> 軟膏)
+    def _lookup_llm_t1(term: str) -> List[str]:
+        """Query injected Tier 1 LLM lookup callable or catalog store."""
+        if llm_lookup is not None:
+            return llm_lookup(term)
+        if store is not None:
+            return lookup_llm_concept(term, store=store)
+        return lookup_llm_concept(term)
+
+    for l_target in _lookup_llm_t1(surface):
+        add(l_target, "llm_concept", 1)
 
     # 3. Tier 2 Semantic & Phonetic Fallbacks (Validated Deinflection, Masu-Stems, Sense Kanji, Cross-References, Note Fields, Readings, Elongation, Speculative Deinflection)
     if allow_tier2:
@@ -868,9 +883,18 @@ def generate_search_candidates(
         for s_target in _resolve_source_targets(sudachi_lookup, lookup_sudachi_synonyms):
             add(s_target, "sudachi_synonym", 2)
 
-        # LLM-curated visual concept mapping (e.g. concrete idioms, post-topic scenes)
-        for l_target in _resolve_source_targets(llm_lookup, lookup_llm_concept):
-            add(l_target, "llm_concept", 2)
+        # LLM-curated visual concept mapping for deinflections/affixes (Tier 2 fallback)
+        if deinflections:
+            for l_target in _lookup_llm_t1(deinflections[0]):
+                add(l_target, "llm_concept", 2)
+        if affix_stems:
+            for a_s in affix_stems:
+                for l_target in _lookup_llm_t1(a_s):
+                    add(l_target, "llm_concept", 2)
+
+        # LLM-curated Tier 2 visual exemplars, prototypical scenes, and pronouns (e.g. 広い -> 広い野原, 心の中 -> 悩む人のイラスト)
+        for l2_target in _resolve_source_targets(llm_tier2_lookup, lookup_llm_concept_tier2):
+            add(l2_target, "llm_concept_tier2", 2)
 
         # Katakana elongation mark expansion (メンバ -> メンバー, サーバ -> サーバー)
         for chouon_variant in expand_katakana_chouon(surface):

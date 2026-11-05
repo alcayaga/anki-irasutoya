@@ -4,6 +4,7 @@ import argparse
 import logging
 import os
 import sys
+import urllib.parse
 from typing import Sequence
 
 # Ensure repository root is on sys.path
@@ -67,7 +68,7 @@ logger = logging.getLogger("agent_synonyms")
 def main(argv: Sequence[str]) -> int:
     """Main CLI entrypoint for local Ollama visual concept compilation."""
     parser = argparse.ArgumentParser(
-        description="Run local JPDB + Yomitan + Ollama (gemma4:31b) visual concept compiler for Irasutoya."
+        description="Run local JPDB + Yomitan + Ollama (gemma4:26b) visual concept compiler for Irasutoya."
     )
     parser.add_argument(
         "--catalog",
@@ -109,8 +110,33 @@ def main(argv: Sequence[str]) -> int:
     )
     parser.add_argument(
         "--ollama-model",
-        default="gemma4:31b",
-        help="Ollama model name (default: gemma4:31b)",
+        default="gemma4:26b",
+        help="Ollama model name (default: gemma4:26b)",
+    )
+    parser.add_argument(
+        "--embed-model",
+        default="qwen3-embedding:4b",
+        help="Ollama embedding model tag for hybrid pre-search (default: qwen3-embedding:4b)",
+    )
+    parser.add_argument(
+        "--no-embed",
+        action="store_true",
+        help="Disable vector embedding pre-search (lexical substring only)",
+    )
+    parser.add_argument(
+        "--build-vector-index",
+        action="store_true",
+        help="Compute vector embeddings across all catalog posts and save cache",
+    )
+    parser.add_argument(
+        "--recheck-rejected",
+        action="store_true",
+        help="Recheck terms previously recorded in rejected set",
+    )
+    parser.add_argument(
+        "--pull-models",
+        action="store_true",
+        help="Ensure required Ollama models from models.yml are pulled before compilation",
     )
     parser.add_argument(
         "--terms",
@@ -129,6 +155,21 @@ def main(argv: Sequence[str]) -> int:
 
     args = parser.parse_args(argv)
 
+    if args.pull_models:
+        from scripts.pull_models import pull_declared_models
+
+        logger.info("Verifying/pulling declarative Ollama models...")
+        parsed_url = urllib.parse.urlparse(args.ollama_url)
+        path = parsed_url.path.rstrip("/")
+        if path.endswith("/api/chat"):
+            path = path[:-len("/api/chat")]
+        elif path.endswith("/api"):
+            path = path[:-len("/api")]
+        ollama_base = f"{parsed_url.scheme}://{parsed_url.netloc}{path}" if parsed_url.netloc else "http://localhost:11434"
+        if not pull_declared_models(ollama_url=ollama_base):
+            logger.error("Failed to pull declared models from models.yml")
+            return 1
+
     ok = run_ollama_compile(
         catalog_path=args.catalog,
         jpdb_path=args.jpdb,
@@ -137,10 +178,14 @@ def main(argv: Sequence[str]) -> int:
         yomitan_url=args.yomitan_url,
         ollama_url=args.ollama_url,
         ollama_model=args.ollama_model,
+        embed_model=args.embed_model,
         llm_out_path=args.out,
         cache_dir=args.cache_dir,
         terms=args.terms,
         clear_yomitan_cache=args.clear_yomitan_cache,
+        recheck_rejected=args.recheck_rejected,
+        no_embed=args.no_embed,
+        build_vector_index=args.build_vector_index,
     )
     return 0 if ok else 1
 

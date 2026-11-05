@@ -20,8 +20,8 @@ Enrich your Anki flashcards with illustrations from [いらすとや (Irasutoya)
   - **Japanese Script Normalization**: Automatically normalizes Unicode NFKC, converts loanwords to Katakana (`とまと` $\rightarrow$ `トマト`), expands shortened Katakana vowel marks (`メンバ` $\rightarrow$ `メンバー`), preserves middle dots in compound loanwords (`メッセージ・カード`), and transforms numeric counters to Kanji (`1杯` $\rightarrow$ `一杯`, `2人` $\rightarrow$ `二人`).
   - **Automatic Note Reading Field Discovery**: In Batch Mode, automatically inspects reading fields on the note (`ExpressionReading`, `Reading`, `Word Reading`, `Kana`, or furigana brackets) if the primary Kanji query yields zero illustrations.
   - **Tiered Confidence Strategy & Audit Tagging**:
-    - **Tier 1 (Safe Syntactic Transforms)**: Applied automatically with zero homophone risk.
-    - **Tier 2 (Semantic & Reading Fallbacks)**: Phonetic readings and bilingual definition keywords (Yomitan/JMdict and plain-text English glosses). If an image is matched via a Tier 2 fallback in Batch Mode, the note is automatically tagged with `irasutoya::fallback_reading` for effortless one-click auditability in the Anki Browser.
+    - **Tier 1 (Safe Syntactic Transforms & Direct Visual Concepts)**: Unicode NFKC, loanword Katakana conversion, middle-dot preservation, Arabic-to-Kanji counters, and direct verified visual concepts (`llm_concept`). Applied automatically with zero homophone risk.
+    - **Tier 2 (Semantic, Reading & Visual Exemplar Fallbacks)**: Phonetic readings, bilingual definition keywords (Yomitan/JMdict and plain-text English glosses), and LLM visual exemplars (`llm_concept_tier2`, e.g. prototypical scenes for abstract verbs or adjectives). If an image is matched via a Tier 2 fallback in Batch Mode, the note is automatically tagged with `irasutoya::fallback_reading` for effortless one-click auditability in the Anki Browser.
   - **Archetype & Relevance Scoring Engine**: Favors canonical, standalone illustrations over negative situations, multi-figure scenarios, or incidental mentions (e.g. `本` selects a clean book rather than tax paperwork).
 - **Dual Mode**:
   - **Single Card Interactive Gallery**:
@@ -115,6 +115,16 @@ Evaluate and measure real search recall improvements against your actual Anki de
 
 ```bash
 python3 scripts/eval_deck_search.py --deck "Mining" --sort "FreqSort" --limit 50 --verbose
+```
+
+### Declarative Local LLM & Embedding Models (`models.yml`)
+
+Manage local Ollama models used for visual concept compilation:
+
+```bash
+python3 scripts/pull_models.py
+# Or under Conda with real-time output streaming:
+conda run --no-capture-output -n anki-irasutoya python scripts/pull_models.py
 ```
 
 For detailed developer setup, testing philosophies, and contribution standards, please refer to [CONTRIBUTING.md](CONTRIBUTING.md).

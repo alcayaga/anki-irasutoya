@@ -6,6 +6,8 @@ dependencies:
   - python=3.13
   - ruff
   - pytest
+  - numpy>=1.24
+  - pyyaml
   - pip
   - pip:
       - aqt>=23.10

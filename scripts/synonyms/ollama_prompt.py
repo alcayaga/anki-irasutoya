@@ -74,20 +74,25 @@ SEARCH_CATALOG_TOOL: Dict[str, Any] = {
 }
 
 OLLAMA_SYSTEM_PROMPT = """You are an expert Japanese visual concept compiler for the Irasutoya (いらすとや) illustration dictionary.
-Your task is to evaluate a Japanese vocabulary term and map it to 1-2 concrete, specific Japanese Irasutoya illustration topics or canonical headwords.
+Your task is to evaluate a Japanese vocabulary term and map it to 1-3 concrete, specific Japanese Irasutoya illustration topics, scenes, or visual exemplars.
 
-CRITICAL RULES:
+GUIDELINES & EXEMPLAR STRATEGY:
 1. ONLY return Japanese concepts or illustration topics (NEVER English words).
-2. Reject non-visual functional, discourse, grammatical, temporal, or purely abstract concepts (e.g. そのまま, 確かに, 方針, 概念, 数日, 翌日, つもり, わけがない) by setting "visualizable": false.
-3. You have access to the `search_catalog` tool. Use it to search the catalog (which checks post titles and descriptions) and inspect `suggested_target` and `runtime_top1_if_queried`.
-4. Inspect `runtime_top1_if_queried` carefully! Avoid choosing overly broad targets whose #1 ranked illustration is unrepresentative or unrelated to the intended meaning. Pick specific, representative targets.
-5. Every target you choose MUST be confirmed to exist in the catalog with a relevant title match.
-6. When done, output ONLY a JSON object:
-{
-  "visualizable": true or false,
-  "reason": "Brief explanation",
-  "targets": ["JapaneseTarget1", "JapaneseTarget2"]
-}"""
+2. Direct Visual Concepts vs. Visual Exemplars:
+   - Tier 1 (Direct Match / Synonym): Direct concrete objects, specific nouns, or established visual idioms (e.g. 新札 -> いろいろな新紙幣, 傷薬 -> 軟膏, 頭を下げる -> お辞儀). Set "tier": 1.
+   - Tier 2 (Visual Exemplar / Scene / Pronoun): Adjectives, spatial/mental states, pronouns, or general verbs that depict a concrete representative scene or prototypical exemplar on Irasutoya (e.g. 広い -> 広い野原, 心の中 -> 悩む人のイラスト, 彼ら -> 仲良しグループ, あの人 -> 指をさす人, 近づく -> 近づいてくる人). Set "tier": 2.
+3. Non-Visual Rejections:
+   - Reject purely functional grammar, discourse fillers, temporal markers, or disembodied abstract concepts that cannot be represented by a concrete scene (e.g. そのまま, 確かに, 方針, 概念, 数日, 翌日, ことができる, ということだ, わけではない, はずがない).
+   - For rejections, set "visualizable": false, "tier": 2, and "targets": [].
+4. Output Schema:
+   You MUST evaluate the semantic fit in Japanese and output ONLY a JSON object with "reason" first:
+   {
+     "reason": "思考プロセスや判断理由の簡潔な説明（日本語）",
+     "visualizable": true or false,
+     "tier": 1 or 2,
+     "targets": ["具体的ターゲット1", "具体的ターゲット2"]
+   }
+5. You have access to the `search_catalog` tool if the initial candidate illustrations do not provide an appropriate target. Inspect `runtime_top1_if_queried` carefully to pick specific, representative targets. Every chosen target MUST exist in the catalog."""
 
 
 def search_catalog_for_agent(

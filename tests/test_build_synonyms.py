@@ -787,6 +787,152 @@ class TestBuildSynonyms(unittest.TestCase):
         sha_path = f"{self.db_path}.sha256"
         self.assertTrue(os.path.isfile(sha_path))
 
+    def test_populate_llm_concepts_with_tier2_concepts(self) -> None:
+        """Verify populate_llm_concepts writes both Tier 1 'llm_concept' and Tier 2 'llm_concept_tier2' rows."""
+        json_path = os.path.join(self.temp_dir.name, "llm_concepts_t1_t2.json")
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "concepts": {"テスト語": ["猫"]},
+                "tier2_concepts": {"心の中": ["猫"]},
+            }, f)
+
+        ok = populate_llm_concepts(self.db_path, json_path, min_matched=1, strict=True)
+        self.assertTrue(ok)
+
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT term, target, source FROM synonyms WHERE source IN ('llm_concept', 'llm_concept_tier2') ORDER BY source, term")
+        rows = cur.fetchall()
+        conn.close()
+        self.assertEqual(rows, [
+            ("テスト語", "猫", "llm_concept"),
+            ("心の中", "猫", "llm_concept_tier2"),
+        ])
+
+    def test_populate_llm_concepts_tier2_only_succeeds(self) -> None:
+        """Verify populate_llm_concepts succeeds when concepts is empty and clears stale tier 1 rows."""
+        # First populate with Tier 1 concept
+        init_json_path = os.path.join(self.temp_dir.name, "llm_concepts_t1_init.json")
+        with open(init_json_path, "w", encoding="utf-8") as f:
+            json.dump({"concepts": {"子猫": ["猫"]}}, f)
+        ok_init = populate_llm_concepts(self.db_path, init_json_path, min_matched=1, strict=True)
+        self.assertTrue(ok_init)
+
+        json_path = os.path.join(self.temp_dir.name, "llm_concepts_t2_only.json")
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "concepts": {},
+                "tier2_concepts": {"心の中": ["猫"]},
+            }, f)
+
+        ok = populate_llm_concepts(self.db_path, json_path, min_matched=1, strict=True)
+        self.assertTrue(ok)
+
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT term, target, source FROM synonyms WHERE source = 'llm_concept'")
+        rows_t1 = cur.fetchall()
+        cur.execute("SELECT term, target, source FROM synonyms WHERE source = 'llm_concept_tier2'")
+        rows_t2 = cur.fetchall()
+        conn.close()
+        self.assertEqual(rows_t1, [], "Stale llm_concept rows should be cleared when concepts is empty")
+        self.assertEqual(rows_t2, [("心の中", "猫", "llm_concept_tier2")])
+
+    def test_populate_llm_concepts_tier2_validation_failure_preserves_tier1(self) -> None:
+        """Verify that when Tier 2 validation fails, Tier 1 concepts are not modified."""
+        # Pre-seed Tier 1 concept
+        init_json_path = os.path.join(self.temp_dir.name, "llm_preserve_init.json")
+        with open(init_json_path, "w", encoding="utf-8") as f:
+            json.dump({"concepts": {"元々の語": ["猫"]}}, f)
+        ok_init = populate_llm_concepts(self.db_path, init_json_path, min_matched=1, strict=True)
+        self.assertTrue(ok_init)
+
+        # Attempt update with new Tier 1 and an invalid Tier 2 target
+        fail_json_path = os.path.join(self.temp_dir.name, "llm_fail.json")
+        with open(fail_json_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "concepts": {"新しい語": ["猫"]},
+                "tier2_concepts": {"心の中": ["存在しないターゲット_9999"]},
+            }, f)
+
+        ok_fail = populate_llm_concepts(self.db_path, fail_json_path, min_matched=1, strict=True)
+        self.assertFalse(ok_fail)
+
+        # Verify original Tier 1 is intact and new Tier 1 was NOT written
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT term, target FROM synonyms WHERE source = 'llm_concept'")
+        rows = cur.fetchall()
+        conn.close()
+        self.assertEqual(rows, [("元々の語", "猫")])
+
+    def test_populate_llm_concepts_rejects_malformed_tier_structure(self) -> None:
+        """Verify populate_llm_concepts rejects non-dict concepts/tier2_concepts before clearing rows."""
+        # Pre-seed Tier 1 and Tier 2 concepts
+        init_json_path = os.path.join(self.temp_dir.name, "llm_init_struct.json")
+        with open(init_json_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "concepts": {"猫語": ["猫"]},
+                "tier2_concepts": {"心の中": ["猫"]},
+            }, f)
+        ok_init = populate_llm_concepts(self.db_path, init_json_path, min_matched=1, strict=True)
+        self.assertTrue(ok_init)
+
+        # Non-dict tier2_concepts (e.g. list, string, int) must be rejected
+        for bad_val in ([], "", 0, ["invalid"]):
+            bad_json_path = os.path.join(self.temp_dir.name, "llm_bad_t2.json")
+            with open(bad_json_path, "w", encoding="utf-8") as f:
+                json.dump({
+                    "concepts": {"猫語": ["猫"]},
+                    "tier2_concepts": bad_val,
+                }, f)
+            ok_bad = populate_llm_concepts(self.db_path, bad_json_path, min_matched=1, strict=True)
+            self.assertFalse(ok_bad)
+
+        # Verify catalog rows were NOT cleared
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT count(*) FROM synonyms WHERE source = 'llm_concept_tier2'")
+        self.assertEqual(cur.fetchone()[0], 1)
+        conn.close()
+
+    def test_clear_synonym_source_edge_cases(self) -> None:
+        """Verify _clear_synonym_source handles missing catalog and successfully clears existing source."""
+        from scripts.synonyms.concepts import _clear_synonym_source
+
+        # 1. Missing catalog returns False and does not create an empty file
+        missing_cat = os.path.join(self.temp_dir.name, "nonexistent.sqlite")
+        self.assertFalse(_clear_synonym_source(missing_cat, "llm_concept"))
+        self.assertFalse(os.path.exists(missing_cat))
+
+        # 2. Existing catalog with rows is cleared, sha256 refreshed, and meta.synonym_sources updated
+        conn = sqlite3.connect(self.db_path)
+        write_synonyms(conn, source="keep_source", mapping={"犬": ["猫"]})
+        write_synonyms(conn, source="to_clear", mapping={"テスト": ["猫"]})
+        conn.close()
+
+        ok_clear = _clear_synonym_source(self.db_path, "to_clear")
+        self.assertTrue(ok_clear)
+
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT count(*) FROM synonyms WHERE source = 'to_clear'")
+        self.assertEqual(cur.fetchone()[0], 0)
+        cur.execute("SELECT count(*) FROM synonyms WHERE source = 'keep_source'")
+        self.assertEqual(cur.fetchone()[0], 1)
+        cur.execute("SELECT value FROM meta WHERE key = 'synonym_sources'")
+        meta_sources = cur.fetchone()[0]
+        self.assertEqual(meta_sources, "keep_source")
+        conn.close()
+
+        # 3. Catalog without synonyms table succeeds without raising OperationalError
+        no_syn_db = os.path.join(self.temp_dir.name, "no_synonyms.sqlite")
+        conn = sqlite3.connect(no_syn_db)
+        conn.execute("CREATE TABLE posts (id INTEGER PRIMARY KEY, title TEXT)")
+        conn.commit()
+        conn.close()
+        self.assertTrue(_clear_synonym_source(no_syn_db, "llm_concept"))
+
     def test_populate_concept_json_mapping_strict_vs_non_strict(self) -> None:
         """Verify _populate_concept_json_mapping handles strict vs CI-resilient 95% threshold."""
         # 19 valid targets ('猫') and 1 invalid target ('存在しないターゲット') = 95.0% valid

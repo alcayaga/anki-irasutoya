@@ -31,8 +31,10 @@ def _populate_concept_json_mapping(
     json_path: str,
     source: str,
     min_matched: int,
+    concept_key: str = "concepts",
     validate_canonical_headwords: bool = False,
     strict: bool = True,
+    validate_only: bool = False,
 ) -> bool:
     """Validate JSON visual concepts against catalog illustration titles and populate synonyms.
 
@@ -41,8 +43,10 @@ def _populate_concept_json_mapping(
         json_path: Path to source JSON file containing concept definitions.
         source: Source attribution string for synonyms table.
         min_matched: Minimum required valid concept mappings before writing.
+        concept_key: Key in the JSON dictionary to extract concepts from (default: 'concepts').
         validate_canonical_headwords: If True, validates headwords match canonical English glosses.
         strict: If True, requires 100% of targets to validate against the catalog.
+        validate_only: If True, validates concepts without modifying the catalog database.
 
     Returns:
         True if all targets validated and populated successfully, False otherwise.
@@ -65,9 +69,13 @@ def _populate_concept_json_mapping(
         logger.error("Root JSON value in %s is not an object", json_path)
         return False
 
-    raw_concepts: Dict[str, List[str]] = data.get("concepts") or data.get("mappings") or {}
+    if concept_key == "concepts":
+        raw_concepts = data.get("concepts") or data.get("mappings") or {}
+    else:
+        raw_concepts = data.get(concept_key) or {}
+
     if not isinstance(raw_concepts, dict):
-        logger.error("Invalid 'concepts' structure in %s: expected object", json_path)
+        logger.error("Invalid '%s' structure in %s: expected object", concept_key, json_path)
         return False
     if not raw_concepts or len(raw_concepts) < min_matched:
         logger.error(
@@ -183,6 +191,9 @@ def _populate_concept_json_mapping(
         )
         return False
 
+    if validate_only:
+        return True
+
     # Connect to catalog and write synonyms
     logger.info("Writing %d validated %s concept mappings into %s...", len(clean_mapping), source, catalog_path)
     try:
@@ -258,13 +269,55 @@ def populate_bilingual_glosses(
     )
 
 
+def _clear_synonym_source(catalog_path: str, source: str) -> bool:
+    """Delete all synonym rows for a source and refresh the catalog SHA256 sidecar.
+
+    Args:
+        catalog_path: Path to catalog.sqlite to update.
+        source: Source identifier to delete from synonyms table.
+
+    Returns:
+        True if rows were cleared (or already empty) and sidecar refreshed, False on error.
+    """
+    if not os.path.isfile(catalog_path):
+        logger.error("Catalog database not found: %s", catalog_path)
+        return False
+    try:
+        conn = sqlite3.connect(catalog_path)
+        try:
+            has_table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='synonyms'"
+            ).fetchone()
+            if has_table:
+                conn.execute("DELETE FROM synonyms WHERE source = ?", (source,))
+                # Recompute meta.synonym_sources within the same transaction
+                cur = conn.cursor()
+                cur.execute("SELECT DISTINCT source FROM synonyms ORDER BY source ASC")
+                sources = [r[0] for r in cur.fetchall()]
+                cur.execute(
+                    "INSERT OR REPLACE INTO meta (key, value) VALUES ('synonym_sources', ?)",
+                    (",".join(sources),),
+                )
+                conn.commit()
+            conn.execute("PRAGMA journal_mode = DELETE")
+            conn.execute("VACUUM")
+            conn.commit()
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        logger.error("Failed to clear '%s' synonyms in %s: %s", source, catalog_path, exc)
+        return False
+    update_catalog_sha256(catalog_path)
+    return True
+
+
 def populate_llm_concepts(
     catalog_path: str,
     llm_json_path: str,
     min_matched: int = 1,
     strict: bool = True,
 ) -> bool:
-    """Compile LLM-curated visual concepts into catalog.sqlite synonyms table.
+    """Compile LLM-curated visual concepts (Tier 1 & Tier 2) into catalog.sqlite synonyms table.
 
     Args:
         catalog_path: Path to catalog.sqlite to update.
@@ -275,14 +328,94 @@ def populate_llm_concepts(
     Returns:
         True if all targets validated and populated successfully, False otherwise.
     """
-    return _populate_concept_json_mapping(
-        catalog_path=catalog_path,
-        json_path=llm_json_path,
-        source="llm_concept",
-        min_matched=min_matched,
-        validate_canonical_headwords=False,
-        strict=strict,
-    )
+    try:
+        with open(llm_json_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as exc:
+        logger.error("Failed to read LLM concepts JSON from %s: %s", llm_json_path, exc)
+        return False
+
+    if not isinstance(data, dict):
+        logger.error("Root JSON structure in %s is not an object", llm_json_path)
+        return False
+
+    for field in ("concepts", "mappings", "tier2_concepts"):
+        if field in data and not isinstance(data[field], dict):
+            logger.error("Invalid '%s' structure in %s: expected object", field, llm_json_path)
+            return False
+
+    has_t1 = bool(data.get("concepts") or data.get("mappings"))
+    has_t2 = bool(data.get("tier2_concepts"))
+
+    if not has_t1 and not has_t2:
+        logger.error("No 'concepts' or 'tier2_concepts' found in %s", llm_json_path)
+        return False
+
+    # Phase 1: Validate both Tier 1 and Tier 2 (if present) before mutating the catalog
+    if has_t1:
+        ok_t1 = _populate_concept_json_mapping(
+            catalog_path=catalog_path,
+            json_path=llm_json_path,
+            source="llm_concept",
+            min_matched=min_matched,
+            concept_key="concepts",
+            validate_canonical_headwords=False,
+            strict=strict,
+            validate_only=True,
+        )
+        if not ok_t1:
+            return False
+
+    if has_t2:
+        ok_t2 = _populate_concept_json_mapping(
+            catalog_path=catalog_path,
+            json_path=llm_json_path,
+            source="llm_concept_tier2",
+            min_matched=1,
+            concept_key="tier2_concepts",
+            validate_canonical_headwords=False,
+            strict=strict,
+            validate_only=True,
+        )
+        if not ok_t2:
+            return False
+
+    # Phase 2: Apply mutations (write or clear) once both tiers have passed validation
+    if has_t1:
+        ok_t1 = _populate_concept_json_mapping(
+            catalog_path=catalog_path,
+            json_path=llm_json_path,
+            source="llm_concept",
+            min_matched=min_matched,
+            concept_key="concepts",
+            validate_canonical_headwords=False,
+            strict=strict,
+            validate_only=False,
+        )
+        if not ok_t1:
+            return False
+    else:
+        if not _clear_synonym_source(catalog_path, "llm_concept"):
+            return False
+
+    if has_t2:
+        ok_t2 = _populate_concept_json_mapping(
+            catalog_path=catalog_path,
+            json_path=llm_json_path,
+            source="llm_concept_tier2",
+            min_matched=1,
+            concept_key="tier2_concepts",
+            validate_canonical_headwords=False,
+            strict=strict,
+            validate_only=False,
+        )
+        if not ok_t2:
+            return False
+    else:
+        if not _clear_synonym_source(catalog_path, "llm_concept_tier2"):
+            return False
+
+    return True
 
 
 def validate_catalog_synonyms(catalog_path: Optional[str] = None) -> bool:

@@ -101,6 +101,22 @@ def lookup_llm_concept(
     return lookup_synonyms(term, source="llm_concept", store=store)
 
 
+def lookup_llm_concept_tier2(
+    term: str,
+    store: Optional[CatalogStore] = None,
+) -> List[str]:
+    """Look up Tier 2 visual exemplar and metaphorical concept target queries.
+
+    Args:
+        term: Japanese vocabulary headword or phrase to look up.
+        store: Optional CatalogStore instance (defaults to global default_store()).
+
+    Returns:
+        List of catalog-verified search queries from the 'llm_concept_tier2' source.
+    """
+    return lookup_synonyms(term, source="llm_concept_tier2", store=store)
+
+
 ENGLISH_STOP_WORDS = frozenset({
     "in", "of", "for", "a", "an", "the", "to", "at", "on", "by", "with",
     "and", "or", "from", "as", "about", "into", "over", "after", "one's",
