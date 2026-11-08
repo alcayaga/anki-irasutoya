@@ -3645,6 +3645,38 @@ class TestRejectionBlocklistAndCanonicalTitle(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_populate_llm_concepts_invalid_target_in_non_strict_preserves_rejection(self) -> None:
+        """Verify discarded invalid concepts in non-strict mode do not suppress semantic rejection."""
+        json_path = os.path.join(self.temp_dir.name, "non_strict_discard.json")
+        # 19 valid concepts, 1 invalid target for "犬", and a rejection reason for "犬"
+        concepts = {f"word{i}": ["可愛い猫"] for i in range(19)}
+        concepts["犬"] = ["存在しない架空のイラスト"]
+        data = {
+            "concepts": concepts,
+            "rejected": {
+                "犬": "直接視覚化不可",
+            },
+        }
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
+        ok = populate_llm_concepts(self.db_path, json_path, min_matched=10, strict=False)
+        self.assertTrue(ok)
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cur = conn.cursor()
+            # "犬" was discarded from llm_concept because its target failed validation
+            cur.execute("SELECT count(*) FROM synonyms WHERE term = '犬' AND source = 'llm_concept'")
+            self.assertEqual(cur.fetchone()[0], 0)
+            # "犬" MUST be preserved in llm_rejected
+            cur.execute("SELECT target FROM synonyms WHERE term = '犬' AND source = 'llm_rejected'")
+            row = cur.fetchone()
+            self.assertIsNotNone(row)
+            self.assertEqual(row[0], "直接視覚化不可")
+        finally:
+            conn.close()
+
     def test_is_disallowed_text_callout_target_boundaries(self) -> None:
         """Verify text-callout target detection distinguishes font/text terms from coincidental substrings."""
         self.assertFalse(is_text_asset_term("プロゴルファー"))

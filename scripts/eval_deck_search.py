@@ -167,6 +167,31 @@ def anki_invoke(action: str, anki_url: str = "http://localhost:8765", **params: 
         ) from e
 
 
+def has_explicit_positive_deck(query: str) -> bool:
+    """Return True if query contains an explicit positive deck selector operand.
+
+    Ignores deck selectors inside double-quoted field values (e.g. Front:"deck:Other"),
+    negated parenthesized groups (e.g. -(deck:Other)), and negated tokens (e.g. -deck:Other).
+
+    Args:
+        query: Raw Anki search query.
+
+    Returns:
+        True if an unnegated, unquoted positive 'deck:' operand is present.
+    """
+    if not query:
+        return False
+    # 1. Strip double-quoted string literals so field values like Front:"deck:Other" are ignored
+    q = re.sub(r'"[^"]*"', '""', query)
+    # 2. Strip negated parenthesized groups e.g. -(deck:Other or tag:foo)
+    while re.search(r'-\([^()]*\)', q):
+        q = re.sub(r'-\([^()]*\)', '', q)
+    # 3. Strip negated tokens e.g. -deck:Other
+    q = re.sub(r'(?:^|\s)-[^\s()]+', ' ', q)
+    # 4. Check if standalone unnegated deck: remains
+    return bool(re.search(r'(?<!-)\bdeck:', q, re.IGNORECASE))
+
+
 def build_search_query(deck_name: str, query: Optional[str] = None) -> str:
     """Return the AnkiConnect search query for a deck and optional custom query.
 
@@ -179,8 +204,7 @@ def build_search_query(deck_name: str, query: Optional[str] = None) -> str:
     """
     escaped_deck = deck_name.replace('"', '\\"') if deck_name else ""
     if query:
-        has_positive_deck = bool(re.search(r"(?<!-)\bdeck:", query, re.IGNORECASE))
-        if escaped_deck and not has_positive_deck:
+        if escaped_deck and not has_explicit_positive_deck(query):
             return f'deck:"{escaped_deck}" ({query})'
         return query
     return f'deck:"{escaped_deck}"' if escaped_deck else ""
@@ -711,7 +735,7 @@ def main() -> None:
     parser.add_argument(
         "--query",
         default=None,
-        help="Extra Anki search query (e.g. 'flag:4'), combined with --deck unless it contains an explicit 'deck:' selector",
+        help="Extra Anki search query (e.g. 'flag:4'), combined with --deck unless it contains an explicit positive 'deck:' selector (e.g. 'deck:Other')",
     )
     parser.add_argument("--deck", default="Mining", help="Anki deck name to evaluate (default: 'Mining')")
     parser.add_argument("--sort", default="FreqSort", help="Field to sort cards by (default: 'FreqSort')")
