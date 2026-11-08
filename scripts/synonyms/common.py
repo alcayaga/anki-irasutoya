@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import sys
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -24,6 +25,8 @@ DEFAULT_CATALOG_PATH = os.path.join(REPO_ROOT, "addon", "data", "catalog.sqlite"
 DEFAULT_BILINGUAL_CONCEPTS_PATH = os.path.join(REPO_ROOT, "scripts", "sources", "bilingual_concepts.json")
 DEFAULT_LLM_CONCEPTS_PATH = os.path.join(REPO_ROOT, "scripts", "sources", "llm_concepts.json")
 
+UNVERIFIED_REASON_PREFIX: str = "unverified in catalog:"
+
 TEXT_ASSET_TERM_KEYWORDS: Tuple[str, ...] = ("文字", "フォント", "ロゴ")
 _TEXT_ASSET_SUFFIXES: Tuple[str, ...] = TEXT_ASSET_TERM_KEYWORDS + ("ロゴマーク", "ロゴタイプ")
 _TEXT_ASSET_PREFIXES: Tuple[str, ...] = ("文字", "フォント", "ロゴマーク", "ロゴタイプ")
@@ -40,7 +43,7 @@ def is_text_asset_term(term: str) -> bool:
     """
     if not term:
         return False
-    t = term.strip()
+    t = unicodedata.normalize("NFKC", term.strip())
     if t in TEXT_ASSET_TERM_KEYWORDS:
         return True
     if t.endswith(_TEXT_ASSET_SUFFIXES):

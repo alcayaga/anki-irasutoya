@@ -18,6 +18,7 @@ from addon.text_utils import clean_search_query
 from addon.yomitan_parser import normalize_english_gloss
 from scripts.synonyms.common import (
     DEFAULT_CATALOG_PATH,
+    UNVERIFIED_REASON_PREFIX,
     _is_disallowed_text_callout_target,
     filter_relevant_illustrations,
     update_catalog_sha256,
@@ -365,7 +366,8 @@ def populate_llm_concepts(
     raw_rej = data.get("rejected")
 
     positive_keys: Set[str] = set()
-    for field in ("concepts", "mappings", "tier2_concepts"):
+    t1_field = "concepts" if "concepts" in data else "mappings"
+    for field in (t1_field, "tier2_concepts"):
         field_dict = data.get(field)
         if isinstance(field_dict, dict):
             for term in field_dict:
@@ -385,15 +387,24 @@ def populate_llm_concepts(
                 clean_term
                 and clean_term not in positive_keys
                 and clean_reason
-                and not clean_reason.startswith("unverified in catalog:")
+                and not clean_reason.startswith(UNVERIFIED_REASON_PREFIX)
             ):
                 rejection_mapping[clean_term] = [clean_reason]
 
     has_rej = bool(rejection_mapping)
 
-    if not has_t1 and not has_t2 and not has_rej:
-        logger.error("No 'concepts', 'tier2_concepts', or usable 'rejected' found in %s", llm_json_path)
+    has_known_keys = any(
+        k in data for k in ("concepts", "mappings", "tier2_concepts", "rejected", "unverified")
+    )
+    if not has_known_keys:
+        logger.error("No recognized concept or rejection keys found in %s", llm_json_path)
         return False
+
+    if not has_t1 and not has_t2 and not has_rej:
+        logger.info(
+            "Valid empty concept/rejection artifact in %s; clearing LLM synonym sources",
+            llm_json_path,
+        )
 
     # Phase 1: Validate both Tier 1 and Tier 2 (if present) before mutating the catalog
     if has_t1:
@@ -570,6 +581,12 @@ def prune_stale_synonyms(
     Returns:
         Number of stale rows removed from the synonyms table, or -1 if index unavailable.
     """
+    if source == "llm_rejected":
+        logger.warning(
+            "Source 'llm_rejected' stores semantic rejection reasons rather than illustration titles; skipping title-based pruning."
+        )
+        return 0
+
     target_catalog = catalog_path or DEFAULT_CATALOG_PATH
     store = CatalogStore(target_catalog) if catalog_path else default_store()
     index = store.get_index()

@@ -17,6 +17,7 @@ from addon.text_utils import clean_search_query
 from scripts.synonyms.common import (
     DEFAULT_LLM_CONCEPTS_PATH,
     TEXT_ASSET_TERM_KEYWORDS,
+    UNVERIFIED_REASON_PREFIX,
     _is_disallowed_text_callout_target,
     _KeepAliveJSONClient,
     _readonly_catalog_uri,
@@ -529,7 +530,7 @@ def run_ollama_agent_batch(
                                 )
                             else:
                                 if parsed.get("visualizable") is True:
-                                    reason = f"unverified in catalog: proposed targets {parsed.get('targets', [])!r} (LLM reason: {parsed.get('reason', '')})"
+                                    reason = f"{UNVERIFIED_REASON_PREFIX} proposed targets {parsed.get('targets', [])!r} (LLM reason: {parsed.get('reason', '')})"
                                     logger.info(
                                         "Unverified target miss for '%s' (%d turns, %.2fs)\n  Reason: %s",
                                         term,
@@ -827,13 +828,17 @@ def run_ollama_compile(
                 for k, v in raw_rej.items():
                     if k in existing_concepts or k in existing_tier2_concepts:
                         continue
-                    str_v = str(v)
-                    if str_v.startswith("unverified in catalog:"):
+                    if not isinstance(v, str):
+                        continue
+                    clean_v = v.strip()
+                    if not clean_v:
+                        continue
+                    if clean_v.startswith(UNVERIFIED_REASON_PREFIX):
                         migrated_unverified = True
                         if k not in existing_unverified:
-                            existing_unverified[k] = str_v
+                            existing_unverified[k] = clean_v
                     else:
-                        existing_rejected[k] = str_v
+                        existing_rejected[k] = clean_v
             elif isinstance(raw_rej, list):
                 existing_rejected = {
                     k: "rejected" for k in raw_rej

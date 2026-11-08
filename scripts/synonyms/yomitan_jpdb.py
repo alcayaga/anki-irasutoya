@@ -89,10 +89,8 @@ def is_canonical_illustration_title(title: Optional[str], query: str) -> bool:
     q_cf = q.casefold()
     if t_cf == q_cf or t_cf.startswith(f"{q_cf}（") or t_cf.startswith(f"{q_cf}("):
         return True
-    if _is_polite_bare_pair(t, q) or (
-        t.startswith((f"お{q}（", f"お{q}(", f"ご{q}（", f"ご{q}("))
-        and (q in BIKAGO_PREFIX_WORDS or (len(q) >= 2 and q not in HONORIFIC_STRIP_BLOCKLIST))
-    ):
+    t_head = re.split(r"[（(]", t, maxsplit=1)[0].strip()
+    if _is_polite_bare_pair(t_head, q):
         return True
 
     # Check canonical pattern with prefixes and optional parenthesized suffix

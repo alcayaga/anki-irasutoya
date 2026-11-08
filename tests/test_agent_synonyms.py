@@ -3407,19 +3407,43 @@ class TestRejectionBlocklistAndCanonicalTitle(unittest.TestCase):
         val_ok = validate_catalog_synonyms(self.db_path)
         self.assertTrue(val_ok)
 
-    def test_populate_llm_concepts_rejects_file_with_only_unverified_misses(self) -> None:
-        """Verify populate_llm_concepts returns False when rejected has only unverified misses."""
-        json_path = os.path.join(self.temp_dir.name, "only_unverified.json")
-        data = {
-            "rejected": {
-                "犬": "unverified in catalog: proposed targets ['犬のイラスト'] (LLM reason: miss)",
-            },
-        }
-        with open(json_path, "w", encoding="utf-8") as f:
-            json.dump(data, f)
+    def test_populate_llm_concepts_accepts_file_with_only_unverified_misses_and_clears_rejected(self) -> None:
+        """Verify populate_llm_concepts accepts an unverified-only artifact as an empty snapshot and clears llm_rejected."""
+        # First populate a valid rejection so a row exists to be cleared
+        init_json = os.path.join(self.temp_dir.name, "init_concepts.json")
+        with open(init_json, "w", encoding="utf-8") as f:
+            json.dump({"rejected": {"基本": "抽象概念"}}, f)
+        self.assertTrue(populate_llm_concepts(self.db_path, init_json))
 
-        ok = populate_llm_concepts(self.db_path, json_path)
-        self.assertFalse(ok)
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT count(*) FROM synonyms WHERE source = 'llm_rejected'")
+        self.assertEqual(cur.fetchone()[0], 1)
+        conn.close()
+
+        # Now pass an artifact containing only unverified entries (valid empty blocklist snapshot)
+        empty_json = os.path.join(self.temp_dir.name, "only_unverified.json")
+        with open(empty_json, "w", encoding="utf-8") as f:
+            json.dump({
+                "rejected": {
+                    "犬": "unverified in catalog: proposed targets ['犬のイラスト'] (LLM reason: miss)",
+                },
+            }, f)
+
+        ok = populate_llm_concepts(self.db_path, empty_json)
+        self.assertTrue(ok)
+
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT count(*) FROM synonyms WHERE source = 'llm_rejected'")
+        self.assertEqual(cur.fetchone()[0], 0)
+        conn.close()
+
+        # A completely malformed artifact lacking recognized concept/rejection keys must fail
+        malformed_json = os.path.join(self.temp_dir.name, "malformed.json")
+        with open(malformed_json, "w", encoding="utf-8") as f:
+            json.dump({"unrelated_field": {"key": "val"}}, f)
+        self.assertFalse(populate_llm_concepts(self.db_path, malformed_json))
 
     def test_flush_llm_concepts_separates_rejected_and_unverified(self) -> None:
         """Verify _flush_llm_concepts writes semantic rejections and unverified misses to distinct keys."""
@@ -3563,12 +3587,13 @@ class TestRejectionBlocklistAndCanonicalTitle(unittest.TestCase):
         self.assertIn("新しい単語", final_data["unverified"])
 
     def test_populate_llm_concepts_positive_key_collision(self) -> None:
-        """Verify populate_llm_concepts skips rejected keys already present in accepted concepts."""
+        """Verify populate_llm_concepts skips rejected keys already present in accepted concepts, including cross-width."""
         json_path = os.path.join(self.temp_dir.name, "collision_concepts.json")
         data = {
-            "concepts": {"猫": ["可愛い猫"]},
+            "concepts": {"猫": ["可愛い猫"], "CD": ["可愛い猫"]},
             "rejected": {
                 "猫": "すでに概念が存在する",
+                "ｃｄ": "すでに概念が存在する",  # full-width cross-width collision with "CD"
                 "犬": 12345,  # non-string reason must be safely ignored
                 "基本": "抽象概念",
             },
@@ -3585,6 +3610,7 @@ class TestRejectionBlocklistAndCanonicalTitle(unittest.TestCase):
             cur.execute("SELECT term, target, source FROM synonyms WHERE source = 'llm_rejected' ORDER BY term")
             rows = cur.fetchall()
             # "猫" must NOT be in llm_rejected because it is an accepted positive concept
+            # "ｃｄ" must NOT be in llm_rejected because it collides with "CD" after normalization
             # "犬" must NOT be in llm_rejected because its reason was not a string
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0], ("基本", "抽象概念", "llm_rejected"))
@@ -3620,9 +3646,14 @@ class TestRejectionBlocklistAndCanonicalTitle(unittest.TestCase):
         self.assertTrue(is_canonical_illustration_title("お茶（緑茶）", "茶"))
         self.assertTrue(is_canonical_illustration_title("お茶のイラスト", "茶"))
 
+        # Reverse direction: query has polite prefix, title has bare word before parenthetical
+        self.assertTrue(is_canonical_illustration_title("茶（緑茶）", "お茶"))
+        self.assertTrue(is_canonical_illustration_title("茶(緑茶)", "お茶"))
+
         # Lexical words with お/ご where prefix is not a removable polite prefix (e.g. お玉 != 玉)
         self.assertFalse(is_canonical_illustration_title("お玉のイラスト", "玉"))
         self.assertFalse(is_canonical_illustration_title("お玉", "玉"))
+        self.assertFalse(is_canonical_illustration_title("お玉（調理器具）", "玉"))
         self.assertTrue(is_canonical_illustration_title("玉のイラスト", "玉"))
 
     def test_populate_concept_json_mapping_rejects_irasutoyamoji_target(self) -> None:

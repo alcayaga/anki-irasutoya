@@ -167,6 +167,24 @@ def anki_invoke(action: str, anki_url: str = "http://localhost:8765", **params: 
         ) from e
 
 
+def build_search_query(deck_name: str, query: Optional[str] = None) -> str:
+    """Return the AnkiConnect search query for a deck and optional custom query.
+
+    Args:
+        deck_name: Target Anki deck name.
+        query: Optional custom Anki search query.
+
+    Returns:
+        Query scoped to the deck unless query already contains 'deck:'.
+    """
+    escaped_deck = deck_name.replace('"', '\\"') if deck_name else ""
+    if query:
+        if escaped_deck and "deck:" not in query.lower():
+            return f'deck:"{escaped_deck}" ({query})'
+        return query
+    return f'deck:"{escaped_deck}"' if escaped_deck else ""
+
+
 def fetch_deck_notes(
     deck_name: str,
     sort_field: Optional[str] = "FreqSort",
@@ -175,11 +193,7 @@ def fetch_deck_notes(
     query: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Fetch and sort notes from the specified deck via AnkiConnect."""
-    if query:
-        search_query = query
-    else:
-        escaped_deck = deck_name.replace('"', '\\"')
-        search_query = f'deck:"{escaped_deck}"'
+    search_query = build_search_query(deck_name, query)
     card_ids = anki_invoke("findCards", anki_url=anki_url, query=search_query)
     if not card_ids:
         print(f"Warning: No cards found for query '{search_query}'.")
@@ -264,13 +278,15 @@ def run_evaluation(
         anki_url: Local AnkiConnect HTTP URL.
         track_stages: Whether to calculate stage-by-stage incremental recall deltas.
         show_bilingual_hits: Whether to output the audit table of bilingual gloss hits.
-        query: Optional custom Anki search query (e.g. 'flag:4', overrides default deck query).
+        query: Optional custom Anki search query (e.g. 'flag:4'), combined with --deck unless it contains 'deck:'.
     """
     print("=" * 72)
     print("  IRASUTOYA SEARCH RECALL BENCHMARK (NON-DESTRUCTIVE DRY RUN)")
     print("=" * 72)
-    if query:
-        print(f"Query:              {query}")
+    effective_query: Optional[str] = build_search_query(deck_name, query) if query else None
+
+    if effective_query:
+        print(f"Query:              {effective_query}")
     else:
         print(f"Deck:               {deck_name}")
     print(f"Sort Field:         {sort_field}")
@@ -691,7 +707,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Evaluate and compare Irasutoya search recall against an Anki deck via AnkiConnect."
     )
-    parser.add_argument("--query", default=None, help="Custom Anki search query (e.g. 'flag:4', overrides --deck)")
+    parser.add_argument(
+        "--query",
+        default=None,
+        help="Extra Anki search query (e.g. 'flag:4'), combined with --deck unless it contains 'deck:'",
+    )
     parser.add_argument("--deck", default="Mining", help="Anki deck name to evaluate (default: 'Mining')")
     parser.add_argument("--sort", default="FreqSort", help="Field to sort cards by (default: 'FreqSort')")
     parser.add_argument("--source-field", default=None, help="Source field to query (default: auto-detect Expression/Word)")
