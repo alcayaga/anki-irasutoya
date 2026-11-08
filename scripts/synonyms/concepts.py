@@ -366,14 +366,15 @@ def populate_llm_concepts(
     raw_rej = data.get("rejected")
 
     positive_keys: Set[str] = set()
-    t1_field = "concepts" if "concepts" in data else "mappings"
+    t1_field = "concepts" if data.get("concepts") else "mappings"
     for field in (t1_field, "tier2_concepts"):
         field_dict = data.get(field)
         if isinstance(field_dict, dict):
-            for term in field_dict:
-                k = canonicalize_synonym_term(term)
-                if k:
-                    positive_keys.add(k)
+            for term, tgts in field_dict.items():
+                if tgts:
+                    k = canonicalize_synonym_term(term)
+                    if k:
+                        positive_keys.add(k)
 
     # Extract semantic rejections, filtering out unverified target misses and accepted concepts
     rejection_mapping: Dict[str, List[str]] = {}

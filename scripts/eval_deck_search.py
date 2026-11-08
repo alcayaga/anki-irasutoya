@@ -175,11 +175,12 @@ def build_search_query(deck_name: str, query: Optional[str] = None) -> str:
         query: Optional custom Anki search query.
 
     Returns:
-        Query scoped to the deck unless query already contains 'deck:'.
+        Query scoped to the deck unless query already contains an explicit positive 'deck:' selector.
     """
     escaped_deck = deck_name.replace('"', '\\"') if deck_name else ""
     if query:
-        if escaped_deck and "deck:" not in query.lower():
+        has_positive_deck = bool(re.search(r"(?<!-)\bdeck:", query, re.IGNORECASE))
+        if escaped_deck and not has_positive_deck:
             return f'deck:"{escaped_deck}" ({query})'
         return query
     return f'deck:"{escaped_deck}"' if escaped_deck else ""
@@ -278,7 +279,7 @@ def run_evaluation(
         anki_url: Local AnkiConnect HTTP URL.
         track_stages: Whether to calculate stage-by-stage incremental recall deltas.
         show_bilingual_hits: Whether to output the audit table of bilingual gloss hits.
-        query: Optional custom Anki search query (e.g. 'flag:4'), combined with --deck unless it contains 'deck:'.
+        query: Optional custom Anki search query (e.g. 'flag:4'), combined with --deck unless it contains an explicit positive 'deck:' selector.
     """
     print("=" * 72)
     print("  IRASUTOYA SEARCH RECALL BENCHMARK (NON-DESTRUCTIVE DRY RUN)")
@@ -710,7 +711,7 @@ def main() -> None:
     parser.add_argument(
         "--query",
         default=None,
-        help="Extra Anki search query (e.g. 'flag:4'), combined with --deck unless it contains 'deck:'",
+        help="Extra Anki search query (e.g. 'flag:4'), combined with --deck unless it contains an explicit 'deck:' selector",
     )
     parser.add_argument("--deck", default="Mining", help="Anki deck name to evaluate (default: 'Mining')")
     parser.add_argument("--sort", default="FreqSort", help="Field to sort cards by (default: 'FreqSort')")

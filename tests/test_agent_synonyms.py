@@ -3617,6 +3617,34 @@ class TestRejectionBlocklistAndCanonicalTitle(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_populate_llm_concepts_empty_concepts_with_mappings_collision(self) -> None:
+        """Verify populate_llm_concepts falls back to mappings when concepts is empty for collision filtering."""
+        json_path = os.path.join(self.temp_dir.name, "mappings_collision.json")
+        data = {
+            "concepts": {},
+            "mappings": {"猫": ["可愛い猫"]},
+            "rejected": {
+                "猫": "すでに概念が存在する",
+                "基本": "抽象概念",
+            },
+        }
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
+        ok = populate_llm_concepts(self.db_path, json_path)
+        self.assertTrue(ok)
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT term, target, source FROM synonyms WHERE source = 'llm_rejected' ORDER BY term")
+            rows = cur.fetchall()
+            # "猫" must NOT be in llm_rejected because it is an accepted positive concept via mappings
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0], ("基本", "抽象概念", "llm_rejected"))
+        finally:
+            conn.close()
+
     def test_is_disallowed_text_callout_target_boundaries(self) -> None:
         """Verify text-callout target detection distinguishes font/text terms from coincidental substrings."""
         self.assertFalse(is_text_asset_term("プロゴルファー"))

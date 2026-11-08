@@ -41,6 +41,11 @@ class TestEvalDeckSearch(unittest.TestCase):
         self.assertEqual(build_search_query("Mining", "flag:4 or flag:3"), 'deck:"Mining" (flag:4 or flag:3)')
         self.assertEqual(build_search_query("Mining", 'deck:"Other" tag:marked'), 'deck:"Other" tag:marked')
         self.assertEqual(build_search_query("Mining", "DECK:Special"), "DECK:Special")
+        # Negative deck selectors must not suppress the requested deck scope
+        self.assertEqual(build_search_query("Mining", "-deck:Other flag:4"), 'deck:"Mining" (-deck:Other flag:4)')
+        self.assertEqual(build_search_query("Mining", "flag:4 (-deck:Other)"), 'deck:"Mining" (flag:4 (-deck:Other))')
+        # Combined positive and negative deck selectors preserve raw query
+        self.assertEqual(build_search_query("Mining", "deck:Mining -deck:Mining::Subdeck"), "deck:Mining -deck:Mining::Subdeck")
         self.assertEqual(build_search_query("", "flag:4"), "flag:4")
         self.assertEqual(build_search_query("", None), "")
 
