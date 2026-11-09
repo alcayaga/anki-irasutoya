@@ -1,7 +1,7 @@
 """Unit tests for batch processing logic, filename generation, and note evaluation."""
 import unittest
 import urllib.parse
-from typing import Any, List
+from typing import Any, List, Sequence
 from unittest.mock import MagicMock, patch
 
 try:
@@ -26,6 +26,7 @@ class MockNote(dict):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         """Initialize mock note with empty tags list."""
         super().__init__(*args, **kwargs)
+        self.id: int = 1001
         self.tags: List[str] = []
 
     def add_tag(self, tag: str) -> None:
@@ -375,6 +376,7 @@ class TestBatchLogic(unittest.TestCase):
 
         mock_mw = MagicMock()
         mock_mw.col = mock_col
+        mock_mw.progress.want_cancel.return_value = False
 
         def fake_with_progress(task: Any, on_done: Any, **kwargs: Any) -> None:
             """Simulate taskman with_progress execution."""
@@ -468,6 +470,95 @@ class TestBatchLogic(unittest.TestCase):
             self.assertEqual(status, "non_visual")
             self.assertIn(TAG_NON_VISUAL, note.tags)
             self.assertEqual(len(mock_client.searched_queries), 0)
+
+    @unittest.skipUnless(HAS_AQT, "aqt not available in headless test environment")
+    def test_run_batch_fill_applies_non_visual_tag_on_rejected_term(self) -> None:
+        """Verify run_batch_fill queues non_visual tag and commits it via update_notes without search/download."""
+        from addon.batch import TAG_NON_VISUAL, run_batch_fill
+
+        note = MockNote({"Expression": "外見", "DefinitionPicture": ""})
+        note.id = 201
+
+        mock_col = MagicMock()
+        mock_col.get_note.return_value = note
+
+        mock_mw = MagicMock()
+        mock_mw.col = mock_col
+        mock_mw.progress.want_cancel.return_value = False
+
+        def fake_with_progress(task: Any, on_done: Any, **kwargs: Any) -> None:
+            """Simulate taskman with_progress execution."""
+            res = task()
+            fut = MagicMock()
+            fut.exception.return_value = None
+            fut.result.return_value = res
+            on_done(fut)
+
+        mock_mw.taskman.with_progress = fake_with_progress
+
+        class MockQueryOp:
+            """Mock Anki QueryOp executing synchronous operations."""
+
+            def __init__(self, parent: Any = None, op: Any = None, success: Any = None) -> None:
+                """Initialize mock QueryOp."""
+                self.op = op
+                self.success_cb = success
+
+            def with_backend(self) -> "MockQueryOp":
+                """Return self for chained builder call."""
+                return self
+
+            def failure(self, cb: Any) -> "MockQueryOp":
+                """Return self for failure callback registration."""
+                return self
+
+            def success(self, cb: Any) -> "MockQueryOp":
+                """Set success callback and return self."""
+                self.success_cb = cb
+                return self
+
+            def run_in_background(self) -> None:
+                """Execute op synchronously."""
+                res = self.op(mock_col) if self.op else None
+                if self.success_cb:
+                    self.success_cb(res)
+
+        saved_notes: List[Any] = []
+
+        def mock_update_notes(parent: Any, notes: Sequence[Any]) -> MockQueryOp:
+            """Mock update_notes recording saved notes and returning chained QueryOp."""
+            saved_notes.extend(notes)
+            return MockQueryOp(parent=parent, op=lambda col: notes)
+
+        finished_stats: List[Any] = []
+        mock_client = MockIrasutoyaClient()
+
+        mock_store = MagicMock()
+        mock_store.get_index.return_value = MagicMock()
+
+        with patch("addon.batch.is_llm_rejected", return_value=True), \
+             patch("addon.batch.default_store", return_value=mock_store), \
+             patch("addon.batch.IrasutoyaClient", return_value=mock_client), \
+             patch("aqt.operations.QueryOp", MockQueryOp), \
+             patch("aqt.operations.note.update_notes", side_effect=mock_update_notes), \
+             patch("aqt.mw", mock_mw), \
+             patch("aqt.utils.tooltip"):
+            run_batch_fill(
+                parent_window=None,
+                note_ids=[201],
+                source_field="Expression",
+                target_field="DefinitionPicture",
+                overwrite_mode="skip",
+                on_finish=lambda s: finished_stats.append(s),
+            )
+
+        self.assertEqual(len(finished_stats), 1)
+        self.assertEqual(finished_stats[0].non_visual, 1)
+        self.assertEqual(finished_stats[0].added, 0)
+        self.assertEqual(len(mock_client.searched_queries), 0)
+        self.assertEqual(len(saved_notes), 1)
+        self.assertIs(saved_notes[0], note)
+        self.assertIn(TAG_NON_VISUAL, saved_notes[0].tags)
 
 
 if __name__ == "__main__":

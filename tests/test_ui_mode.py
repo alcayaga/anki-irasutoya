@@ -1680,10 +1680,11 @@ class TestUIMode(unittest.TestCase):
                     self.success(result)
 
             with patch("aqt.operations.QueryOp", MockSingleQueryOp), \
-                 patch("aqt.operations.note.update_notes"), \
+                 patch("aqt.operations.note.update_notes") as mock_update_notes, \
                  patch("threading.Thread", _SyncThread):
                 dlg._apply_single_selection()
 
+            mock_update_notes.assert_called_once_with(parent=dlg.browser, notes=[fresh_note])
             self.assertEqual(len(captured_notes), 1)
             self.assertIs(captured_notes[0], fresh_note)
             self.assertNotIn(TAG_APPROXIMATE, fresh_note.tags)
