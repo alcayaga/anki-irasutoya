@@ -14,11 +14,11 @@ from .config import (
     get_config,
 )
 from .ranking import (
-    has_title_illustration_match,
     infer_note_pos_type,
     infer_pos_type,
     is_decorative_asset,
     is_image_relevant,
+    is_title_match,
     select_best_image,
 )
 from .synonyms import is_llm_rejected
@@ -91,6 +91,7 @@ def apply_status_tag(note: Any, tag: Optional[str]) -> bool:
 def classify_batch_outcome(
     images: Sequence[Any],
     matched_cand: Optional[Tuple[str, str, int]],
+    best_img: Optional[Any] = None,
 ) -> str:
     """Classify the search result into a batch outcome status.
 
@@ -110,8 +111,9 @@ def classify_batch_outcome(
     if tier == 2 and reason.startswith(("note_reading", "note_furigana", "same_field_reading")):
         return "review"
 
-    # Description-only matches on out-of-index words
-    if not has_title_illustration_match(images, term):
+    # Description-only matches on out-of-index words: validate the target selected image
+    target_img = best_img if best_img is not None else images[0]
+    if not is_title_match(target_img, term):
         return "review"
 
     if tier == 2:
@@ -326,7 +328,7 @@ def process_note_record(
                     images = valid_imgs
                     break
 
-        outcome = classify_batch_outcome(images, matched_cand)
+        outcome = classify_batch_outcome(images, matched_cand, best_img=best_img)
         if outcome == "no_match":
             apply_status_tag(note, TAG_NO_MATCH)
             return "no_match", note
@@ -490,7 +492,7 @@ def run_batch_fill(
                     image_size=image_size,
                     pos_type=pos_type,
                 )
-                outcome = classify_batch_outcome(images, matched_cand)
+                outcome = classify_batch_outcome(images, matched_cand, best_img=best_img)
                 if outcome == "no_match":
                     stats.no_match += 1
                     pending_writes.append(

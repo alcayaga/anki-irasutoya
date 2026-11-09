@@ -20,6 +20,25 @@ from addon.batch import (
 from addon.feed import IrasutoyaImage
 
 
+class MockNote(dict):
+    """Mock dictionary-based note with tag management."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        """Initialize mock note with empty tags list."""
+        super().__init__(*args, **kwargs)
+        self.tags: List[str] = []
+
+    def add_tag(self, tag: str) -> None:
+        """Add a tag to the mock note if not already present."""
+        if tag not in self.tags:
+            self.tags.append(tag)
+
+    def remove_tag(self, tag: str) -> None:
+        """Remove a tag from the mock note if present."""
+        if tag in self.tags:
+            self.tags.remove(tag)
+
+
 class MockIrasutoyaClient:
     """Mock Irasutoya client for deterministic unit testing."""
 
@@ -28,9 +47,11 @@ class MockIrasutoyaClient:
         self.search_results = search_results or []
         self.image_data = image_data
         self.search_mapping = search_mapping or {}
+        self.searched_queries: List[str] = []
 
     def search(self, query: str, max_results: int = 3, image_size: str = "s800", orderby: str = "relevance"):
         """Return preset search results."""
+        self.searched_queries.append(query)
         if query in self.search_mapping:
             return self.search_mapping[query]
         return self.search_results
@@ -151,24 +172,6 @@ class TestBatchLogic(unittest.TestCase):
 
     def test_process_note_reading_fallback_and_tagging(self):
         """Verify process_note_record holds back phonetic reading match with review status and tag."""
-        class MockNote(dict):
-            """Mock dictionary-based note with tag management."""
-
-            def __init__(self, *args: Any, **kwargs: Any) -> None:
-                """Initialize mock note with empty tags list."""
-                super().__init__(*args, **kwargs)
-                self.tags: List[str] = []
-
-            def add_tag(self, tag: str) -> None:
-                """Add a tag to the mock note if not already present."""
-                if tag not in self.tags:
-                    self.tags.append(tag)
-
-            def remove_tag(self, tag: str) -> None:
-                """Remove a tag from the mock note if present."""
-                if tag in self.tags:
-                    self.tags.remove(tag)
-
         note = MockNote({"Expression": "其の儘", "Reading": "そのまま", "DefinitionPicture": ""})
 
         reading_img = IrasutoyaImage(
@@ -445,6 +448,26 @@ class TestBatchLogic(unittest.TestCase):
         # When raw_source is empty, falls back to first candidate
         self.assertEqual(resolve_surface_term(candidates_no_primary, raw_source=""), "怪しい儀式のイラスト")
         self.assertEqual(resolve_surface_term([], raw_source=""), "")
+
+    def test_batch_processing_applies_non_visual_tag_on_rejected_term(self) -> None:
+        """Verify process_note_record tags rejected terms as irasutoya::non_visual without searching."""
+        from addon.batch import TAG_NON_VISUAL, process_note_record
+
+        note = MockNote({"Expression": "外見", "DefinitionPicture": ""})
+        mock_client = MockIrasutoyaClient()
+
+        with patch("addon.batch.is_llm_rejected", return_value=True):
+            status, modified = process_note_record(
+                note=note,
+                source_field="Expression",
+                target_field="DefinitionPicture",
+                overwrite_mode="skip",
+                client=mock_client,
+                write_media_func=lambda fn, data: fn,
+            )
+            self.assertEqual(status, "non_visual")
+            self.assertIn(TAG_NON_VISUAL, note.tags)
+            self.assertEqual(len(mock_client.searched_queries), 0)
 
 
 if __name__ == "__main__":

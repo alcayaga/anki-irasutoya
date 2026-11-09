@@ -463,6 +463,7 @@ class TestCatalog(unittest.TestCase):
             mapping={
                 "基本": ["抽象概念のため直接的な視覚化は困難"],
                 "Quality": ["abstract concept"],
+                "未検証": ["unverified in catalog: no matching candidates"],
             },
         )
         write_synonyms(
@@ -491,6 +492,9 @@ class TestCatalog(unittest.TestCase):
         self.assertIsNone(index.get_rejection_reason("猫"))
         self.assertFalse(index.is_rejected(""))
         self.assertIsNone(index.get_rejection_reason(""))
+        # Unverified reason must NOT be considered rejected
+        self.assertFalse(index.is_rejected("未検証"))
+        self.assertIsNone(index.get_rejection_reason("未検証"))
 
         # get_synonyms with source=None MUST exclude llm_rejected entries
         general_synonyms = index.get_synonyms("基本")

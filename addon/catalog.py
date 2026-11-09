@@ -141,8 +141,7 @@ class CatalogIndex:
 
     def is_rejected(self, term: str) -> bool:
         """Return True if term was rejected by the LLM concept compiler as non-visual."""
-        reason = self.get_rejection_reason(term)
-        return bool(reason and not reason.startswith(UNVERIFIED_REJECTION_PREFIX))
+        return self.get_rejection_reason(term) is not None
 
     def get_rejection_reason(self, term: str) -> Optional[str]:
         """Return the rejection reason string if term was rejected as non-visual, else None."""
@@ -152,7 +151,12 @@ class CatalogIndex:
         if not clean or clean not in self._synonyms_by_term:
             return None
         reasons = self._synonyms_by_term[clean].get(LLM_REJECTED_SOURCE, ())
-        return reasons[0] if reasons else None
+        if not reasons:
+            return None
+        reason = reasons[0]
+        if reason.startswith(UNVERIFIED_REJECTION_PREFIX):
+            return None
+        return reason
 
     def __len__(self) -> int:
         """Return the total number of images indexed."""

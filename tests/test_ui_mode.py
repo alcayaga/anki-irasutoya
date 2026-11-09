@@ -2,7 +2,7 @@ import os
 import threading
 import time
 import unittest
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from unittest.mock import MagicMock, patch
 
 from addon.feed import IrasutoyaImage
@@ -1607,7 +1607,6 @@ class TestUIMode(unittest.TestCase):
             TAG_NO_MATCH,
             TAG_NON_VISUAL,
             TAG_REVIEW,
-            apply_status_tag,
         )
 
         class MockNote(dict):
@@ -1616,6 +1615,7 @@ class TestUIMode(unittest.TestCase):
             def __init__(self, *args: Any, **kwargs: Any) -> None:
                 """Initialize mock note with initial tags."""
                 super().__init__(*args, **kwargs)
+                self.id: int = 1001
                 self.tags: List[str] = [TAG_APPROXIMATE, TAG_NON_VISUAL, TAG_REVIEW, TAG_NO_MATCH, "keep_me"]
 
             def remove_tag(self, tag: str) -> None:
@@ -1628,15 +1628,69 @@ class TestUIMode(unittest.TestCase):
                 if tag not in self.tags:
                     self.tags.append(tag)
 
-        note = MockNote({"Expression": "テスト", "DefinitionPicture": ""})
-        # Single card commit invokes apply_status_tag(note, None)
-        apply_status_tag(note, None)
+        stale_note = MockNote({"Expression": "テスト", "DefinitionPicture": ""})
+        fresh_note = MockNote({"Expression": "テスト", "DefinitionPicture": ""})
 
-        self.assertNotIn(TAG_APPROXIMATE, note.tags)
-        self.assertNotIn(TAG_NON_VISUAL, note.tags)
-        self.assertNotIn(TAG_REVIEW, note.tags)
-        self.assertNotIn(TAG_NO_MATCH, note.tags)
-        self.assertIn("keep_me", note.tags)
+        mock_mw = MagicMock()
+        mock_mw.col.get_note.return_value = stale_note
+
+        with patch("addon.ui.mw", mock_mw), patch("addon.ui.single_view.showWarning"):
+            dlg = IrasutoyaDialog(parent=None, browser=None, note_ids=[1001])
+            self.addCleanup(dlg.close)
+
+            # Exercise commit logic through single-card apply
+            mock_card = MagicMock()
+            mock_card.image = IrasutoyaImage(
+                title="テストイラスト",
+                image_url="https://example.com/test.png",
+                thumb_url="https://example.com/test_t.png",
+                post_title="テストイラスト",
+            )
+            dlg.selected_card_widget = mock_card
+            dlg.client.download_image = MagicMock(return_value=b"fake_bytes")
+            dlg._run_on_main = lambda cb: cb()
+            dlg.isVisible = MagicMock(return_value=True)
+            dlg.combo_target.setCurrentText("DefinitionPicture")
+
+            captured_notes: List[Any] = []
+
+            class MockSingleQueryOp:
+                """Mock QueryOp executor for single card commit testing."""
+
+                def __init__(self, parent: Any, op: Callable[[Any], Any], success: Callable[[Any], None]) -> None:
+                    """Initialize mock op with callback."""
+                    self.op = op
+                    self.success = success
+
+                def with_progress(self, *args: Any, **kwargs: Any) -> "MockSingleQueryOp":
+                    """Mock with_progress returning self."""
+                    return self
+
+                def failure(self, cb: Any) -> "MockSingleQueryOp":
+                    """Mock failure callback registration returning self."""
+                    return self
+
+                def run_in_background(self) -> None:
+                    """Execute the commit operation synchronously."""
+                    col = MagicMock()
+                    col.get_note.return_value = fresh_note
+                    col.media.write_data.return_value = "stored_test.png"
+                    result = self.op(col)
+                    captured_notes.append(result)
+                    self.success(result)
+
+            with patch("aqt.operations.QueryOp", MockSingleQueryOp), \
+                 patch("aqt.operations.note.update_notes"), \
+                 patch("threading.Thread", _SyncThread):
+                dlg._apply_single_selection()
+
+            self.assertEqual(len(captured_notes), 1)
+            self.assertIs(captured_notes[0], fresh_note)
+            self.assertNotIn(TAG_APPROXIMATE, fresh_note.tags)
+            self.assertNotIn(TAG_NON_VISUAL, fresh_note.tags)
+            self.assertNotIn(TAG_REVIEW, fresh_note.tags)
+            self.assertNotIn(TAG_NO_MATCH, fresh_note.tags)
+            self.assertIn("keep_me", fresh_note.tags)
 
 
 if __name__ == "__main__":

@@ -20,6 +20,7 @@ from .ranking import (
     infer_pos_type,
     is_decorative_asset,
     is_image_relevant,
+    is_standalone_title_match,
     rank_relevant_images,
 )
 from .text_utils import (
@@ -395,10 +396,15 @@ class IrasutoyaClient:
 
                 # Standalone title guard for primary: if primary matches ONLY as a compound title,
                 # defer it as (term, PRIMARY_COMPOUND_REASON, 2) and continue evaluating Group 2-3 candidates.
-                if reason == "primary" and has_title_match and not has_standalone_title_match(illustration_candidates, term):
-                    if deferred_primary_compound is None:
-                        deferred_primary_compound = (ranked, (term, PRIMARY_COMPOUND_REASON, 2), ranked[0])
-                    continue
+                if reason == "primary" and has_title_match:
+                    if not has_standalone_title_match(illustration_candidates, term):
+                        if deferred_primary_compound is None:
+                            deferred_primary_compound = (ranked, (term, PRIMARY_COMPOUND_REASON, 2), ranked[0])
+                        continue
+                    # Prefer the standalone image as top result when direct primary wins
+                    standalone_img = next((img for img in ranked if is_standalone_title_match(img, term)), None)
+                    if standalone_img and standalone_img is not ranked[0]:
+                        ranked = [standalone_img] + [img for img in ranked if img is not standalone_img]
 
                 wins_now = (
                     not reason.startswith(PHONETIC_REASON_PREFIXES)
