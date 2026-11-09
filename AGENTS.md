@@ -49,10 +49,29 @@ The add-on ships with an immutable SQLite database at `addon/data/catalog.sqlite
   2. Perform network/catalog searches and image downloads outside the collection lock (`mw.taskman.with_progress(..., uses_collection=False)`) with polite pacing between HTTP requests, marshaling progress bar updates to the GUI thread via `mw.taskman.run_on_main(...)`.
   3. Re-fetch fresh notes, write media via `col.media.write_data()`, and commit note updates via `aqt.operations.note.update_notes()` inside `QueryOp` so native Undo (`Cmd+Z` / `Ctrl+Z`) works cleanly.
 
-## 🔌 Anki & AnkiConnect Integration
+## 🔌 Anki, AnkiConnect & Deck Benchmarking (`scripts/eval_deck_search.py`)
 - **Headless Core Boundary:** Core search, parsing, ranking, and catalog modules (`text_utils`, `yomitan_parser`, `feed`, `ranking`, `catalog`, `client`) must remain 100% free of `aqt` and `PyQt6` imports so they can run headlessly in CLI scripts and multi-version Python CI.
-- **Live Deck Benchmark CLI (`scripts/eval_deck_search.py`):** Integrates with a local Anki instance via AnkiConnect (`http://localhost:8765`, read-only) using Python's built-in `urllib.request` to benchmark search recall across real decks (`--backend live|catalog|both`).
 - **Hermetic Testing:** Unit tests in `tests/` must **never** make live network requests to Irasutoya/Blogger or connect to a live AnkiConnect server. Always mock network calls (`_make_request`, `_opener.open`, or `MockIrasutoyaClient`) and use stubbed/in-memory fixtures.
+- **Live Deck Benchmark CLI (`scripts/eval_deck_search.py`):** Integrates with a local Anki instance via AnkiConnect (`http://localhost:8765`, read-only) using Python's built-in `urllib.request` to benchmark search recall and stage-by-stage progression across real decks.
+  ```bash
+  conda run --no-capture-output -n anki-irasutoya python scripts/eval_deck_search.py [options]
+  ```
+  - **Key CLI Options:**
+    - `--deck DECK`: Anki deck name to evaluate (default: `'Mining'`).
+    - `--query QUERY`: Extra Anki search query (e.g., `'flag:4'`), combined with `--deck` unless it contains an explicit positive `'deck:'` selector.
+    - `--sort SORT`: Field to sort cards by (default: `'FreqSort'`).
+    - `--source-field SOURCE_FIELD`: Source field to query (default: auto-detect `Expression`/`Word`).
+    - `--limit LIMIT` / `--all`: Number of notes to evaluate (default: `50`; `--all` or `--limit 0` evaluates all notes in the deck).
+    - `--backend {live,catalog,both}`: Search backend to benchmark (default: `both`; use `catalog` for fast offline evaluation).
+    - `--delay DELAY`: Polite delay between HTTP requests in seconds (default: `0.0` for `catalog`, `0.25` for `live`).
+    - `--disable-tier2` / `--disable-bilingual`: Disable Tier 2 reading or bilingual definition gloss fallbacks.
+    - `--no-stages` / `--no-bilingual-hits`: Omit stage progression tracking or bilingual gloss hit audit table.
+    - `--verbose`, `-v`: Print detailed candidate resolution for each note.
+    - `--anki-url ANKI_URL`: AnkiConnect URL (default: `http://localhost:8765`).
+- **Mandatory Benchmarking Workflow:**
+  1. **Baseline Before Changes:** Before modifying any code, run `scripts/eval_deck_search.py` to record baseline search recall and stage progression numbers.
+  2. **Pre-Push Regression Check:** Before pushing *any* new commit, re-run `scripts/eval_deck_search.py` with the exact same arguments used for the baseline. Verify there are **no unintended regressions** on true matches, and explicitly record any recall improvements (for `.github/ISSUE_TEMPLATE/enhancement.md` tasks) or intentional false-positive removals (for `.github/ISSUE_TEMPLATE/bug_report.md` precision fixes).
+  3. **PR Body Synchronization:** Whenever `scripts/eval_deck_search.py` numbers change across commits, update the benchmark section in the Pull Request description (`gh pr edit`) so the PR body always reflects the latest verified numbers.
 
 ## 🧪 Testing Environment
 - The project uses `unittest` and `pytest`, with linting via `ruff` (configured in `pyproject.toml`).
@@ -73,35 +92,71 @@ The add-on ships with an immutable SQLite database at `addon/data/catalog.sqlite
 - **Always use the Conda Environment:** Execute all Python, `pytest`/`unittest`, and `ruff` commands strictly via the `anki-irasutoya` Conda environment (e.g., `conda run -n anki-irasutoya pytest -v`). Running them globally may miss `aqt` or `ruff` dependencies. Pass `--no-capture-output` (e.g., `conda run --no-capture-output -n anki-irasutoya ...`) when running CLI scripts interactively to avoid Conda subprocess output buffering.
 - **Python 3.9+ Compatibility:** CI executes hermetic unit tests across Python 3.9 through 3.13 (`.github/workflows/test.yml`). Maintain Python 3.9 syntax and typing compatibility across `addon/` (e.g., prefer `Optional`, `Union`, `List`, `Dict`, `Tuple`, `Sequence` from `typing` rather than unguarded Python 3.10+ `X | Y` syntax).
 - **Conventional Commits:** It is mandatory to use the Conventional Commits standard (e.g., `feat:`, `fix:`, `docs:`) for all commit messages. This standard must also be applied to branch naming (e.g., `feat/...`, `fix/...`, `docs/...`).
+- **GitHub Issue Templates & Empirical Test Rule:**
+  - Whenever creating or editing a GitHub Issue (`gh issue create` / `gh issue edit`), you **MUST** format the body using `.github/ISSUE_TEMPLATE/enhancement.md` (for `feat:` enhancements/architecture) or `.github/ISSUE_TEMPLATE/bug_report.md` (for `fix:` bugs, precision guards, and false-positive removals).
+  - When implementing an existing GitHub Issue, you **MUST** codify every concrete headword/input example listed in the issue's *Problem Statement* (both blocked false positives and preserved valid matches) as hermetic unit tests in `tests/`.
+
+## 🐰 CodeRabbit Verification & Triage Protocol (Local & GitHub)
+CodeRabbit lacks access to the full offline SQLite catalog (`addon/data/catalog.sqlite`), live Anki user decks, real Yomitan HTML field structures, and Blogger feed quirks. Therefore, **never blindly implement CodeRabbit suggestions.** For **both** local CLI reviews (`coderabbit review --agent`) and remote GitHub PR reviews, follow this mandatory protocol before touching any code:
+
+1. **Summarize Findings & Explain Criticality:**
+   - Present a clear summary of every CodeRabbit finding to the user.
+   - Explicitly state **why** each finding is critical to the current PR (e.g., correctness bug, thread-safety violation, security issue, test gap).
+2. **Verify All Claims Against Real Data First:**
+   - Before making changes, empirically verify CodeRabbit's assumptions against the actual codebase and domain data (e.g., query `addon/data/catalog.sqlite`, inspect real Anki note payloads via AnkiConnect, or check Yomitan HTML/JMdict fixtures).
+   - If a CodeRabbit claim cannot be verified, is contradicted by real Irasutoya/Anki/Yomitan data, or involves a questionable trade-off, **do not implement it**—notify the user immediately with your findings and ask how to proceed.
+3. **Offer to Defer Non-Critical or Unrelated Items:**
+   - If a valid finding is non-critical, purely stylistic, or unrelated to the scope of the current PR, do not bloat the PR. Present the finding to the user and offer the option to **defer it to a new GitHub Issue** (`gh issue create`) formatted strictly using `.github/ISSUE_TEMPLATE/enhancement.md` (for refactors/enhancements) or `.github/ISSUE_TEMPLATE/bug_report.md` (for edge-case bugs/precision fixes), including `Deferred from PR: #<pr_number>` in the header.
 
 ## 🔄 GitHub PR & Review Loop
 When committing new features or fixes, you are expected to handle the entire PR lifecycle natively:
-1. **Testing is Mandatory:** Existing tests and linting must pass without regression (`conda run -n anki-irasutoya pytest -v` and `conda run -n anki-irasutoya ruff check .`). Furthermore, you **must write new tests** whenever adding new features, fixing bugs, or addressing user feedback. Ensure the full test suite passes before making *any* commit.
-2. Commit your changes and push the branch to origin. **Do NOT push multiple commits rapidly**, as this breaks or auto-pauses the CodeRabbit AI review process. Wait for the review to finish before pushing iterative fixes.
-3. **Ask for manual user feedback** so the user can test the changes locally in Anki before you create the Pull Request.
-4. Once the user approves the local test, create the Pull Request using the GitHub CLI (`gh pr create`). You **MUST** format the PR body using the `.github/pull_request_template.md`. When filling out the pre-merge checklist, you must actually validate each checkbox and not just mark it for the sake of it.
-5. Monitor the pre-merge GitHub Actions checks by running `gh pr checks <pr_number> --watch --interval 60`.
-6. **Local CodeRabbit Review:** Before wasting your 1-per-hour remote GitHub token, you **MUST** validate your commits locally. You must read and use the `code-review` skill (via `coderabbit review --agent`) to compare your feature branch against the base branch and catch edge-cases. You get 3 local reviews per hour, so use them to guarantee a clean build first.
-7. **Trigger & Monitor CodeRabbit Manually:** Only after the local review is completely clean (0 findings) and standard GitHub Actions tests pass, trigger the remote review. After calling `@coderabbitai review`, you **MUST wait for 30 seconds** so the check run registers on GitHub, and then monitor the review using `gh pr checks <pr_number> --watch --interval 60`:
-   ```bash
-   gh pr comment <pr_number> --body "@coderabbitai review" && sleep 30 && gh pr checks <pr_number> --watch --interval 60
-   ```
-8. **Inspect the First CodeRabbit Comment & Handle Rate Limits:** A green `CodeRabbit` status check in `gh pr checks` **ONLY** means the analysis finished running; it does **NOT** mean the code was approved. **The very first CodeRabbit comment on the PR is constantly updated** in place and serves as the source of truth for:
-   - Whether there is any **pre-merge check issue** or actionable review finding.
-   - Whether CodeRabbit is currently **rate-limited**, along with the exact **cooldown time** remaining (if any).
+
+1. **Capture Search Recall Baseline (Before Making Changes):**
+   - Before modifying code, run `scripts/eval_deck_search.py` via the `anki-irasutoya` Conda environment and record the baseline metrics:
+     ```bash
+     conda run --no-capture-output -n anki-irasutoya python scripts/eval_deck_search.py --deck "Mining" --backend catalog --all
+     ```
+2. **Testing & Pre-Commit Benchmark Gate (Mandatory):**
+   - Existing unit tests and linting must pass without regression (`conda run -n anki-irasutoya pytest -v` and `conda run -n anki-irasutoya ruff check .`).
+   - You **must write new tests** whenever adding new features, fixing bugs, or addressing user feedback (including all empirical cases listed in the target GitHub Issue). Ensure the full test suite passes before making *any* commit.
+   - Re-run `scripts/eval_deck_search.py` and compare the output against your Step 1 baseline to confirm **zero unintended regressions** (and capture any recall improvements or intentional false-positive removals).
+3. **Local CodeRabbit Review, Verification & Triage:**
+   - Before wasting your 1-per-hour remote GitHub token, validate your changes locally using the `code-review` skill (`coderabbit review --agent`) to compare your feature branch against the base branch (you get 3 local reviews per hour).
+   - Apply the **CodeRabbit Verification & Triage Protocol** above: verify all data assumptions (Irasutoya, Anki, Yomitan), summarize findings for the user with their criticality to this PR, notify the user if any claim is unverified/flawed, and offer to defer non-critical/unrelated findings to a new GitHub Issue using `.github/ISSUE_TEMPLATE/enhancement.md` or `.github/ISSUE_TEMPLATE/bug_report.md`.
+4. **Ask for Manual User Feedback:**
+   - Ask the user to test the changes locally in Anki before pushing and creating the Pull Request.
+5. **Commit, Push & Create Pull Request:**
+   - Before pushing *any* commit, verify `scripts/eval_deck_search.py` has been run on the exact commit state.
+   - Push the branch to `origin`. **Do NOT push multiple commits rapidly**, as this breaks or auto-pauses the CodeRabbit AI review process. Wait for any active review to finish before pushing iterative fixes.
+   - Once the user approves the local test, create the Pull Request using `gh pr create`. You **MUST** format the PR body using `.github/pull_request_template.md`, actually validate each checkbox in the pre-merge checklist, and populate the `scripts/eval_deck_search.py` baseline vs. post-change tables.
+   - **Keep PR Benchmark Results Synced:** If subsequent commits change the output of `scripts/eval_deck_search.py`, you **MUST** update the benchmark section of the PR body via `gh pr edit <pr_number>`.
+6. **Monitor Pre-Merge GitHub Actions Checks:**
+   - Monitor CI checks by running `gh pr checks <pr_number> --watch --interval 60`.
+7. **Trigger & Monitor Remote CodeRabbit Review:**
+   - Only after the local review is clean (all critical items resolved and non-critical items triaged with the user) and standard GitHub Actions tests pass, trigger the remote review.
+   - After calling `@coderabbitai review`, you **MUST wait for 30 seconds** so the check run registers on GitHub, and then monitor the review using `gh pr checks <pr_number> --watch --interval 60`:
+     ```bash
+     gh pr comment <pr_number> --body "@coderabbitai review" && sleep 30 && gh pr checks <pr_number> --watch --interval 60
+     ```
+8. **Inspect the First CodeRabbit Comment, Verify Claims & Handle Rate Limits:**
+   - A green `CodeRabbit` status check in `gh pr checks` **ONLY** means the analysis finished running; it does **NOT** mean the code was approved. **The very first CodeRabbit comment on the PR is constantly updated** in place and serves as the source of truth for:
+     - Whether there is any **pre-merge check issue** or actionable review finding.
+     - Whether CodeRabbit is currently **rate-limited**, along with the exact **cooldown time** remaining (if any).
    - **If CodeRabbit is rate-limited:** You **MUST wait until the cooldown limit is completely cleared** before trying again. Do not spam review triggers or attempt to bypass the review while rate-limited.
-   - Fetch and inspect the first CodeRabbit comment directly using:
+   - Fetch and inspect the first CodeRabbit comment and review threads directly using:
      ```bash
      gh pr view <pr_number> --json comments --jq '[.comments[] | select(.author.login | test("coderabbit"; "i"))] | first'
      ```
-   - Also confirm the PR merge status by running:
+   - Confirm the PR merge status by running:
      ```bash
      gh pr view <pr_number> --json mergeable,mergeStateStatus
      ```
-9. **Address Review Comments (NEVER Resolve Manually):**
+   - Apply the **CodeRabbit Verification & Triage Protocol** to all GitHub review findings: summarize the review for the user, explain why each item is critical to this PR, empirically verify claims about Irasutoya/Anki/Yomitan data before making edits, notify the user if a claim is dubious, and offer to defer non-critical or unrelated items to a new GitHub Issue (`.github/ISSUE_TEMPLATE/enhancement.md` or `.github/ISSUE_TEMPLATE/bug_report.md`).
+9. **Address Approved Review Comments (NEVER Resolve Manually):**
    - **Do NOT manually resolve review threads or conversations** (via GitHub CLI, GraphQL API, or UI) in an attempt to make the PR mergeable.
-   - Instead, commit and push fixes for all actionable review comments, then trigger a new review (respecting local review checks, rate limits, and the 30-second wait). **CodeRabbit will automatically mark its own review threads as resolved on the next review pass** once it verifies the fixes.
-10. **Merge:** Once CodeRabbit resolves all threads, pre-merge checks pass, and the PR is cleanly mergeable, merge it via:
-    ```bash
-    gh pr merge <pr_number> --squash --delete-branch
-    ```
+   - For verified critical fixes (and any optional items the user chooses to include), implement the changes, run `pytest`, `ruff`, and `scripts/eval_deck_search.py` (updating the PR body if benchmark numbers changed), commit, push once, and trigger a new review (respecting local review checks, rate limits, and the 30-second wait). **CodeRabbit will automatically mark its own review threads as resolved on the next review pass** once it verifies the fixes.
+10. **Merge:**
+    - Once CodeRabbit resolves all threads, pre-merge checks pass, and the PR is cleanly mergeable, merge it via:
+      ```bash
+      gh pr merge <pr_number> --squash --delete-branch
+      ```
