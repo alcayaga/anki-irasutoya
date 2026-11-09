@@ -257,7 +257,9 @@ def has_explicit_positive_deck(query: str) -> bool:
     # 3. Strip non-deck field values (both quoted and unquoted e.g. Front:"deck:Other", Front:deck:Other)
     q = re.sub(r'\b(?!deck:)[^\s():]+:"(?:\\.|[^"\\])*"', ' ', q, flags=re.IGNORECASE)
     q = re.sub(r'\b(?!deck:)[^\s():]+:[^\s()]+', ' ', q, flags=re.IGNORECASE)
-    # 4. Check if standalone unnegated deck: or "deck: remains at operand boundary
+    # 4. Strip quoted search phrases that do not start with deck: (e.g. "w:see (deck:x) now")
+    q = re.sub(r'(?:^|[\s(])"(?!deck:)(?:\\.|[^"\\])*"', ' ', q, flags=re.IGNORECASE)
+    # 5. Check if standalone unnegated deck: or "deck: remains at operand boundary
     return bool(re.search(r'(?:^|[\s(])"?deck:', q, re.IGNORECASE))
 
 

@@ -30,6 +30,21 @@ CONCEPT_MIN_VALID_RATIO = 0.95
 BILINGUAL_MIN_MATCHED = 50
 
 
+def _format_validation_failure_reason(tgt: str) -> str:
+    """Format failure reason string distinguishing callout rejections from catalog misses.
+
+    Args:
+        tgt: Raw or sentinel target string recorded in validation failures.
+
+    Returns:
+        Human-readable reason describing why the target failed validation.
+    """
+    if tgt.startswith("<disallowed text callout:") and tgt.endswith(">"):
+        actual = tgt[len("<disallowed text callout:") : -1].strip()
+        return f"target '{actual}' rejected as disallowed text callout"
+    return f"target '{tgt}' has 0 title illustration matches in catalog"
+
+
 def _validate_concept_json_mapping(
     catalog_path: str,
     json_path: str,
@@ -163,9 +178,9 @@ def _validate_concept_json_mapping(
         if validation_failures or headword_failures:
             for hw, tgt in validation_failures:
                 logger.error(
-                    "Validation FAILED: '%s' -> target '%s' has 0 title illustration matches in catalog",
+                    "Validation FAILED: '%s' -> %s",
                     hw,
-                    tgt,
+                    _format_validation_failure_reason(tgt),
                 )
             logger.error(
                 "Aborting populate: %d targets and %d headwords failed validation.",
@@ -178,16 +193,16 @@ def _validate_concept_json_mapping(
         if valid_ratio >= CONCEPT_MIN_VALID_RATIO and len(clean_mapping) >= min_matched and headword_failures == 0:
             for hw, tgt in validation_failures:
                 logger.warning(
-                    "Non-strict mode: skipping invalid target '%s' for '%s' (0 title illustration matches)",
-                    tgt,
+                    "Non-strict mode: skipping invalid entry for '%s' (%s)",
                     hw,
+                    _format_validation_failure_reason(tgt),
                 )
         else:
             for hw, tgt in validation_failures:
                 logger.error(
-                    "Validation FAILED: '%s' -> target '%s' has 0 title illustration matches in catalog",
+                    "Validation FAILED: '%s' -> %s",
                     hw,
-                    tgt,
+                    _format_validation_failure_reason(tgt),
                 )
             logger.error(
                 "Aborting populate: valid ratio %.1f%% < %.1f%% or %d headword failures.",
