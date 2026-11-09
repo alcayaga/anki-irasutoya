@@ -5,9 +5,11 @@ from unittest.mock import MagicMock, patch
 
 from addon.feed import IrasutoyaImage
 from scripts.eval_deck_search import (
+    build_search_query,
     detect_source_field,
     fetch_deck_notes,
     legacy_clean_query,
+    main,
     run_evaluation,
 )
 
@@ -30,6 +32,40 @@ class TestEvalDeckSearch(unittest.TestCase):
         self.assertEqual(detect_source_field({"Word": "犬", "Meaning": "dog"}), "Word")
         self.assertEqual(detect_source_field({"Front": "鳥"}, requested_field="Front"), "Front")
         self.assertEqual(detect_source_field({"Custom": "魚"}, requested_field="NonExistent"), "Custom")
+
+    def test_build_search_query(self) -> None:
+        """Verify build_search_query correctly composes deck and custom queries."""
+        self.assertEqual(build_search_query("Mining"), 'deck:"Mining"')
+        self.assertEqual(build_search_query('My "Mining" Deck'), 'deck:"My \\"Mining\\" Deck"')
+        self.assertEqual(build_search_query("Mining", "flag:4"), 'deck:"Mining" (flag:4)')
+        self.assertEqual(build_search_query("Mining", "flag:4 or flag:3"), 'deck:"Mining" (flag:4 or flag:3)')
+        self.assertEqual(build_search_query("Mining", 'deck:"Other" tag:marked'), 'deck:"Other" tag:marked')
+        self.assertEqual(build_search_query("Mining", "DECK:Special"), "DECK:Special")
+        # Standalone fully quoted deck selectors
+        self.assertEqual(build_search_query("Mining", '"deck:Other Deck" flag:4'), '"deck:Other Deck" flag:4')
+        self.assertEqual(build_search_query("Mining", 'flag:4 ("deck:Other Deck")'), 'flag:4 ("deck:Other Deck")')
+        self.assertEqual(build_search_query("Mining", '-"deck:Other Deck" flag:4'), 'deck:"Mining" (-"deck:Other Deck" flag:4)')
+        self.assertEqual(build_search_query("Mining", '"deck:Mining"'), '"deck:Mining"')
+        # Negative deck selectors must not suppress the requested deck scope
+        self.assertEqual(build_search_query("Mining", "-deck:Other flag:4"), 'deck:"Mining" (-deck:Other flag:4)')
+        self.assertEqual(build_search_query("Mining", "flag:4 (-deck:Other)"), 'deck:"Mining" (flag:4 (-deck:Other))')
+        self.assertEqual(build_search_query("Mining", "-(deck:Other) flag:4"), 'deck:"Mining" (-(deck:Other) flag:4)')
+        self.assertEqual(build_search_query("Mining", '-(deck:Other or deck:Sub) flag:4'), 'deck:"Mining" (-(deck:Other or deck:Sub) flag:4)')
+        self.assertEqual(build_search_query("Mining", '-((deck:Other) or tag:foo) flag:4'), 'deck:"Mining" (-((deck:Other) or tag:foo) flag:4)')
+        # Deck selectors inside double-quoted field values or unquoted values must not be treated as deck operands
+        self.assertEqual(build_search_query("Mining", 'Front:"deck:Other" flag:4'), 'deck:"Mining" (Front:"deck:Other" flag:4)')
+        self.assertEqual(build_search_query("Mining", r'Front:"say \"deck:Other\" now" flag:4'), r'deck:"Mining" (Front:"say \"deck:Other\" now" flag:4)')
+        self.assertEqual(build_search_query("Mining", 'Front:deck:Other flag:4'), 'deck:"Mining" (Front:deck:Other flag:4)')
+        self.assertEqual(build_search_query("Mining", '-Front:"say deck:Other now" flag:4'), 'deck:"Mining" (-Front:"say deck:Other now" flag:4)')
+        # Deck-like text inside quoted general search phrases must not be treated as deck selectors
+        self.assertEqual(build_search_query("Mining", '"w:see (deck:x) now" flag:4'), 'deck:"Mining" ("w:see (deck:x) now" flag:4)')
+        self.assertEqual(build_search_query("Mining", r'"say \"hello\" (deck:x) now" flag:4'), r'deck:"Mining" ("say \"hello\" (deck:x) now" flag:4)')
+        # Explicit positive deck selectors inside parens
+        self.assertEqual(build_search_query("Mining", 'flag:4 (deck:Other)'), 'flag:4 (deck:Other)')
+        # Combined positive and negative deck selectors preserve raw query
+        self.assertEqual(build_search_query("Mining", "deck:Mining -deck:Mining::Subdeck"), "deck:Mining -deck:Mining::Subdeck")
+        self.assertEqual(build_search_query("", "flag:4"), "flag:4")
+        self.assertEqual(build_search_query("", None), "")
 
     @patch("scripts.eval_deck_search.anki_invoke")
     def test_fetch_deck_notes_sorting_and_chunking(self, mock_invoke: MagicMock) -> None:
@@ -56,6 +92,27 @@ class TestEvalDeckSearch(unittest.TestCase):
         self.assertEqual(notes[1]["noteId"], 1001)
 
     @patch("scripts.eval_deck_search.anki_invoke")
+    def test_fetch_deck_notes_custom_query(self, mock_invoke: MagicMock) -> None:
+        """Verify fetch_deck_notes queries Anki with custom query combined with deck scope."""
+        mock_invoke.side_effect = [
+            [101],
+            [{"cardId": 101, "note": 1001, "fields": {"FreqSort": {"value": "1"}}}],
+            [{"noteId": 1001, "fields": {"Expression": {"value": "猫"}}}],
+            [102],
+            [{"cardId": 102, "note": 1002, "fields": {"FreqSort": {"value": "2"}}}],
+            [{"noteId": 1002, "fields": {"Expression": {"value": "犬"}}}],
+        ]
+        # 1. Custom query scoped to deck with parentheses
+        notes = fetch_deck_notes("Mining", query="flag:4")
+        self.assertEqual(len(notes), 1)
+        mock_invoke.assert_any_call("findCards", anki_url="http://localhost:8765", query='deck:"Mining" (flag:4)')
+
+        # 2. Custom query with existing deck: specifier preserves raw query
+        notes_raw = fetch_deck_notes("Mining", query='deck:"Other" flag:4')
+        self.assertEqual(len(notes_raw), 1)
+        mock_invoke.assert_any_call("findCards", anki_url="http://localhost:8765", query='deck:"Other" flag:4')
+
+    @patch("scripts.eval_deck_search.anki_invoke")
     def test_fetch_deck_notes_501_chunk_boundary(self, mock_invoke: MagicMock) -> None:
         """Verify fetch_deck_notes splits 501 note IDs into chunks of 500 and 1."""
         cards = list(range(1, 502))
@@ -77,6 +134,22 @@ class TestEvalDeckSearch(unittest.TestCase):
         self.assertEqual(mock_invoke.call_count, 4)
         self.assertEqual(len(mock_invoke.call_args_list[2][1]["notes"]), 500)
         self.assertEqual(len(mock_invoke.call_args_list[3][1]["notes"]), 1)
+
+    @patch("scripts.eval_deck_search.fetch_deck_notes", return_value=[])
+    @patch("sys.stdout", new_callable=io.StringIO)
+    def test_run_evaluation_empty_query_scope_message(self, mock_stdout: io.StringIO, mock_fetch: MagicMock) -> None:
+        """Verify run_evaluation names custom query in empty-result message."""
+        run_evaluation("Mining", query="flag:4")
+        self.assertEqual(mock_fetch.call_args[1]["query"], "flag:4")
+        output = mock_stdout.getvalue()
+        self.assertIn('Query:              deck:"Mining" (flag:4)', output)
+        self.assertIn("No notes available to evaluate in query 'flag:4'.", output)
+
+        mock_stdout.truncate(0)
+        mock_stdout.seek(0)
+        run_evaluation("Mining", query=None)
+        output_deck = mock_stdout.getvalue()
+        self.assertIn("No notes available to evaluate in deck 'Mining'.", output_deck)
 
     @patch("scripts.eval_deck_search.anki_invoke")
     @patch("sys.stdout", new_callable=io.StringIO)
@@ -169,6 +242,14 @@ class TestEvalDeckSearch(unittest.TestCase):
         self.assertIn("[WARNING] Stage baseline search failed", output)
         self.assertIn("⚠", output)
         self.assertIn("had failed search requests and were excluded from recall", output)
+
+    @patch("scripts.eval_deck_search.run_evaluation")
+    @patch("sys.argv", ["scripts/eval_deck_search.py", "--query", "flag:4", "--deck", "Mining"])
+    def test_main_cli_forwards_custom_query(self, mock_run: MagicMock) -> None:
+        """Verify main CLI parser forwards custom --query argument to run_evaluation."""
+        main()
+        self.assertEqual(mock_run.call_args[1]["query"], "flag:4")
+        self.assertEqual(mock_run.call_args[1]["deck_name"], "Mining")
 
 
 if __name__ == "__main__":

@@ -451,3 +451,53 @@ class TestCatalog(unittest.TestCase):
         all_targets = index.get_synonyms("cupid")
         self.assertEqual(all_targets, ["キューピッド_manual", "キューピッド_sudachi"])
 
+    def test_catalog_index_rejection_blocklist(self) -> None:
+        """Verify CatalogIndex identifies rejected terms and excludes them from general synonym expansion."""
+        conn = sqlite3.connect(self.db_path)
+        write_posts(conn, self._sample_posts())
+        create_schema(conn)
+
+        write_synonyms(
+            conn,
+            source="llm_rejected",
+            mapping={
+                "基本": ["抽象概念のため直接的な視覚化は困難"],
+                "Quality": ["abstract concept"],
+            },
+        )
+        write_synonyms(
+            conn,
+            source="manual",
+            mapping={"基本": ["ベース"]},
+        )
+        conn.close()
+
+        store = CatalogStore(self.db_path)
+        index = store.get_index()
+        self.assertIsNotNone(index)
+        assert index is not None
+
+        # Term rejection status and reason lookup
+        self.assertTrue(index.is_rejected("基本"))
+        self.assertEqual(index.get_rejection_reason("基本"), "抽象概念のため直接的な視覚化は困難")
+
+        # Case-insensitivity check
+        self.assertTrue(index.is_rejected("quality"))
+        self.assertTrue(index.is_rejected("QUALITY"))
+        self.assertEqual(index.get_rejection_reason("quality"), "abstract concept")
+
+        # Non-rejected terms
+        self.assertFalse(index.is_rejected("猫"))
+        self.assertIsNone(index.get_rejection_reason("猫"))
+        self.assertFalse(index.is_rejected(""))
+        self.assertIsNone(index.get_rejection_reason(""))
+
+        # get_synonyms with source=None MUST exclude llm_rejected entries
+        general_synonyms = index.get_synonyms("基本")
+        self.assertEqual(general_synonyms, ["ベース"])
+        self.assertNotIn("抽象概念のため直接的な視覚化は困難", general_synonyms)
+
+        # Explicit source="llm_rejected" lookup
+        rejected_synonyms = index.get_synonyms("基本", source="llm_rejected")
+        self.assertEqual(rejected_synonyms, ["抽象概念のため直接的な視覚化は困難"])
+

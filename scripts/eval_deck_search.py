@@ -167,17 +167,132 @@ def anki_invoke(action: str, anki_url: str = "http://localhost:8765", **params: 
         ) from e
 
 
+def _strip_nested_negated_parens(s: str) -> str:
+    """Strip any parenthesized group that is preceded by '-' even if nested.
+
+    Args:
+        s: Search query string.
+
+    Returns:
+        Query string with negated parenthesized groups replaced by whitespace.
+    """
+    out: List[str] = []
+    i = 0
+    n = len(s)
+    in_quote = False
+    escape = False
+    while i < n:
+        ch = s[i]
+        if escape:
+            escape = False
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "\\":
+            escape = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == '"':
+            in_quote = not in_quote
+            out.append(ch)
+            i += 1
+            continue
+        if not in_quote and ch == "-" and i + 1 < n and s[i + 1] == "(":
+            depth = 1
+            i += 2
+            while i < n and depth > 0:
+                c = s[i]
+                if c == "\\":
+                    i += 2
+                    continue
+                if c == '"':
+                    i += 1
+                    while i < n:
+                        if s[i] == "\\":
+                            i += 2
+                        elif s[i] == '"':
+                            i += 1
+                            break
+                        else:
+                            i += 1
+                    continue
+                if c == "(":
+                    depth += 1
+                elif c == ")":
+                    depth -= 1
+                i += 1
+            out.append(" ")
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def has_explicit_positive_deck(query: str) -> bool:
+    """Return True if query contains an explicit positive deck selector operand.
+
+    Recognizes both unquoted and fully quoted deck operands (e.g. deck:Other,
+    deck:"Other Deck", "deck:Other Deck").
+    Ignores deck selectors inside field values (e.g. Front:"deck:Other",
+    Front:"say \\"deck:Other\\" now", Front:deck:Other), negated parenthesized groups
+    (e.g. -((deck:Other) or tag:foo)), and negated tokens (e.g. -deck:Other, -"deck:Other").
+
+    Args:
+        query: Raw Anki search query.
+
+    Returns:
+        True if an unnegated positive 'deck:' operand is present.
+    """
+    if not query:
+        return False
+    # 1. Strip negated parenthesized groups including nested parens: -(...) or -((...))
+    q = _strip_nested_negated_parens(query)
+    # 2. Strip negated tokens: -deck:foo, -"deck:foo", -tag:bar, -Front:"...", etc.
+    q = re.sub(
+        r'(?:^|[\s(])-(?:"(?:\\.|[^"\\])*"|[^"\s():]+:"(?:\\.|[^"\\])*"|[^\s()]+)',
+        ' ',
+        q,
+    )
+    # 3. Strip non-deck field values (both quoted and unquoted e.g. Front:"deck:Other", Front:deck:Other)
+    q = re.sub(r'\b(?!deck:)[^\s():]+:"(?:\\.|[^"\\])*"', ' ', q, flags=re.IGNORECASE)
+    q = re.sub(r'\b(?!deck:)[^\s():]+:[^\s()]+', ' ', q, flags=re.IGNORECASE)
+    # 4. Strip quoted search phrases that do not start with deck: (e.g. "w:see (deck:x) now")
+    q = re.sub(r'(?:^|[\s(])"(?!deck:)(?:\\.|[^"\\])*"', ' ', q, flags=re.IGNORECASE)
+    # 5. Check if standalone unnegated deck: or "deck: remains at operand boundary
+    return bool(re.search(r'(?:^|[\s(])"?deck:', q, re.IGNORECASE))
+
+
+def build_search_query(deck_name: str, query: Optional[str] = None) -> str:
+    """Return the AnkiConnect search query for a deck and optional custom query.
+
+    Args:
+        deck_name: Target Anki deck name.
+        query: Optional custom Anki search query.
+
+    Returns:
+        Query scoped to the deck unless query already contains an explicit positive 'deck:' selector.
+    """
+    escaped_deck = deck_name.replace('"', '\\"') if deck_name else ""
+    if query:
+        if escaped_deck and not has_explicit_positive_deck(query):
+            return f'deck:"{escaped_deck}" ({query})'
+        return query
+    return f'deck:"{escaped_deck}"' if escaped_deck else ""
+
+
 def fetch_deck_notes(
     deck_name: str,
     sort_field: Optional[str] = "FreqSort",
     limit: int = 50,
-    anki_url: str = "http://localhost:8765"
+    anki_url: str = "http://localhost:8765",
+    query: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Fetch and sort notes from the specified deck via AnkiConnect."""
-    escaped_deck = deck_name.replace('"', '\\"')
-    card_ids = anki_invoke("findCards", anki_url=anki_url, query=f'deck:"{escaped_deck}"')
+    search_query = build_search_query(deck_name, query)
+    card_ids = anki_invoke("findCards", anki_url=anki_url, query=search_query)
     if not card_ids:
-        print(f"Warning: No cards found in deck '{deck_name}'.")
+        print(f"Warning: No cards found for query '{search_query}'.")
         return []
 
     cards_info = anki_invoke("cardsInfo", anki_url=anki_url, cards=card_ids)
@@ -242,6 +357,7 @@ def run_evaluation(
     anki_url: str = "http://localhost:8765",
     track_stages: bool = True,
     show_bilingual_hits: bool = True,
+    query: Optional[str] = None,
 ) -> None:
     """Run comparative evaluation between legacy, live, and offline catalog search.
 
@@ -258,11 +374,17 @@ def run_evaluation(
         anki_url: Local AnkiConnect HTTP URL.
         track_stages: Whether to calculate stage-by-stage incremental recall deltas.
         show_bilingual_hits: Whether to output the audit table of bilingual gloss hits.
+        query: Optional custom Anki search query (e.g. 'flag:4'), combined with --deck unless it contains an explicit positive 'deck:' selector.
     """
     print("=" * 72)
     print("  IRASUTOYA SEARCH RECALL BENCHMARK (NON-DESTRUCTIVE DRY RUN)")
     print("=" * 72)
-    print(f"Deck:               {deck_name}")
+    effective_query: Optional[str] = build_search_query(deck_name, query) if query else None
+
+    if effective_query:
+        print(f"Query:              {effective_query}")
+    else:
+        print(f"Deck:               {deck_name}")
     print(f"Sort Field:         {sort_field}")
     print(f"Sample Limit:       {'All Notes' if limit <= 0 else limit}")
     print(f"Polite Delay:       {delay}s")
@@ -273,13 +395,14 @@ def run_evaluation(
     print("-" * 72)
 
     try:
-        notes = fetch_deck_notes(deck_name, sort_field=sort_field, limit=limit, anki_url=anki_url)
+        notes = fetch_deck_notes(deck_name, sort_field=sort_field, limit=limit, anki_url=anki_url, query=query)
     except Exception as e:
         print(f"\n[ERROR] {e}\n")
         sys.exit(1)
 
     if not notes:
-        print(f"No notes available to evaluate in deck '{deck_name}'.")
+        scope = f"query '{query}'" if query else f"deck '{deck_name}'"
+        print(f"No notes available to evaluate in {scope}.")
         return
 
     print(f"Retrieved {len(notes)} notes. Starting search benchmark...\n")
@@ -680,6 +803,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Evaluate and compare Irasutoya search recall against an Anki deck via AnkiConnect."
     )
+    parser.add_argument(
+        "--query",
+        default=None,
+        help="Extra Anki search query (e.g. 'flag:4'), combined with --deck unless it contains an explicit positive 'deck:' selector (e.g. 'deck:Other')",
+    )
     parser.add_argument("--deck", default="Mining", help="Anki deck name to evaluate (default: 'Mining')")
     parser.add_argument("--sort", default="FreqSort", help="Field to sort cards by (default: 'FreqSort')")
     parser.add_argument("--source-field", default=None, help="Source field to query (default: auto-detect Expression/Word)")
@@ -712,6 +840,7 @@ def main() -> None:
         anki_url=args.anki_url,
         track_stages=not args.no_stages,
         show_bilingual_hits=not args.no_bilingual_hits,
+        query=args.query,
     )
 
 

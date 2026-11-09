@@ -5,10 +5,11 @@ import json
 import logging
 import os
 import sys
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 # Ensure repository root is on sys.path
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -23,6 +24,50 @@ logger = logging.getLogger("synonyms")
 DEFAULT_CATALOG_PATH = os.path.join(REPO_ROOT, "addon", "data", "catalog.sqlite")
 DEFAULT_BILINGUAL_CONCEPTS_PATH = os.path.join(REPO_ROOT, "scripts", "sources", "bilingual_concepts.json")
 DEFAULT_LLM_CONCEPTS_PATH = os.path.join(REPO_ROOT, "scripts", "sources", "llm_concepts.json")
+
+UNVERIFIED_REASON_PREFIX: str = "unverified in catalog:"
+
+TEXT_ASSET_TERM_KEYWORDS: Tuple[str, ...] = ("文字", "フォント", "ロゴ")
+_TEXT_ASSET_SUFFIXES: Tuple[str, ...] = TEXT_ASSET_TERM_KEYWORDS + ("ロゴマーク", "ロゴタイプ")
+_TEXT_ASSET_PREFIXES: Tuple[str, ...] = ("文字", "フォント", "ロゴマーク", "ロゴタイプ")
+
+
+def is_text_asset_term(term: str) -> bool:
+    """Return True if term denotes text, a font, or a logo rather than a general concept.
+
+    Args:
+        term: Vocabulary term or concept query.
+
+    Returns:
+        True if the term represents text, fonts, or logos, False otherwise.
+    """
+    if not term:
+        return False
+    t = unicodedata.normalize("NFKC", term.strip())
+    if t in TEXT_ASSET_TERM_KEYWORDS:
+        return True
+    if t.endswith(_TEXT_ASSET_SUFFIXES):
+        return True
+    if t.startswith(_TEXT_ASSET_PREFIXES):
+        return True
+    return False
+
+
+def is_disallowed_text_callout_target(target: str, term: str) -> bool:
+    """Return True if target is an イラスト文字 asset for a term that does not denote text or fonts.
+
+    Args:
+        target: Cleaned catalog search target candidate.
+        term: Vocabulary term being compiled.
+
+    Returns:
+        True if target contains 'イラスト文字' and term does not denote text, fonts, or logos.
+    """
+    return "イラスト文字" in target and not is_text_asset_term(term)
+
+
+# Backwards compatibility alias for private helper name
+_is_disallowed_text_callout_target = is_disallowed_text_callout_target
 
 
 def filter_relevant_illustrations(

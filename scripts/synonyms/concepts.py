@@ -5,10 +5,11 @@ import os
 import sqlite3
 import sys
 import urllib.request
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from addon.catalog import (
     CatalogStore,
+    canonicalize_synonym_term,
     default_store,
     write_synonyms,
 )
@@ -17,6 +18,8 @@ from addon.text_utils import clean_search_query
 from addon.yomitan_parser import normalize_english_gloss
 from scripts.synonyms.common import (
     DEFAULT_CATALOG_PATH,
+    UNVERIFIED_REASON_PREFIX,
+    _is_disallowed_text_callout_target,
     filter_relevant_illustrations,
     update_catalog_sha256,
 )
@@ -27,7 +30,22 @@ CONCEPT_MIN_VALID_RATIO = 0.95
 BILINGUAL_MIN_MATCHED = 50
 
 
-def _populate_concept_json_mapping(
+def _format_validation_failure_reason(tgt: str) -> str:
+    """Format failure reason string distinguishing callout rejections from catalog misses.
+
+    Args:
+        tgt: Raw or sentinel target string recorded in validation failures.
+
+    Returns:
+        Human-readable reason describing why the target failed validation.
+    """
+    if tgt.startswith("<disallowed text callout:") and tgt.endswith(">"):
+        actual = tgt[len("<disallowed text callout:") : -1].strip()
+        return f"target '{actual}' rejected as disallowed text callout"
+    return f"target '{tgt}' has 0 title illustration matches in catalog"
+
+
+def _validate_concept_json_mapping(
     catalog_path: str,
     json_path: str,
     source: str,
@@ -35,9 +53,8 @@ def _populate_concept_json_mapping(
     concept_key: str = "concepts",
     validate_canonical_headwords: bool = False,
     strict: bool = True,
-    validate_only: bool = False,
-) -> bool:
-    """Validate JSON visual concepts against catalog illustration titles and populate synonyms.
+) -> Optional[Dict[str, List[str]]]:
+    """Validate JSON visual concepts against catalog illustration titles.
 
     Args:
         catalog_path: Path to destination catalog.sqlite database.
@@ -47,28 +64,27 @@ def _populate_concept_json_mapping(
         concept_key: Key in the JSON dictionary to extract concepts from (default: 'concepts').
         validate_canonical_headwords: If True, validates headwords match canonical English glosses.
         strict: If True, requires 100% of targets to validate against the catalog.
-        validate_only: If True, validates concepts without modifying the catalog database.
 
     Returns:
-        True if all targets validated and populated successfully, False otherwise.
+        Clean validated mapping if validation succeeded, None otherwise.
     """
     catalog_path = os.path.abspath(catalog_path)
     json_path = os.path.abspath(json_path)
 
     if not os.path.isfile(catalog_path):
         logger.error("Catalog database not found: %s", catalog_path)
-        return False
+        return None
 
     if not os.path.isfile(json_path):
         logger.error("Concepts file not found: %s", json_path)
-        return False
+        return None
 
     with open(json_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
     if not isinstance(data, dict):
         logger.error("Root JSON value in %s is not an object", json_path)
-        return False
+        return None
 
     if concept_key == "concepts":
         raw_concepts = data.get("concepts") or data.get("mappings") or {}
@@ -77,7 +93,7 @@ def _populate_concept_json_mapping(
 
     if not isinstance(raw_concepts, dict):
         logger.error("Invalid '%s' structure in %s: expected object", concept_key, json_path)
-        return False
+        return None
     if not raw_concepts or len(raw_concepts) < min_matched:
         logger.error(
             "Too few concepts (%d < %d) found in %s",
@@ -85,14 +101,14 @@ def _populate_concept_json_mapping(
             min_matched,
             json_path,
         )
-        return False
+        return None
 
     logger.info("Validating %d %s concepts against %s...", len(raw_concepts), source, catalog_path)
     store = CatalogStore(catalog_path)
     index = store.get_index()
     if index is None:
         logger.error("Catalog index is unavailable at %s", catalog_path)
-        return False
+        return None
 
     for hw, tgts in raw_concepts.items():
         if not isinstance(tgts, (list, tuple)):
@@ -102,7 +118,7 @@ def _populate_concept_json_mapping(
                 source,
                 type(tgts).__name__,
             )
-            return False
+            return None
 
     total_targets = sum(len(tgts) for tgts in raw_concepts.values())
 
@@ -145,6 +161,9 @@ def _populate_concept_json_mapping(
                         clean_hw,
                     )
                 continue
+            if source.startswith("llm_concept") and _is_disallowed_text_callout_target(clean_tgt, clean_hw):
+                validation_failures.append((clean_hw, f"<disallowed text callout: {clean_tgt}>"))
+                continue
             results = filter_relevant_illustrations(index.search(clean_tgt), clean_tgt)
             if not has_title_illustration_match(results, clean_tgt):
                 validation_failures.append((clean_hw, clean_tgt))
@@ -159,31 +178,31 @@ def _populate_concept_json_mapping(
         if validation_failures or headword_failures:
             for hw, tgt in validation_failures:
                 logger.error(
-                    "Validation FAILED: '%s' -> target '%s' has 0 title illustration matches in catalog",
+                    "Validation FAILED: '%s' -> %s",
                     hw,
-                    tgt,
+                    _format_validation_failure_reason(tgt),
                 )
             logger.error(
                 "Aborting populate: %d targets and %d headwords failed validation.",
                 len(validation_failures),
                 headword_failures,
             )
-            return False
+            return None
     else:
         valid_ratio = (valid_target_count / total_targets) if total_targets > 0 else 0.0
         if valid_ratio >= CONCEPT_MIN_VALID_RATIO and len(clean_mapping) >= min_matched and headword_failures == 0:
             for hw, tgt in validation_failures:
                 logger.warning(
-                    "Non-strict mode: skipping invalid target '%s' for '%s' (0 title illustration matches)",
-                    tgt,
+                    "Non-strict mode: skipping invalid entry for '%s' (%s)",
                     hw,
+                    _format_validation_failure_reason(tgt),
                 )
         else:
             for hw, tgt in validation_failures:
                 logger.error(
-                    "Validation FAILED: '%s' -> target '%s' has 0 title illustration matches in catalog",
+                    "Validation FAILED: '%s' -> %s",
                     hw,
-                    tgt,
+                    _format_validation_failure_reason(tgt),
                 )
             logger.error(
                 "Aborting populate: valid ratio %.1f%% < %.1f%% or %d headword failures.",
@@ -191,7 +210,7 @@ def _populate_concept_json_mapping(
                 CONCEPT_MIN_VALID_RATIO * 100,
                 headword_failures,
             )
-            return False
+            return None
 
     if not clean_mapping or len(clean_mapping) < min_matched:
         logger.error(
@@ -200,7 +219,52 @@ def _populate_concept_json_mapping(
             min_matched,
             json_path,
         )
-        return False
+        return None
+
+    return clean_mapping
+
+
+def _populate_concept_json_mapping(
+    catalog_path: str,
+    json_path: str,
+    source: str,
+    min_matched: int,
+    concept_key: str = "concepts",
+    validate_canonical_headwords: bool = False,
+    strict: bool = True,
+    validate_only: bool = False,
+    validated_mapping: Optional[Dict[str, List[str]]] = None,
+) -> bool:
+    """Validate JSON visual concepts against catalog illustration titles and populate synonyms.
+
+    Args:
+        catalog_path: Path to destination catalog.sqlite database.
+        json_path: Path to source JSON file containing concept definitions.
+        source: Source attribution string for synonyms table.
+        min_matched: Minimum required valid concept mappings before writing.
+        concept_key: Key in the JSON dictionary to extract concepts from (default: 'concepts').
+        validate_canonical_headwords: If True, validates headwords match canonical English glosses.
+        strict: If True, requires 100% of targets to validate against the catalog.
+        validate_only: If True, validates concepts without modifying the catalog database.
+        validated_mapping: Optional pre-validated mapping to write directly without re-validating.
+
+    Returns:
+        True if all targets validated and populated successfully, False otherwise.
+    """
+    if validated_mapping is not None:
+        clean_mapping = validated_mapping
+    else:
+        clean_mapping = _validate_concept_json_mapping(
+            catalog_path=catalog_path,
+            json_path=json_path,
+            source=source,
+            min_matched=min_matched,
+            concept_key=concept_key,
+            validate_canonical_headwords=validate_canonical_headwords,
+            strict=strict,
+        )
+        if clean_mapping is None:
+            return False
 
     if validate_only:
         return True
@@ -357,14 +421,12 @@ def populate_llm_concepts(
 
     has_t1 = bool(data.get("concepts") or data.get("mappings"))
     has_t2 = bool(data.get("tier2_concepts"))
-
-    if not has_t1 and not has_t2:
-        logger.error("No 'concepts' or 'tier2_concepts' found in %s", llm_json_path)
-        return False
+    raw_rej = data.get("rejected")
 
     # Phase 1: Validate both Tier 1 and Tier 2 (if present) before mutating the catalog
+    validated_t1: Dict[str, List[str]] = {}
     if has_t1:
-        ok_t1 = _populate_concept_json_mapping(
+        res_t1 = _validate_concept_json_mapping(
             catalog_path=catalog_path,
             json_path=llm_json_path,
             source="llm_concept",
@@ -372,13 +434,14 @@ def populate_llm_concepts(
             concept_key="concepts",
             validate_canonical_headwords=False,
             strict=strict,
-            validate_only=True,
         )
-        if not ok_t1:
+        if res_t1 is None:
             return False
+        validated_t1 = res_t1
 
+    validated_t2: Dict[str, List[str]] = {}
     if has_t2:
-        ok_t2 = _populate_concept_json_mapping(
+        res_t2 = _validate_concept_json_mapping(
             catalog_path=catalog_path,
             json_path=llm_json_path,
             source="llm_concept_tier2",
@@ -386,10 +449,50 @@ def populate_llm_concepts(
             concept_key="tier2_concepts",
             validate_canonical_headwords=False,
             strict=strict,
-            validate_only=True,
         )
-        if not ok_t2:
+        if res_t2 is None:
             return False
+        validated_t2 = res_t2
+
+    # Positive concepts take precedence over rejections with the same canonical key;
+    # build positive_keys only from mappings whose targets successfully validated.
+    positive_keys: Set[str] = {
+        k
+        for mapping in (validated_t1, validated_t2)
+        for term, tgts in mapping.items()
+        if tgts and (k := canonicalize_synonym_term(term))
+    }
+
+    # Extract semantic rejections, filtering out unverified target misses and validated positive concepts
+    rejection_mapping: Dict[str, List[str]] = {}
+    if isinstance(raw_rej, dict):
+        for term, reason in sorted(raw_rej.items()):
+            if not isinstance(reason, str):
+                continue
+            clean_term = canonicalize_synonym_term(term)
+            clean_reason = reason.strip()
+            if (
+                clean_term
+                and clean_term not in positive_keys
+                and clean_reason
+                and not clean_reason.startswith(UNVERIFIED_REASON_PREFIX)
+            ):
+                rejection_mapping[clean_term] = [clean_reason]
+
+    has_rej = bool(rejection_mapping)
+
+    has_known_keys = any(
+        k in data for k in ("concepts", "mappings", "tier2_concepts", "rejected", "unverified")
+    )
+    if not has_known_keys:
+        logger.error("No recognized concept or rejection keys found in %s", llm_json_path)
+        return False
+
+    if not has_t1 and not has_t2 and not has_rej:
+        logger.info(
+            "Valid empty concept/rejection artifact in %s; clearing LLM synonym sources",
+            llm_json_path,
+        )
 
     # Phase 2: Apply mutations (write or clear) once both tiers have passed validation
     if has_t1:
@@ -402,6 +505,7 @@ def populate_llm_concepts(
             validate_canonical_headwords=False,
             strict=strict,
             validate_only=False,
+            validated_mapping=validated_t1,
         )
         if not ok_t1:
             return False
@@ -419,11 +523,35 @@ def populate_llm_concepts(
             validate_canonical_headwords=False,
             strict=strict,
             validate_only=False,
+            validated_mapping=validated_t2,
         )
         if not ok_t2:
             return False
     else:
         if not _clear_synonym_source(catalog_path, "llm_concept_tier2"):
+            return False
+
+    if rejection_mapping:
+        try:
+            conn = sqlite3.connect(catalog_path)
+            try:
+                write_synonyms(conn, source="llm_rejected", mapping=rejection_mapping)
+                logger.info(
+                    "Compiled %d semantic rejections into synonyms (source='llm_rejected')",
+                    len(rejection_mapping),
+                )
+                conn.execute("PRAGMA journal_mode = DELETE")
+                conn.execute("VACUUM")
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.error("Failed to populate llm_rejected in %s: %s", catalog_path, exc)
+            return False
+        finally:
+            update_catalog_sha256(catalog_path)
+    else:
+        if not _clear_synonym_source(catalog_path, "llm_rejected"):
             return False
 
     return True
@@ -471,6 +599,8 @@ def validate_catalog_synonyms(catalog_path: Optional[str] = None) -> bool:
 
     target_ok: Dict[str, bool] = {}
     for term, target, source, _ord in rows:
+        if source == "llm_rejected":
+            continue
         if target not in target_ok:
             results = filter_relevant_illustrations(index.search(target), target)
             target_ok[target] = has_title_illustration_match(results, target)
@@ -512,6 +642,12 @@ def prune_stale_synonyms(
     Returns:
         Number of stale rows removed from the synonyms table, or -1 if index unavailable.
     """
+    if source == "llm_rejected":
+        logger.warning(
+            "Source 'llm_rejected' stores semantic rejection reasons rather than illustration titles; skipping title-based pruning."
+        )
+        return 0
+
     target_catalog = catalog_path or DEFAULT_CATALOG_PATH
     store = CatalogStore(target_catalog) if catalog_path else default_store()
     index = store.get_index()

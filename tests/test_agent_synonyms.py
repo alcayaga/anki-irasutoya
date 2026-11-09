@@ -37,6 +37,14 @@ from scripts.pull_models import (
 from scripts.pull_models import (
     main as pull_models_main,
 )
+from scripts.synonyms.common import (
+    is_disallowed_text_callout_target,
+    is_text_asset_term,
+)
+from scripts.synonyms.concepts import (
+    populate_llm_concepts,
+    validate_catalog_synonyms,
+)
 from scripts.synonyms.ollama_agent import (
     _flush_llm_concepts,
     _KeepAliveJSONClient,
@@ -53,6 +61,9 @@ from scripts.synonyms.ollama_embed import (
     format_query_for_embedding,
     resolve_valid_post_target,
     search_hybrid_presearch,
+)
+from scripts.synonyms.yomitan_jpdb import (
+    is_canonical_illustration_title,
 )
 
 
@@ -3320,6 +3331,441 @@ class TestPullModelsAndEmbedPresearch(unittest.TestCase):
         finally:
             if os.path.exists(tf_path):
                 os.remove(tf_path)
+
+
+class TestRejectionBlocklistAndCanonicalTitle(unittest.TestCase):
+    """Test suite for semantic rejection blocklist compilation and canonical illustration matching."""
+
+    def setUp(self) -> None:
+        """Create an isolated temporary catalog and environment for hermetic testing."""
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = os.path.join(self.temp_dir.name, "test_catalog.sqlite")
+
+        # Create basic catalog database with sample posts
+        conn = sqlite3.connect(self.db_path)
+        img1 = IrasutoyaImage("可愛い猫", "https://1.bp.blogspot.com/s800/cat.png", "t.png", "猫", post_id="b1")
+        post1 = ParsedPost("b1", "可愛い猫のイラスト", "desc", "pub", "upd", (), [img1])
+
+        img2 = IrasutoyaImage("犬のイラスト", "https://1.bp.blogspot.com/s800/dog.png", "t.png", "犬", post_id="b2")
+        post2 = ParsedPost("b2", "犬のイラスト", "desc", "pub", "upd", (), [img2])
+
+        img3 = IrasutoyaImage(
+            "卒業するアイドルのイラスト",
+            "https://1.bp.blogspot.com/s800/grad.png",
+            "t.png",
+            "卒業するアイドル",
+            post_id="b3",
+        )
+        post3 = ParsedPost("b3", "卒業するアイドルのイラスト", "desc", "pub", "upd", (), [img3])
+
+        img4 = IrasutoyaImage(
+            "いろいろな敬称のイラスト文字",
+            "https://1.bp.blogspot.com/s800/moji.png",
+            "t.png",
+            "いろいろな敬称のイラスト文字",
+            post_id="b4",
+        )
+        post4 = ParsedPost("b4", "いろいろな敬称のイラスト文字", "desc", "pub", "upd", (), [img4])
+
+        write_posts(conn, [post1, post2, post3, post4])
+        conn.close()
+
+    def tearDown(self) -> None:
+        """Clean up temporary test workspace."""
+        self.temp_dir.cleanup()
+
+    def test_populate_llm_concepts_with_rejections_and_legacy_unverified(self) -> None:
+        """Verify populate_llm_concepts stores semantic rejections in SQLite and skips unverified misses."""
+        json_path = os.path.join(self.temp_dir.name, "test_concepts.json")
+        data = {
+            "concepts": {"ネコ": ["可愛い猫"]},
+            "rejected": {
+                "基本": "抽象概念のため直接的な視覚化は困難",
+                "一般": "抽象的な概念のため直接的な視覚対象なし",
+                "犬": "unverified in catalog: proposed targets ['犬のイラスト'] (LLM reason: miss)",
+            },
+        }
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
+        ok = populate_llm_concepts(self.db_path, json_path)
+        self.assertTrue(ok)
+
+        # Verify SQLite content directly
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT term, target, source FROM synonyms WHERE source = 'llm_rejected' ORDER BY term")
+            rejected_rows = cur.fetchall()
+            self.assertEqual(len(rejected_rows), 2)
+            self.assertEqual(rejected_rows[0], ("一般", "抽象的な概念のため直接的な視覚対象なし", "llm_rejected"))
+            self.assertEqual(rejected_rows[1], ("基本", "抽象概念のため直接的な視覚化は困難", "llm_rejected"))
+        finally:
+            conn.close()
+
+        # Validate that validate_catalog_synonyms skips llm_rejected rows and passes
+        val_ok = validate_catalog_synonyms(self.db_path)
+        self.assertTrue(val_ok)
+
+    def test_populate_llm_concepts_accepts_file_with_only_unverified_misses_and_clears_rejected(self) -> None:
+        """Verify populate_llm_concepts accepts an unverified-only artifact as an empty snapshot and clears llm_rejected."""
+        # First populate a valid rejection so a row exists to be cleared
+        init_json = os.path.join(self.temp_dir.name, "init_concepts.json")
+        with open(init_json, "w", encoding="utf-8") as f:
+            json.dump({"rejected": {"基本": "抽象概念"}}, f)
+        self.assertTrue(populate_llm_concepts(self.db_path, init_json))
+
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT count(*) FROM synonyms WHERE source = 'llm_rejected'")
+        self.assertEqual(cur.fetchone()[0], 1)
+        conn.close()
+
+        # Now pass an artifact containing only unverified entries (valid empty blocklist snapshot)
+        empty_json = os.path.join(self.temp_dir.name, "only_unverified.json")
+        with open(empty_json, "w", encoding="utf-8") as f:
+            json.dump({
+                "rejected": {
+                    "犬": "unverified in catalog: proposed targets ['犬のイラスト'] (LLM reason: miss)",
+                },
+            }, f)
+
+        ok = populate_llm_concepts(self.db_path, empty_json)
+        self.assertTrue(ok)
+
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT count(*) FROM synonyms WHERE source = 'llm_rejected'")
+        self.assertEqual(cur.fetchone()[0], 0)
+        conn.close()
+
+        # A completely malformed artifact lacking recognized concept/rejection keys must fail
+        malformed_json = os.path.join(self.temp_dir.name, "malformed.json")
+        with open(malformed_json, "w", encoding="utf-8") as f:
+            json.dump({"unrelated_field": {"key": "val"}}, f)
+        self.assertFalse(populate_llm_concepts(self.db_path, malformed_json))
+
+    def test_flush_llm_concepts_separates_rejected_and_unverified(self) -> None:
+        """Verify _flush_llm_concepts writes semantic rejections and unverified misses to distinct keys."""
+        out_path = os.path.join(self.temp_dir.name, "flushed.json")
+        _flush_llm_concepts(
+            concepts_map={"ネコ": ["可愛い猫"]},
+            out_path=out_path,
+            model="gemma4:26b",
+            rejected_map={"基本": "抽象概念のため直接的な視覚化は困難"},
+            unverified_map={"単語": "unverified in catalog: proposed targets ['未発見']"},
+        )
+
+        with open(out_path, "r", encoding="utf-8") as f:
+            saved = json.load(f)
+
+        self.assertIn("rejected", saved)
+        self.assertIn("unverified", saved)
+        self.assertEqual(saved["rejected"], {"基本": "抽象概念のため直接的な視覚化は困難"})
+        self.assertEqual(saved["unverified"], {"単語": "unverified in catalog: proposed targets ['未発見']"})
+        self.assertNotIn("単語", saved["rejected"])
+        self.assertNotIn("基本", saved["unverified"])
+
+    def test_is_canonical_illustration_title(self) -> None:
+        """Verify is_canonical_illustration_title identifies archetypal titles and rejects situational compounds."""
+        # Canonical titles
+        self.assertTrue(is_canonical_illustration_title("犬のイラスト", "犬"))
+        self.assertTrue(is_canonical_illustration_title("かわいい犬のイラスト", "犬"))
+        self.assertTrue(is_canonical_illustration_title("可愛い猫のイラスト", "猫"))
+        self.assertTrue(is_canonical_illustration_title("いろいろな猫のイラスト", "猫"))
+        self.assertTrue(is_canonical_illustration_title("色々な花のイラスト", "花"))
+        self.assertTrue(is_canonical_illustration_title("電話のイラスト（女性）", "電話"))
+        self.assertTrue(is_canonical_illustration_title("電話のイラスト(男性)", "電話"))
+        self.assertTrue(is_canonical_illustration_title("お茶のイラスト", "茶"))
+        self.assertTrue(is_canonical_illustration_title("お茶のイラスト", "お茶"))
+        self.assertTrue(is_canonical_illustration_title("禁止マーク", "禁止"))
+        self.assertTrue(is_canonical_illustration_title("「禁止」マークのイラスト", "禁止"))
+        self.assertTrue(is_canonical_illustration_title("cdのイラスト", "CD"))
+
+        # Situational compounds & partial matches that are NOT canonical
+        self.assertFalse(is_canonical_illustration_title("卒業するアイドルのイラスト", "卒業"))
+        self.assertFalse(is_canonical_illustration_title("自転車の手信号のイラスト（停止）", "停止"))
+        self.assertFalse(is_canonical_illustration_title("住民基本台帳カードのイラスト", "基本"))
+        self.assertFalse(is_canonical_illustration_title("たんぱく質のイラスト", "質"))
+        self.assertFalse(is_canonical_illustration_title("一般市民のイラスト", "一般"))
+        self.assertFalse(is_canonical_illustration_title("画面共有のイラスト", "共有"))
+        self.assertFalse(is_canonical_illustration_title("犬のイラスト", "猫"))
+        self.assertFalse(is_canonical_illustration_title(None, "犬"))
+        self.assertFalse(is_canonical_illustration_title("犬のイラスト", ""))
+
+    def test_load_jpdb_candidates_non_tier1_queues_situational_matches(self) -> None:
+        """Verify load_jpdb_candidates in non-tier1 mode queues terms lacking canonical titles or matching only text callouts."""
+        tsv_path = os.path.join(self.temp_dir.name, "jpdb_sample.tsv")
+        with open(tsv_path, "w", encoding="utf-8") as f:
+            f.write("term\treading\tfrequency\n")
+            f.write("卒業\tそつぎょう\t100\n")
+            f.write("犬\tいぬ\t200\n")
+            f.write("敬称\tけいしょう\t300\n")
+
+        with patch("scripts.synonyms.yomitan_jpdb._fetch_yomitan_term_entries") as mock_yomitan:
+            mock_yomitan.return_value = (
+                [
+                    {
+                        "headwords": [{"term": "卒業", "reading": "そつぎょう"}],
+                        "glossary": ["graduation"],
+                        "frequencies": [],
+                        "tags": ["v5u"],
+                    }
+                ],
+                "ok",
+            )
+            cands, deferred = load_jpdb_candidates(
+                catalog_path=self.db_path,
+                jpdb_path=tsv_path,
+                mode="non-tier1",
+                limit=10,
+                cache_dir=os.path.join(self.temp_dir.name, "cache"),
+            )
+
+        queued_terms = [c["term"] for c in cands]
+        # "卒業" only matched situational compound "卒業するアイドルのイラスト", so it MUST be queued
+        self.assertIn("卒業", queued_terms)
+        # "敬称" only matched text callout asset "いろいろな敬称のイラスト文字", so it MUST be queued
+        self.assertIn("敬称", queued_terms)
+        # "犬" has direct canonical title "犬のイラスト", so it MUST be skipped
+        self.assertNotIn("犬", queued_terms)
+
+    def test_run_ollama_compile_filters_irasutoyamoji_and_separates_unverified(self) -> None:
+        """Verify run_ollama_compile purges 'イラスト文字' for non-font terms and isolates unverified entries."""
+        llm_out = os.path.join(self.temp_dir.name, "compiled_concepts.json")
+        prev_data = {
+            "concepts": {
+                "文字": ["いろいろな敬称のイラスト文字"],  # valid because "文字" is in term
+            },
+            "tier2_concepts": {
+                "さま": ["いろいろな敬称のイラスト文字"],  # purged because "イラスト文字" target disallowed for non-font terms
+            },
+            "rejected": {
+                "基本": "抽象概念のため直接的な視覚化は困難",
+                "犬": "unverified in catalog: proposed targets ['犬のマーク']",
+            },
+        }
+        with open(llm_out, "w", encoding="utf-8") as f:
+            json.dump(prev_data, f)
+
+        mock_resp = {
+            "message": {
+                "role": "assistant",
+                "content": json.dumps({
+                    "reason": "unverified candidate",
+                    "visualizable": True,
+                    "targets": ["いろいろな敬称のイラスト文字", "存在しないイラスト"],
+                }),
+            }
+        }
+        with (
+            patch("scripts.synonyms.common._KeepAliveJSONClient.post_json", return_value=mock_resp),
+            patch("scripts.synonyms.ollama_agent.check_ollama_availability", return_value=(True, None)),
+            patch("scripts.synonyms.ollama_agent._fetch_yomitan_term_entries", return_value=([], "ok")),
+        ):
+            ok = run_ollama_compile(
+                catalog_path=self.db_path,
+                llm_out_path=llm_out,
+                terms=["新しい単語"],
+                no_embed=True,
+            )
+            self.assertTrue(ok)
+
+        with open(llm_out, "r", encoding="utf-8") as f:
+            final_data = json.load(f)
+
+        # "文字" retained because it denotes text/font
+        self.assertIn("文字", final_data["concepts"])
+        # "さま" purged from tier2_concepts because "イラスト文字" is disallowed for non-font terms
+        self.assertNotIn("さま", final_data["tier2_concepts"])
+        self.assertIn("さま", final_data.get("stale", {}))
+
+        # Legacy unverified string must be moved from rejected to unverified
+        self.assertIn("基本", final_data["rejected"])
+        self.assertNotIn("犬", final_data["rejected"])
+        self.assertIn("犬", final_data["unverified"])
+        self.assertIn("新しい単語", final_data["unverified"])
+
+    def test_populate_llm_concepts_positive_key_collision(self) -> None:
+        """Verify populate_llm_concepts skips rejected keys already present in accepted concepts, including cross-width."""
+        json_path = os.path.join(self.temp_dir.name, "collision_concepts.json")
+        data = {
+            "concepts": {"猫": ["可愛い猫"], "CD": ["可愛い猫"]},
+            "rejected": {
+                "猫": "すでに概念が存在する",
+                "ｃｄ": "すでに概念が存在する",  # full-width cross-width collision with "CD"
+                "犬": 12345,  # non-string reason must be safely ignored
+                "基本": "抽象概念",
+            },
+        }
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
+        ok = populate_llm_concepts(self.db_path, json_path)
+        self.assertTrue(ok)
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT term, target, source FROM synonyms WHERE source = 'llm_rejected' ORDER BY term")
+            rows = cur.fetchall()
+            # "猫" must NOT be in llm_rejected because it is an accepted positive concept
+            # "ｃｄ" must NOT be in llm_rejected because it collides with "CD" after normalization
+            # "犬" must NOT be in llm_rejected because its reason was not a string
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0], ("基本", "抽象概念", "llm_rejected"))
+        finally:
+            conn.close()
+
+    def test_populate_llm_concepts_empty_concepts_with_mappings_collision(self) -> None:
+        """Verify populate_llm_concepts falls back to mappings when concepts is empty for collision filtering."""
+        json_path = os.path.join(self.temp_dir.name, "mappings_collision.json")
+        data = {
+            "concepts": {},
+            "mappings": {"猫": ["可愛い猫"]},
+            "rejected": {
+                "猫": "すでに概念が存在する",
+                "基本": "抽象概念",
+            },
+        }
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
+        ok = populate_llm_concepts(self.db_path, json_path)
+        self.assertTrue(ok)
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT term, target, source FROM synonyms WHERE source = 'llm_rejected' ORDER BY term")
+            rows = cur.fetchall()
+            # "猫" must NOT be in llm_rejected because it is an accepted positive concept via mappings
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0], ("基本", "抽象概念", "llm_rejected"))
+        finally:
+            conn.close()
+
+    def test_populate_llm_concepts_invalid_target_in_non_strict_preserves_rejection(self) -> None:
+        """Verify discarded invalid concepts in non-strict mode do not suppress semantic rejection."""
+        json_path = os.path.join(self.temp_dir.name, "non_strict_discard.json")
+        # 19 valid concepts, 1 invalid target for "犬", and a rejection reason for "犬"
+        concepts = {f"word{i}": ["可愛い猫"] for i in range(19)}
+        concepts["犬"] = ["存在しない架空のイラスト"]
+        data = {
+            "concepts": concepts,
+            "rejected": {
+                "犬": "直接視覚化不可",
+            },
+        }
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
+        ok = populate_llm_concepts(self.db_path, json_path, min_matched=10, strict=False)
+        self.assertTrue(ok)
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cur = conn.cursor()
+            # "犬" was discarded from llm_concept because its target failed validation
+            cur.execute("SELECT count(*) FROM synonyms WHERE term = '犬' AND source = 'llm_concept'")
+            self.assertEqual(cur.fetchone()[0], 0)
+            # "犬" MUST be preserved in llm_rejected
+            cur.execute("SELECT target FROM synonyms WHERE term = '犬' AND source = 'llm_rejected'")
+            row = cur.fetchone()
+            self.assertIsNotNone(row)
+            self.assertEqual(row[0], "直接視覚化不可")
+        finally:
+            conn.close()
+
+    def test_is_disallowed_text_callout_target_boundaries(self) -> None:
+        """Verify text-callout target detection distinguishes font/text terms from coincidental substrings."""
+        self.assertFalse(is_text_asset_term("プロゴルファー"))
+        self.assertTrue(is_text_asset_term("文字"))
+        self.assertTrue(is_text_asset_term("フォント"))
+        self.assertTrue(is_text_asset_term("ロゴマーク"))
+
+        # Incidental substring "ロゴ" within "プロゴルファー" must be disallowed
+        self.assertTrue(is_disallowed_text_callout_target("プロゴルファーのイラスト文字", "プロゴルファー"))
+        self.assertTrue(is_disallowed_text_callout_target("敬称のイラスト文字", "さま"))
+        self.assertTrue(is_disallowed_text_callout_target("敬称のイラスト文字", "敬称"))
+
+        # Legitimate font, text, or logo terms must be allowed
+        self.assertFalse(is_disallowed_text_callout_target("いろいろな文字のイラスト文字", "文字"))
+        self.assertFalse(is_disallowed_text_callout_target("絵文字のイラスト文字", "絵文字"))
+        self.assertFalse(is_disallowed_text_callout_target("手書きフォントのイラスト文字", "フォント"))
+        self.assertFalse(is_disallowed_text_callout_target("ロゴマークのイラスト文字", "ロゴマーク"))
+        self.assertFalse(is_disallowed_text_callout_target("ロゴのイラスト文字", "ロゴ"))
+
+        # Assets without "イラスト文字" must never be disallowed
+        self.assertFalse(is_disallowed_text_callout_target("可愛い猫のイラスト", "猫"))
+
+    def test_is_canonical_illustration_title_polite_parentheses_and_lexical(self) -> None:
+        """Verify canonical title matcher handles polite prefixes, parentheses variants, and lexical words."""
+        # Polite-prefix matching with ASCII and full-width opening parentheses
+        self.assertTrue(is_canonical_illustration_title("お茶(緑茶)", "茶"))
+        self.assertTrue(is_canonical_illustration_title("お茶（緑茶）", "茶"))
+        self.assertTrue(is_canonical_illustration_title("お茶のイラスト", "茶"))
+
+        # Reverse direction: query has polite prefix, title has bare word before parenthetical
+        self.assertTrue(is_canonical_illustration_title("茶（緑茶）", "お茶"))
+        self.assertTrue(is_canonical_illustration_title("茶(緑茶)", "お茶"))
+
+        # Lexical words with お/ご where prefix is not a removable polite prefix (e.g. お玉 != 玉)
+        self.assertFalse(is_canonical_illustration_title("お玉のイラスト", "玉"))
+        self.assertFalse(is_canonical_illustration_title("お玉", "玉"))
+        self.assertFalse(is_canonical_illustration_title("お玉（調理器具）", "玉"))
+        self.assertTrue(is_canonical_illustration_title("玉のイラスト", "玉"))
+
+    def test_populate_concept_json_mapping_rejects_irasutoyamoji_target(self) -> None:
+        """Verify populate_llm_concepts rejects text callout banners in import validation."""
+        json_path = os.path.join(self.temp_dir.name, "bad_callout_concepts.json")
+        data = {
+            "tier2_concepts": {
+                "さま": ["いろいろな敬称のイラスト文字"],
+            },
+        }
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
+        # In strict mode, an invalid target must fail the validation pass
+        ok = populate_llm_concepts(self.db_path, json_path, strict=True)
+        self.assertFalse(ok)
+
+    def test_run_ollama_compile_persists_dropped_target_when_early_exit(self) -> None:
+        """Verify run_ollama_compile flushes updated JSON on early exit when a target was dropped from a term."""
+        llm_out = os.path.join(self.temp_dir.name, "dropped_target_concepts.json")
+        prev_data = {
+            "concepts": {
+                "さま": ["いろいろな敬称のイラスト文字", "可愛い猫"],
+            },
+        }
+        with open(llm_out, "w", encoding="utf-8") as f:
+            json.dump(prev_data, f)
+
+        mock_jpdb_path = os.path.join(self.temp_dir.name, "fake_jpdb.csv")
+        with open(mock_jpdb_path, "w", encoding="utf-8") as f:
+            f.write("term\treading\tfreq\n")
+
+        # Mock Ollama availability probe and candidate loader to test the empty candidates early exit
+        with (
+            patch("scripts.synonyms.ollama_agent.check_ollama_availability", return_value=(True, None)),
+            patch("scripts.synonyms.ollama_agent.load_jpdb_candidates", return_value=([], 0)),
+        ):
+            ok = run_ollama_compile(
+                catalog_path=self.db_path,
+                jpdb_path=mock_jpdb_path,
+                llm_out_path=llm_out,
+                cache_dir=os.path.join(self.temp_dir.name, "cache"),
+                terms=None,
+                no_embed=True,
+            )
+            self.assertTrue(ok)
+
+        with open(llm_out, "r", encoding="utf-8") as f:
+            updated_data = json.load(f)
+
+        # The forbidden callout target must have been dropped and the valid target kept
+        self.assertEqual(updated_data["concepts"]["さま"], ["可愛い猫"])
 
 
 if __name__ == "__main__":
