@@ -264,3 +264,5 @@ STATUS_MUTED_STYLE: str = "color: #98989D; font-size: 12px;"
 STATUS_ERROR_STYLE: str = "color: #FF453A; font-size: 12px;"
 STATUS_ACTIVE_STYLE: str = "color: palette(text); font-size: 12px; font-weight: 500;"
 STATUS_INFO_BLUE_STYLE: str = "color: #0A84FF; font-size: 12px; font-weight: 500;"
+STATUS_INFO_AMBER_STYLE: str = "color: #FF9F0A; font-size: 12px; font-weight: 500;"
+STATUS_INFO_STYLE: str = STATUS_INFO_AMBER_STYLE

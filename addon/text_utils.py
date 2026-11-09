@@ -42,12 +42,28 @@ NOTE_FURIGANA_FIELDS = (
     "VocabFurigana",
 )
 
+PRIMARY_COMPOUND_REASON: str = "primary_compound"
+
 # Prefixes of candidate reason labels representing phonetic readings (risk of homophone collision)
 PHONETIC_REASON_PREFIXES: Tuple[str, ...] = (
     "note_reading",
     "note_furigana",
     "same_field_reading",
     "yomitan_uk",
+)
+
+# Prefixes of candidate reasons evaluated late in Group 4 (after deferred compound primary matches)
+LATE_FALLBACK_REASON_PREFIXES: Tuple[str, ...] = (
+    "verb_stem",
+    "yomitan_sense_kanji",
+    "sudachi_synonym",
+    "bilingual_gloss",
+    "yomitan_see_reference",
+    "note_reading",
+    "note_furigana",
+    "same_field_reading",
+    "katakana_chouon",
+    "deinflected_base_speculative",
 )
 
 KANJI_RE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf々〆〇]")
@@ -664,18 +680,22 @@ def generate_search_candidates(
     llm_lookup: Optional[Callable[[str], List[str]]] = None,
     bilingual_lookup: Optional[Callable[[Any, Optional[Any]], List[str]]] = None,
     llm_tier2_lookup: Optional[Callable[[str], List[str]]] = None,
+    allow_bilingual: bool = True,
 ) -> List[Tuple[str, str, int]]:
     """Generate prioritized search candidate queries with confidence tiers.
     
     Tiers:
-        Tier 1 (Safe Lexical & Morphological): Zero homophone risk. Always automatic in both Batch & UI.
-                       (NFKC, Kanji numerals, Bikago prefixes, compound verb reductions, verb past/volitional forms, loanword Katakana,
-                        direct verified LLM concept matches, Yomitan uk orthography kana readings, formsTable ★ canonical kanji variants).
-        Tier 2 (Phonetic & Reading Fallbacks): Readings from separate note fields,
-                       same-field furigana, verb masu-stems, Katakana chōonpu expansion, heuristic compound deinflection,
-                       Yomitan sense-specific kanji (esp.), Yomitan cross-references (see:),
-                       curated visual concept maps, Kaishi 1.5k concept bridges, SudachiDict synonym bridges,
-                       LLM visual exemplars / prototypical scenes, bilingual English definition gloss bridges.
+        Tier 1 (Safe Lexical, Curated Concept & Orthographic): Zero homophone risk. Always automatic in both Batch & UI.
+                       (Curated concept maps, Kaishi concept bridges, direct verified LLM concepts, NFKC, Kanji numerals,
+                        Yomitan formsTable ★ canonical kanji variants, Yomitan uk orthography kana readings,
+                        Yomitan forms with kanji, Bikago prefixes, verb stative/past/volitional inflections, loanword Katakana).
+        Tier 2 (Semantic Exemplars, Morphological Stems & Phonetic Fallbacks):
+                       Group 3: LLM visual exemplars / prototypical scenes, primary heuristic deinflection stem,
+                                derived concepts on deinflected base, honorific affix stem, derived concepts on affix stems.
+                       Group 4: Deferred primary compound title matches, verb masu-stems, Yomitan sense-specific kanji (esp.),
+                                SudachiDict synonym bridges, bilingual English definition gloss bridges,
+                                Yomitan cross-references (see:), dedicated note reading/furigana fields, same-field furigana,
+                                Katakana chōonpu expansion, speculative alternative deinflections.
     
     Args:
         raw_source: Raw text or HTML from the source field.
@@ -689,6 +709,7 @@ def generate_search_candidates(
         llm_lookup: Optional callable mapping a headword to a list of LLM-curated direct visual concept target strings (Tier 1).
         llm_tier2_lookup: Optional callable mapping a headword to a list of LLM Tier 2 visual exemplar target strings.
         bilingual_lookup: Optional callable mapping a note and optional Yomitan metadata to bilingual concept target strings.
+        allow_bilingual: Whether to include bilingual definition gloss bridge candidates in Group 4.
 
     Returns:
         List of (candidate_query, reason_label, confidence_tier).
@@ -709,15 +730,66 @@ def generate_search_candidates(
 
     yomitan_meta = extract_yomitan_metadata_from_note(note) if note is not None else None
 
-    # 1. Primary source field
     surface, same_field_reading = extract_furigana_terms(raw_source)
-    add(surface, "primary", 1)
+    cleaned_primary = clean_search_query(surface)
 
-    # If surface is a pure grammar function word, suppress unanchored phonetic/reading fallbacks
-    if not surface or is_grammar_function_word(surface) or (yomitan_meta and yomitan_meta.is_particle_or_aux):
+    # If surface is empty or a pure grammar function word, suppress unanchored fallbacks
+    if not surface or not cleaned_primary or is_grammar_function_word(surface) or (yomitan_meta and yomitan_meta.is_particle_or_aux):
+        add(surface, "primary", 1)
         return candidates
 
-    # 2. Tier 1 Safe Lexical & Morphological Expansions on primary term
+    def _lookup_concept_map_fn(term: str) -> List[str]:
+        """Look up manual concept map targets via injected callable or store."""
+        if concept_lookup is not None:
+            return concept_lookup(term)
+        if store is not None:
+            return lookup_concept_map(term, store=store)
+        return lookup_concept_map(term)
+
+    def _lookup_kaishi_fn(term: str) -> List[str]:
+        """Look up Kaishi concept targets via injected callable or store."""
+        if kaishi_lookup is not None:
+            return kaishi_lookup(term)
+        if store is not None:
+            return lookup_kaishi_concept(term, store=store)
+        return lookup_kaishi_concept(term)
+
+    def _lookup_llm_t1_fn(term: str) -> List[str]:
+        """Look up LLM Tier 1 direct concept targets via injected callable or store."""
+        if llm_lookup is not None:
+            return llm_lookup(term)
+        if store is not None:
+            return lookup_llm_concept(term, store=store)
+        return lookup_llm_concept(term)
+
+    def _lookup_llm_t2_fn(term: str) -> List[str]:
+        """Look up LLM Tier 2 visual exemplar targets via injected callable or store."""
+        if llm_tier2_lookup is not None:
+            return llm_tier2_lookup(term)
+        if store is not None:
+            return lookup_llm_concept_tier2(term, store=store)
+        return lookup_llm_concept_tier2(term)
+
+    # -------------------------------------------------------------------------
+    # Group 1 (Tier 1): Surface Curated Concepts (precede primary)
+    # -------------------------------------------------------------------------
+    for c_target in _lookup_concept_map_fn(surface):
+        if clean_search_query(c_target) != cleaned_primary:
+            add(c_target, "concept_map", 1)
+
+    for k_target in _lookup_kaishi_fn(surface):
+        if clean_search_query(k_target) != cleaned_primary:
+            add(k_target, "kaishi_concept", 1)
+
+    for l_target in _lookup_llm_t1_fn(surface):
+        if clean_search_query(l_target) != cleaned_primary:
+            add(l_target, "llm_concept", 1)
+
+    # -------------------------------------------------------------------------
+    # Group 2 (Tier 1): Direct Surface & Safe Orthographic Variants
+    # -------------------------------------------------------------------------
+    add(surface, "primary", 1)
+
     # Kanji numerals (e.g. 1杯 -> 一杯, 2人 -> 二人)
     kanji_num = convert_to_kanji_numerals(surface)
     if kanji_num:
@@ -773,37 +845,54 @@ def generate_search_candidates(
     ):
         add(to_katakana(surface), "loanword_katakana", 1)
 
-    # Tier 1 direct LLM-curated visual concept mapping on primary surface (e.g. 新札 -> 新紙幣, 傷薬 -> 軟膏)
-    def _lookup_llm_t1(term: str) -> List[str]:
-        """Query injected Tier 1 LLM lookup callable or catalog store."""
-        if llm_lookup is not None:
-            return llm_lookup(term)
-        if store is not None:
-            return lookup_llm_concept(term, store=store)
-        return lookup_llm_concept(term)
-
-    for l_target in _lookup_llm_t1(surface):
-        add(l_target, "llm_concept", 1)
-
-    # 3. Tier 2 Semantic & Phonetic Fallbacks (Validated Deinflection, Masu-Stems, Sense Kanji, Cross-References, Note Fields, Readings, Elongation, Speculative Deinflection)
+    # -------------------------------------------------------------------------
+    # Tier 2 Fallbacks (Groups 3 and 4)
+    # -------------------------------------------------------------------------
     if allow_tier2:
+        # ---------------------------------------------------------------------
+        # Group 3 (Tier 2): Semantic Exemplars & Morphological Stems
+        # ---------------------------------------------------------------------
+        # LLM-curated Tier 2 visual exemplars, prototypical scenes, and pronouns on surface
+        for l2_target in _lookup_llm_t2_fn(surface):
+            add(l2_target, "llm_concept_tier2", 2)
+
+        # Primary validated deinflection from surface (e.g. 帰ってくる -> 帰る, 走っている -> 走る)
         deinflections = deinflect_japanese(surface) if allow_deinflection else []
-        # Primary validated deinflection from surface (e.g. 帰ってくる -> 帰る, 走っている -> 走る, 待っている -> 待つ)
-        # Surface-derived base preserves Kanji stem with zero homophone risk; rank before phonetic readings
         if deinflections:
-            add(deinflections[0], "deinflected_base", 2)
+            d_base = deinflections[0]
+            add(d_base, "deinflected_base", 2)
+            for c_tgt in _lookup_concept_map_fn(d_base):
+                add(c_tgt, "concept_map", 2)
+            for k_tgt in _lookup_kaishi_fn(d_base):
+                add(k_tgt, "kaishi_concept", 2)
+            for l_tgt in _lookup_llm_t1_fn(d_base):
+                add(l_tgt, "llm_concept", 2)
+            for l2_tgt in _lookup_llm_t2_fn(d_base):
+                add(l2_tgt, "llm_concept_tier2", 2)
 
-        # Masu-stems (e.g. 控え, 疲れ, 勝ち, 売り, 休み) preserve Kanji semantic stem;
-        # rank ahead of phonetic kana readings to prevent homophone hijacking (e.g. 控える -> 控え matching 買い控え)
-        for inflected in verb_inflections:
-            if not inflected.endswith(("た", "だ", "う")):
-                add(inflected, "verb_stem", 2)
-
-        # Honorific and compound affix stripping (e.g. ご挨拶 -> 挨拶, 父上 -> 父, 息子さん -> 息子, 鑑識課 -> 鑑識, 花嫁姿 -> 花嫁)
-        # Preserves core lexical Kanji stem with zero homophone risk ahead of cross-references and phonetic readings
+        # Honorific and compound affix stripping (e.g. ご挨拶 -> 挨拶, 父上 -> 父, 鑑識課 -> 鑑識)
         affix_stems = strip_honorific_affixes(surface)
         for a_stem in affix_stems:
             add(a_stem, "honorific_affix", 2)
+            for c_tgt in _lookup_concept_map_fn(a_stem):
+                add(c_tgt, "concept_map", 2)
+            for k_tgt in _lookup_kaishi_fn(a_stem):
+                add(k_tgt, "kaishi_concept", 2)
+            for l_tgt in _lookup_llm_t1_fn(a_stem):
+                add(l_tgt, "llm_concept", 2)
+            for l2_tgt in _lookup_llm_t2_fn(a_stem):
+                add(l2_tgt, "llm_concept_tier2", 2)
+
+        # ---------------------------------------------------------------------
+        # Group 4 (Tier 2): Late Lexical & Phonetic Fallbacks
+        # Note: Deferred primary compound title matches are resolved by
+        # search_with_fallbacks() immediately before candidates matching
+        # LATE_FALLBACK_REASON_PREFIXES.
+        # ---------------------------------------------------------------------
+        # Masu-stems (e.g. 控え, 疲れ, 勝ち, 売り, 休み)
+        for inflected in verb_inflections:
+            if not inflected.endswith(("た", "だ", "う")):
+                add(inflected, "verb_stem", 2)
 
         # Yomitan sense-specific Kanji splits from notes (e.g. 止める -> esp. 停める, 留める)
         if yomitan_meta and yomitan_meta.sense_kanji:
@@ -820,6 +909,28 @@ def generate_search_candidates(
                     if added_sense >= 3:
                         break
 
+        # Sudachi synonym dictionary lookup (e.g. 就寝 -> 寝る, 購入 -> 買う, 飲料 -> 飲み物)
+        def _lookup_sudachi_fn(term: str) -> List[str]:
+            """Look up Sudachi synonyms via injected callable or store."""
+            if sudachi_lookup is not None:
+                return sudachi_lookup(term)
+            if store is not None:
+                return lookup_sudachi_synonyms(term, store=store)
+            return lookup_sudachi_synonyms(term)
+
+        for stem in [surface] + (deinflections[:1] if deinflections else []) + list(affix_stems):
+            for s_target in _lookup_sudachi_fn(stem):
+                add(s_target, "sudachi_synonym", 2)
+
+        # Bilingual definition keyword fallback (English gloss to Irasutoya topic noun bridge)
+        if allow_bilingual and note is not None:
+            if bilingual_lookup:
+                b_targets = bilingual_lookup(note, yomitan_meta)
+            else:
+                b_targets = lookup_bilingual_glosses(note, yomitan_meta=yomitan_meta, store=store)
+            for b_target in b_targets[:3]:
+                add(b_target, "bilingual_gloss", 2)
+
         # Yomitan 'see:' cross-references (e.g. 気づく -> 気がつく, 総理 -> 内閣総理大臣, 軽 -> 軽自動車)
         if yomitan_meta and yomitan_meta.references:
             added_refs = 0
@@ -835,36 +946,6 @@ def generate_search_candidates(
                     if added_refs >= 3:
                         break
 
-        # Curated visual concept map targets (e.g. 亡くなる -> お葬式, 墓; 手に入れる -> 獲得, 宝箱)
-        def _resolve_source_targets(
-            injected_lookup: Optional[Callable[[str], List[str]]],
-            default_lookup_fn: Callable[..., List[str]],
-        ) -> List[str]:
-            """Resolve concept map targets with surface-then-deinflection fallback."""
-            def _lookup(term: str) -> List[str]:
-                """Query injected lookup or default catalog store function."""
-                if injected_lookup is not None:
-                    return injected_lookup(term)
-                if store is not None:
-                    return default_lookup_fn(term, store=store)
-                return default_lookup_fn(term)
-
-            targets = _lookup(surface)
-            if not targets and deinflections:
-                targets = _lookup(deinflections[0])
-            if not targets and affix_stems:
-                for a_s in affix_stems:
-                    targets = _lookup(a_s)
-                    if targets:
-                        break
-            return targets
-
-        for c_target in _resolve_source_targets(concept_lookup, lookup_concept_map):
-            add(c_target, "concept_map", 2)
-
-        for k_target in _resolve_source_targets(kaishi_lookup, lookup_kaishi_concept):
-            add(k_target, "kaishi_concept", 2)
-
         # Check dedicated reading and furigana fields on the note (authoritative dictionary readings)
         for f_name, f_type, cleaned_read in _iter_note_readings(note):
             prefix = f"note_{f_type}_{f_name}"
@@ -872,29 +953,11 @@ def generate_search_candidates(
             if not _should_suppress_katakana_conversion(cleaned_read, yomitan_meta):
                 add(to_katakana(cleaned_read), f"{prefix}_katakana", 2)
 
-        # Same-field reading extracted from furigana brackets (e.g. 檸檬[れもん] -> れもん, 本[ほん] -> ほん)
-        # Suppress single kana and grammar function words to avoid homophone collisions
+        # Same-field reading extracted from furigana brackets (e.g. 檸檬[れもん] -> れもん)
         if same_field_reading and not is_grammar_function_word(same_field_reading):
             add(same_field_reading, "same_field_reading", 2)
             if not _should_suppress_katakana_conversion(same_field_reading, yomitan_meta):
                 add(to_katakana(same_field_reading), "same_field_reading_katakana", 2)
-
-        # Sudachi synonym dictionary lookup (e.g. 就寝 -> 寝る, 購入 -> 買う, 飲料 -> 飲み物)
-        for s_target in _resolve_source_targets(sudachi_lookup, lookup_sudachi_synonyms):
-            add(s_target, "sudachi_synonym", 2)
-
-        # LLM-curated visual concept mapping for deinflections/affixes (Tier 2 fallback)
-        if deinflections:
-            for l_target in _lookup_llm_t1(deinflections[0]):
-                add(l_target, "llm_concept", 2)
-        if affix_stems:
-            for a_s in affix_stems:
-                for l_target in _lookup_llm_t1(a_s):
-                    add(l_target, "llm_concept", 2)
-
-        # LLM-curated Tier 2 visual exemplars, prototypical scenes, and pronouns (e.g. 広い -> 広い野原, 心の中 -> 悩む人のイラスト)
-        for l2_target in _resolve_source_targets(llm_tier2_lookup, lookup_llm_concept_tier2):
-            add(l2_target, "llm_concept_tier2", 2)
 
         # Katakana elongation mark expansion (メンバ -> メンバー, サーバ -> サーバー)
         for chouon_variant in expand_katakana_chouon(surface):
@@ -904,15 +967,6 @@ def generate_search_candidates(
         if len(deinflections) > 1:
             for alt in deinflections[1:]:
                 add(alt, "deinflected_base_speculative", 2)
-
-        # Bilingual definition keyword fallback (English gloss to Irasutoya topic noun bridge)
-        if note is not None:
-            if bilingual_lookup:
-                b_targets = bilingual_lookup(note, yomitan_meta)
-            else:
-                b_targets = lookup_bilingual_glosses(note, yomitan_meta=yomitan_meta, store=store)
-            for b_target in b_targets[:3]:
-                add(b_target, "bilingual_gloss", 2)
 
     return candidates
 

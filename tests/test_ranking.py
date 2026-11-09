@@ -8,12 +8,14 @@ from addon.ranking import (
     _is_byproduct_modifier_title,
     calculate_category_score,
     classify_match_boundary,
+    has_standalone_title_match,
     has_title_illustration_match,
     infer_note_pos_type,
     infer_pos_type,
     is_callout_asset,
     is_decorative_asset,
     is_image_relevant,
+    is_standalone_title_match,
     is_title_match,
     rank_relevant_images,
     score_candidate_image,
@@ -860,10 +862,8 @@ class TestRanking(unittest.TestCase):
 
         # 禁止マーク must score far above compound situational prohibitions
         self.assertGreater(score_mark, 100.0)
-        self.assertLess(score_kururi, 0.0)
-        self.assertLess(score_poisute, 0.0)
-        self.assertGreater(score_mark, score_kururi)
-        self.assertGreater(score_mark, score_poisute)
+        self.assertGreater(score_mark, score_kururi + 50.0)
+        self.assertGreater(score_mark, score_poisute + 50.0)
 
         # Abstract nouns like 禁止 must not receive object archetype boosts (e.g. 食材)
         cat_score_kururi = calculate_category_score(img_kururi.categories, "禁止", pos_type="noun")
@@ -1269,6 +1269,92 @@ class TestRanking(unittest.TestCase):
             is_single_image_post=True,
         )
         self.assertFalse(is_image_relevant(img_salary, "私"))
+
+    def test_standalone_title_match(self) -> None:
+        """Verify is_standalone_title_match and has_standalone_title_match distinguish standalone titles from compounds."""
+        standalone_img = IrasutoyaImage(
+            title="音楽のイラスト",
+            image_url="https://example.com/music.png",
+            thumb_url="https://example.com/t.png",
+            post_title="音楽のイラスト",
+        )
+        compound_img = IrasutoyaImage(
+            title="音楽室のイラスト",
+            image_url="https://example.com/room.png",
+            thumb_url="https://example.com/t.png",
+            post_title="音楽室のイラスト",
+        )
+        decorative_img = IrasutoyaImage(
+            title="音楽のフレームのイラスト",
+            image_url="https://example.com/f.png",
+            thumb_url="https://example.com/t.png",
+            post_title="音楽のフレームのイラスト",
+        )
+
+        self.assertTrue(is_standalone_title_match(standalone_img, "音楽"))
+        self.assertFalse(is_standalone_title_match(compound_img, "音楽"))
+        self.assertFalse(is_standalone_title_match(decorative_img, "音楽"))
+
+        self.assertTrue(has_standalone_title_match([compound_img, standalone_img], "音楽"))
+        self.assertFalse(has_standalone_title_match([compound_img], "音楽"))
+        self.assertFalse(has_standalone_title_match([], "音楽"))
+
+    def test_compound_title_scoring_beats_description_only(self) -> None:
+        """Verify valid compound title matches score +20.0 and rank above description-only matches (+15.0)."""
+        compound_img = IrasutoyaImage(
+            title="音楽室のイラスト",
+            image_url="https://example.com/room.png",
+            thumb_url="https://example.com/t.png",
+            post_title="音楽室のイラスト",
+        )
+        desc_img = IrasutoyaImage(
+            title="学校のイラスト",
+            image_url="https://example.com/school.png",
+            thumb_url="https://example.com/t.png",
+            post_title="学校のイラスト",
+            description="学校で音楽を演奏している様子です。",
+            is_single_image_post=True,
+        )
+
+        score_compound = score_candidate_image(compound_img, "音楽")
+        score_desc = score_candidate_image(desc_img, "音楽")
+
+        # Compound title match (+20.0) must beat description-only (+15.0)
+        self.assertGreater(score_compound, score_desc)
+
+    def test_single_kanji_invalid_compound_receives_penalty(self) -> None:
+        """Verify invalid compound on 1-kanji query (e.g. 猫背 for 猫) receives -35.0 penalty."""
+        invalid_compound_img = IrasutoyaImage(
+            title="猫背のイラスト",
+            image_url="https://example.com/nekoze.png",
+            thumb_url="https://example.com/t.png",
+            post_title="猫背のイラスト",
+        )
+        score = score_candidate_image(invalid_compound_img, "猫")
+        self.assertLess(score, 0.0)
+
+    def test_compound_headword_synonym_boost(self) -> None:
+        """Verify COMPOUND_HEADWORD_SYNONYMS receives +35.0 boost when title contains a valid synonym, and -35.0 otherwise."""
+        synonym_compound_img = IrasutoyaImage(
+            title="仮面舞踏会のマスクのイラスト",
+            image_url="https://example.com/mask.png",
+            thumb_url="https://example.com/t.png",
+            post_title="仮面舞踏会のマスクのイラスト",
+        )
+        non_synonym_compound_img = IrasutoyaImage(
+            title="仮面浪人のイラスト",
+            image_url="https://example.com/kamen.png",
+            thumb_url="https://example.com/t.png",
+            post_title="仮面浪人のイラスト",
+        )
+        # "仮面・マスク" has synonym "マスク" with standalone boundary -> receives +35.0
+        score_syn = score_candidate_image(synonym_compound_img, "仮面")
+        # "仮面浪人" does not match any synonym as standalone -> receives -35.0 penalty
+        score_non_syn = score_candidate_image(non_synonym_compound_img, "仮面")
+
+        self.assertGreater(score_syn, 20.0)
+        self.assertLess(score_non_syn, 0.0)
+        self.assertGreater(score_syn - score_non_syn, 60.0)
 
 
 if __name__ == "__main__":

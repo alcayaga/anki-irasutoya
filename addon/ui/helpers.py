@@ -86,8 +86,11 @@ def format_fallback_reason(
     query: str,
     probed_counts: Optional[Dict[str, int]] = None,
     probed_desc_matches: Optional[Set[str]] = None,
+    reason: Optional[str] = None,
 ) -> str:
     """Format explanation reason for why a fallback term is being displayed instead of the direct query."""
+    if reason == "primary_compound":
+        return f"Only compound title match for '{query}'"
     count = probed_counts.get(query) if probed_counts else None
     if count is None:
         return f"No direct title match for '{query}'"

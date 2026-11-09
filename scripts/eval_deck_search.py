@@ -30,6 +30,8 @@ from addon.catalog import default_store
 from addon.client import IrasutoyaClient
 from addon.feed import IrasutoyaImage, parse_entries
 from addon.ranking import (
+    has_standalone_title_match,
+    has_title_illustration_match,
     infer_pos_type,
     is_decorative_asset,
     is_image_relevant,
@@ -42,6 +44,9 @@ from addon.synonyms import (
     lookup_sudachi_synonyms,
 )
 from addon.text_utils import (
+    LATE_FALLBACK_REASON_PREFIXES,
+    PHONETIC_REASON_PREFIXES,
+    PRIMARY_COMPOUND_REASON,
     deinflect_japanese,
     extract_furigana_terms,
     generate_search_candidates,
@@ -125,8 +130,14 @@ class _LiveBloggerSearchClient:
         orderby: Optional[str] = "relevance"
     ) -> Tuple[List[IrasutoyaImage], Optional[Tuple[str, str, int]], Optional[IrasutoyaImage]]:
         """Perform sequential fallback candidate search against live Blogger feed."""
+        first_weak_fallback: Optional[Tuple[List[IrasutoyaImage], Tuple[str, str, int], IrasutoyaImage]] = None
+        deferred_primary_compound: Optional[Tuple[List[IrasutoyaImage], Tuple[str, str, int], IrasutoyaImage]] = None
+
         for cand in candidates:
             term, _reason, _tier = cand
+            if deferred_primary_compound is not None and _reason.startswith(LATE_FALLBACK_REASON_PREFIXES):
+                return deferred_primary_compound
+
             if pace_callback:
                 pace_callback()
             images = self.search(term, max_results=None, image_size=image_size, orderby=orderby)
@@ -142,7 +153,33 @@ class _LiveBloggerSearchClient:
             ranked = rank_relevant_images(valid_imgs, term, pos_type=cand_pos)
             if ranked:
                 best = ranked[0]
-                return (ranked[:max_results] if max_results else ranked), cand, best
+                has_title_match = has_title_illustration_match(valid_imgs, term)
+                if _reason == "primary" and has_title_match and not has_standalone_title_match(valid_imgs, term):
+                    if deferred_primary_compound is None:
+                        deferred_primary_compound = (
+                            (ranked[:max_results] if max_results else ranked),
+                            (term, PRIMARY_COMPOUND_REASON, 2),
+                            best,
+                        )
+                    continue
+
+                wins_now = (
+                    not _reason.startswith(PHONETIC_REASON_PREFIXES)
+                    or first_weak_fallback is None
+                ) and has_title_match
+
+                if not wins_now and first_weak_fallback is not None:
+                    continue
+
+                if wins_now:
+                    return (ranked[:max_results] if max_results else ranked), cand, best
+
+                first_weak_fallback = ((ranked[:max_results] if max_results else ranked), cand, best)
+
+        if deferred_primary_compound is not None:
+            return deferred_primary_compound
+        if first_weak_fallback is not None:
+            return first_weak_fallback
         return [], None, None
 
 

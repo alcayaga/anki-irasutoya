@@ -1,7 +1,7 @@
 """Boundary classification, relevance scoring, and archetype ranking for Irasutoya illustrations."""
 import logging
 import re
-from typing import Any, FrozenSet, List, Optional, Sequence
+from typing import Any, FrozenSet, List, Optional, Sequence, Tuple
 
 from .feed import IrasutoyaImage
 from .text_utils import (
@@ -811,14 +811,17 @@ def score_candidate_image(
     elif qual_title == "inflected":
         score += 30.0
     elif qual_title == "compound":
+        synonyms = COMPOUND_HEADWORD_SYNONYMS.get(clean_q, ())
         has_synonym = any(
             classify_match_boundary(title, syn) in ("exact_quoted", "standalone", "polite_prefix")
-            for syn in COMPOUND_HEADWORD_SYNONYMS.get(clean_q, ())
+            for syn in synonyms
         )
         if has_synonym:
             score += 35.0
-        else:
+        elif synonyms or not _is_valid_boundary_match(img, title, clean_q):
             score -= 35.0
+        else:
+            score += 20.0
     elif relevant:
         # Matched only via description on single-image post
         score += 15.0
@@ -942,6 +945,49 @@ def has_title_illustration_match(images: Sequence[IrasutoyaImage], query: str) -
         if is_title_match(img, clean_q):
             return True
     return False
+
+
+STANDALONE_MATCH_BOUNDARIES: Tuple[str, ...] = (
+    "exact_quoted",
+    "standalone",
+    "polite_prefix",
+    "inflected",
+)
+
+
+def is_standalone_title_match(img: IrasutoyaImage, query: str) -> bool:
+    """Return True if non-decorative image matches query in title or post_title with a standalone-class boundary."""
+    clean_q = query.strip()
+    if not clean_q:
+        return False
+    if is_decorative_asset(img, clean_q) or is_callout_asset(img, clean_q):
+        return False
+
+    title = getattr(img, "title", "").strip()
+    if classify_match_boundary(title, clean_q) in STANDALONE_MATCH_BOUNDARIES:
+        return True
+
+    post_title = getattr(img, "post_title", "").strip()
+    if post_title and classify_match_boundary(post_title, clean_q) in STANDALONE_MATCH_BOUNDARIES:
+        return True
+
+    tokens = clean_q.split()
+    if len(tokens) > 1 and all(
+        classify_match_boundary(title, t) in STANDALONE_MATCH_BOUNDARIES
+        or (post_title and classify_match_boundary(post_title, t) in STANDALONE_MATCH_BOUNDARIES)
+        for t in tokens
+    ):
+        return True
+
+    return False
+
+
+def has_standalone_title_match(images: Sequence[IrasutoyaImage], query: str) -> bool:
+    """Return True if images contain at least one non-decorative, non-callout illustration matching query as standalone title."""
+    clean_q = query.strip()
+    if not clean_q or not images:
+        return False
+    return any(is_standalone_title_match(img, clean_q) for img in images)
 
 
 def rank_relevant_images(

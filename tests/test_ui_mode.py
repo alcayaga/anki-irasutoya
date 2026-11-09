@@ -2,7 +2,7 @@ import os
 import threading
 import time
 import unittest
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from unittest.mock import MagicMock, patch
 
 from addon.feed import IrasutoyaImage
@@ -51,6 +51,8 @@ def _install_catalog_counts(dlg, counts_map, desc_terms=None):
     """Fixture helper to install mocked CatalogIndex counts on a dialog."""
     desc_set = set(desc_terms or [])
     mock_index = MagicMock()
+    mock_index.is_rejected.return_value = False
+    mock_index.get_rejection_reason.return_value = None
 
     def _search(q, **kw):
         count = counts_map.get(q, 0)
@@ -1527,6 +1529,169 @@ class TestUIMode(unittest.TestCase):
         mock_fut.cancel.assert_called_once()
         self.assertEqual(len(loader.pending_futures), 0)
         self.assertEqual(len(loader.pixmap_cache), 0)
+
+    def test_single_card_mode_llm_rejected_banner(self) -> None:
+        """Verify non-visual informational banner is shown in Single Card Mode for llm_rejected terms while search stays active."""
+        from addon.ui.styles import STATUS_INFO_AMBER_STYLE
+
+        mock_mw = MagicMock()
+        mock_note = {"Expression": "外見", "DefinitionPicture": ""}
+        mock_mw.col.get_note.return_value = mock_note
+
+        with patch("addon.ui.mw", mock_mw):
+            with patch("addon.ui.single_view.is_llm_rejected", return_value=True):
+                with patch("addon.ui.single_view.get_llm_rejection_reason", return_value="abstract grammatical concept"):
+                    dlg = IrasutoyaDialog(parent=None, browser=None, note_ids=[1001])
+                    self.addCleanup(dlg.close)
+
+                    # Initial input remains enabled and functional, and status label wraps long banners
+                    self.assertTrue(dlg.query_input.isEnabled())
+                    self.assertTrue(dlg.status_label.wordWrap())
+
+                    mock_img = IrasutoyaImage(
+                        title="目玉焼きクラゲのイラスト",
+                        image_url="https://example.com/jellyfish.png",
+                        thumb_url="https://example.com/jellyfish_t.png",
+                        post_title="目玉焼きクラゲのイラスト",
+                    )
+
+                    # 1. Search finished with results (description matches)
+                    dlg._on_search_finished(
+                        gen=dlg._search_generation,
+                        query="外見",
+                        display_chips=[("外見", "primary", 1), ("がいけん", "reading", 2), ("ガイケン", "katakana", 2)],
+                        matched_cand=("外見", "primary", 1),
+                        images=[mock_img],
+                        probed_counts={"外見": 1, "がいけん": 0, "ガイケン": 0},
+                        probed_desc_matches={"外見"},
+                    )
+
+                    self.assertIn("Non-visual concept", dlg.status_label.text())
+                    self.assertIn("abstract grammatical concept", dlg.status_label.text())
+                    self.assertIn("description matches below", dlg.status_label.text())
+                    self.assertEqual(dlg.status_label.styleSheet(), STATUS_INFO_AMBER_STYLE)
+
+                    # Dead chips (0 hits) are suppressed; only '外見' had hits and is active, so chips row hides
+                    self.assertTrue(dlg.chips_widget.isHidden())
+
+                    # 2. Search finished with alternative chip that has results
+                    dlg._on_search_finished(
+                        gen=dlg._search_generation,
+                        query="外見",
+                        display_chips=[("外見", "primary", 1), ("見た目", "synonym", 2)],
+                        matched_cand=("外見", "primary", 1),
+                        images=[mock_img],
+                        probed_counts={"外見": 1, "見た目": 4},
+                        probed_desc_matches={"外見"},
+                    )
+                    self.assertFalse(dlg.chips_widget.isHidden())
+
+                    # 3. Search finished with zero results
+                    dlg._on_search_finished(
+                        gen=dlg._search_generation,
+                        query="外見",
+                        display_chips=[("外見", "primary", 1)],
+                        matched_cand=None,
+                        images=[],
+                        probed_counts={"外見": 0},
+                    )
+
+                    self.assertIn("Non-visual concept", dlg.status_label.text())
+                    self.assertIn("No direct illustrations found", dlg.status_label.text())
+                    self.assertEqual(dlg.status_label.styleSheet(), STATUS_INFO_AMBER_STYLE)
+
+    def test_single_card_manual_selection_clears_status_tags(self) -> None:
+        """Verify committing an image in Single Card Mode strips all 4 taxonomy status tags."""
+        from addon.batch import (
+            TAG_APPROXIMATE,
+            TAG_NO_MATCH,
+            TAG_NON_VISUAL,
+            TAG_REVIEW,
+        )
+
+        class MockNote(dict):
+            """Mock dictionary note with tag management."""
+
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                """Initialize mock note with initial tags."""
+                super().__init__(*args, **kwargs)
+                self.id: int = 1001
+                self.tags: List[str] = [TAG_APPROXIMATE, TAG_NON_VISUAL, TAG_REVIEW, TAG_NO_MATCH, "keep_me"]
+
+            def remove_tag(self, tag: str) -> None:
+                """Remove a tag from the mock note if present."""
+                if tag in self.tags:
+                    self.tags.remove(tag)
+
+            def add_tag(self, tag: str) -> None:
+                """Add a tag to the mock note if not already present."""
+                if tag not in self.tags:
+                    self.tags.append(tag)
+
+        stale_note = MockNote({"Expression": "テスト", "DefinitionPicture": ""})
+        fresh_note = MockNote({"Expression": "テスト", "DefinitionPicture": ""})
+
+        mock_mw = MagicMock()
+        mock_mw.col.get_note.return_value = stale_note
+
+        with patch("addon.ui.mw", mock_mw), patch("addon.ui.single_view.showWarning"):
+            dlg = IrasutoyaDialog(parent=None, browser=None, note_ids=[1001])
+            self.addCleanup(dlg.close)
+
+            # Exercise commit logic through single-card apply
+            mock_card = MagicMock()
+            mock_card.image = IrasutoyaImage(
+                title="テストイラスト",
+                image_url="https://example.com/test.png",
+                thumb_url="https://example.com/test_t.png",
+                post_title="テストイラスト",
+            )
+            dlg.selected_card_widget = mock_card
+            dlg.client.download_image = MagicMock(return_value=b"fake_bytes")
+            dlg._run_on_main = lambda cb: cb()
+            dlg.isVisible = MagicMock(return_value=True)
+            dlg.combo_target.setCurrentText("DefinitionPicture")
+
+            captured_notes: List[Any] = []
+
+            class MockSingleQueryOp:
+                """Mock QueryOp executor for single card commit testing."""
+
+                def __init__(self, parent: Any, op: Callable[[Any], Any], success: Callable[[Any], None]) -> None:
+                    """Initialize mock op with callback."""
+                    self.op = op
+                    self.success = success
+
+                def with_progress(self, *args: Any, **kwargs: Any) -> "MockSingleQueryOp":
+                    """Mock with_progress returning self."""
+                    return self
+
+                def failure(self, cb: Any) -> "MockSingleQueryOp":
+                    """Mock failure callback registration returning self."""
+                    return self
+
+                def run_in_background(self) -> None:
+                    """Execute the commit operation synchronously."""
+                    col = MagicMock()
+                    col.get_note.return_value = fresh_note
+                    col.media.write_data.return_value = "stored_test.png"
+                    result = self.op(col)
+                    captured_notes.append(result)
+                    self.success(result)
+
+            with patch("aqt.operations.QueryOp", MockSingleQueryOp), \
+                 patch("aqt.operations.note.update_notes") as mock_update_notes, \
+                 patch("threading.Thread", _SyncThread):
+                dlg._apply_single_selection()
+
+            mock_update_notes.assert_called_once_with(parent=dlg.browser, notes=[fresh_note])
+            self.assertEqual(len(captured_notes), 1)
+            self.assertIs(captured_notes[0], fresh_note)
+            self.assertNotIn(TAG_APPROXIMATE, fresh_note.tags)
+            self.assertNotIn(TAG_NON_VISUAL, fresh_note.tags)
+            self.assertNotIn(TAG_REVIEW, fresh_note.tags)
+            self.assertNotIn(TAG_NO_MATCH, fresh_note.tags)
+            self.assertIn("keep_me", fresh_note.tags)
 
 
 if __name__ == "__main__":
