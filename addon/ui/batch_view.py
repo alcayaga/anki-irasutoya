@@ -16,7 +16,8 @@ from aqt.qt import (
 )
 from aqt.utils import showWarning
 
-from ..batch import run_batch_fill
+from ..batch import resolve_surface_term, run_batch_fill
+from ..synonyms import is_llm_rejected
 from ..text_utils import clean_search_query, generate_search_candidates
 from .helpers import _get_mw
 from .styles import (
@@ -156,21 +157,25 @@ class _BatchModeMixin:
                 try:
                     note = self._get_cached_note(nid)
                     if not note:
-                        eval_rows.append((None, False, False, "Unavailable", " (Failed to load)"))
+                        eval_rows.append((None, False, False, "Unavailable", " (Failed to load)", False))
                         continue
 
                     if not target_field or target_field not in note or not source_field or source_field not in note:
-                        eval_rows.append((None, False, False, "Missing Field", " (Missing Field)"))
+                        eval_rows.append((None, False, False, "Missing Field", " (Missing Field)", False))
                         continue
 
                     raw_src = note[source_field]
-                    candidates = generate_search_candidates(raw_src, note=note, allow_tier2=True)
+                    store = getattr(self.client, "catalog", None)
+                    candidates = generate_search_candidates(raw_src, note=note, allow_tier2=True, store=store)
                     has_target = bool(note[target_field].strip())
                     query = candidates[0][0] if candidates else (clean_search_query(raw_src) or "(Empty)")
                     target_status = "Has Content" if has_target else "Empty"
-                    eval_rows.append((query, bool(candidates), has_target, target_status, f" {query}"))
+                    surface_term = resolve_surface_term(candidates, raw_src)
+                    is_rejected = bool(surface_term and is_llm_rejected(surface_term, store=store))
+                    display_term = surface_term or query
+                    eval_rows.append((query, bool(candidates), has_target, target_status, f" {display_term}", is_rejected))
                 except Exception:
-                    eval_rows.append((None, False, False, "Unavailable", " (Error)"))
+                    eval_rows.append((None, False, False, "Unavailable", " (Error)", False))
             eval_cache[cache_key] = eval_rows
 
         # Calculate counts and precompute preview rows in a single pass
@@ -180,11 +185,15 @@ class _BatchModeMixin:
         max_preview = 30
         preview_rows: List[Tuple[str, str, str, str]] = []
 
-        for query, has_candidates, has_target, target_status, display_title in eval_rows:
+        for query, has_candidates, has_target, target_status, display_title, is_rejected in eval_rows:
             if not has_candidates:
                 count_skip += 1
                 action_text = "Will Skip"
                 color_hex = "#8E8E93"
+            elif is_rejected:
+                count_skip += 1
+                action_text = "Skip (non-visual)"
+                color_hex = "#FF9F0A"
             elif not has_target:
                 count_fill += 1
                 action_text = "Will Fill"

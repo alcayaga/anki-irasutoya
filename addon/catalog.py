@@ -15,6 +15,8 @@ from .feed import IrasutoyaImage, ParsedPost, to_thumbnail_url, upgrade_image_ur
 logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
+LLM_REJECTED_SOURCE: str = "llm_rejected"
+UNVERIFIED_REJECTION_PREFIX: str = "unverified in catalog"
 
 
 @dataclass(frozen=True)
@@ -129,7 +131,7 @@ class CatalogIndex:
             "wordnet_hypernym": 6,
         }
         for src in sorted(src_map, key=lambda s: (source_order.get(s, 99), s)):
-            if src == "llm_rejected":
+            if src == LLM_REJECTED_SOURCE:
                 continue
             for t in src_map[src]:
                 if t not in seen:
@@ -139,12 +141,8 @@ class CatalogIndex:
 
     def is_rejected(self, term: str) -> bool:
         """Return True if term was rejected by the LLM concept compiler as non-visual."""
-        if not term:
-            return False
-        clean = canonicalize_synonym_term(term)
-        if not clean or clean not in self._synonyms_by_term:
-            return False
-        return "llm_rejected" in self._synonyms_by_term[clean]
+        reason = self.get_rejection_reason(term)
+        return bool(reason and not reason.startswith(UNVERIFIED_REJECTION_PREFIX))
 
     def get_rejection_reason(self, term: str) -> Optional[str]:
         """Return the rejection reason string if term was rejected as non-visual, else None."""
@@ -153,7 +151,7 @@ class CatalogIndex:
         clean = canonicalize_synonym_term(term)
         if not clean or clean not in self._synonyms_by_term:
             return None
-        reasons = self._synonyms_by_term[clean].get("llm_rejected", ())
+        reasons = self._synonyms_by_term[clean].get(LLM_REJECTED_SOURCE, ())
         return reasons[0] if reasons else None
 
     def __len__(self) -> int:

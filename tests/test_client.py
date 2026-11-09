@@ -1019,6 +1019,87 @@ class TestIrasutoyaClient(unittest.TestCase):
             self.assertEqual(len(handler._pool), 0)
             self.assertTrue(conns_created[0].closed)
 
+    def test_search_with_fallbacks_standalone_primary_wins_immediately(self) -> None:
+        """Verify standalone title match on primary wins immediately without evaluating fallbacks."""
+        searched: List[str] = []
+        standalone_img = IrasutoyaImage("音楽のイラスト", "https://example.com/m.png", "t", "音楽")
+        exemplar_img = IrasutoyaImage("ギターのイラスト", "https://example.com/g.png", "t", "ギター")
+
+        def mock_search(term: str, **kwargs: Any) -> List[IrasutoyaImage]:
+            """Record search queries and return preset standalone or exemplar images."""
+            searched.append(term)
+            if term == "音楽":
+                return [standalone_img]
+            if term == "ギター":
+                return [exemplar_img]
+            return []
+
+        self.client.search = mock_search  # type: ignore[method-assign]
+        candidates = [
+            ("音楽", "primary", 1),
+            ("ギター", "llm_concept_tier2", 2),
+        ]
+        images, best_cand, best_img = self.client.search_with_fallbacks(candidates)
+
+        self.assertEqual(best_cand, ("音楽", "primary", 1))
+        self.assertEqual(images, [standalone_img])
+        self.assertEqual(best_img, standalone_img)
+        # Fallback candidate "ギター" should NOT be queried
+        self.assertEqual(searched, ["音楽"])
+
+    def test_search_with_fallbacks_compound_primary_deferred_and_beaten_by_group3_standalone(self) -> None:
+        """Verify compound-only title match on primary is deferred and beaten by a Group 3 standalone match."""
+        compound_img = IrasutoyaImage("音楽室のイラスト", "https://example.com/room.png", "t", "音楽室")
+        standalone_img = IrasutoyaImage("ギターを弾く人のイラスト", "https://example.com/g.png", "t", "ギター")
+
+        def mock_search(term: str, **kwargs: Any) -> List[IrasutoyaImage]:
+            """Return compound match for primary query and standalone match for exemplar fallback."""
+            if term == "音楽":
+                return [compound_img]
+            if term == "ギター":
+                return [standalone_img]
+            return []
+
+        self.client.search = mock_search  # type: ignore[method-assign]
+        candidates = [
+            ("音楽", "primary", 1),
+            ("ギター", "llm_concept_tier2", 2),
+            ("おんがく", "note_reading_Reading", 2),
+        ]
+        images, best_cand, best_img = self.client.search_with_fallbacks(candidates)
+
+        # Group 3 candidate "ギター" with standalone match beats deferred primary compound
+        self.assertEqual(best_cand, ("ギター", "llm_concept_tier2", 2))
+        self.assertEqual(best_img, standalone_img)
+
+    def test_search_with_fallbacks_compound_primary_returned_before_late_fallbacks(self) -> None:
+        """Verify deferred compound primary match is returned immediately before evaluating late fallbacks."""
+        searched: List[str] = []
+        compound_img = IrasutoyaImage("音楽室のイラスト", "https://example.com/room.png", "t", "音楽室")
+        reading_img = IrasutoyaImage("読書のイラスト", "https://example.com/r.png", "t", "読書")
+
+        def mock_search(term: str, **kwargs: Any) -> List[IrasutoyaImage]:
+            """Record search queries and return compound primary image and reading fallback image."""
+            searched.append(term)
+            if term == "音楽":
+                return [compound_img]
+            if term == "おんがく":
+                return [reading_img]
+            return []
+
+        self.client.search = mock_search  # type: ignore[method-assign]
+        candidates = [
+            ("音楽", "primary", 1),
+            ("おんがく", "note_reading_Reading", 2),
+        ]
+        images, best_cand, best_img = self.client.search_with_fallbacks(candidates)
+
+        # Deferred compound primary must be returned with PRIMARY_COMPOUND_REASON before late fallback
+        self.assertEqual(best_cand, ("音楽", "primary_compound", 2))
+        self.assertEqual(best_img, compound_img)
+        # Late fallback "おんがく" must NOT be queried
+        self.assertEqual(searched, ["音楽"])
+
 
 if __name__ == "__main__":
     unittest.main()

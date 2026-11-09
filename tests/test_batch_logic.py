@@ -1,7 +1,7 @@
 """Unit tests for batch processing logic, filename generation, and note evaluation."""
 import unittest
 import urllib.parse
-from typing import Any
+from typing import Any, List
 from unittest.mock import MagicMock, patch
 
 try:
@@ -42,6 +42,12 @@ class MockIrasutoyaClient:
 
 class TestBatchLogic(unittest.TestCase):
     """Test suite for batch processing, filename safety, and skip/overwrite decisions."""
+
+    def setUp(self) -> None:
+        """Isolate batch tests from the shipped catalog's LLM rejection data."""
+        patcher = patch("addon.batch.is_llm_rejected", return_value=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_safe_media_filename(self):
         """Test sanitizing queries and titles into valid Anki media filenames with proper extension."""
@@ -120,17 +126,18 @@ class TestBatchLogic(unittest.TestCase):
             client=client,
             write_media_func=lambda f, d: f
         )
-        self.assertEqual(status, "not_found")
-        self.assertIsNone(mod)
+        self.assertEqual(status, "no_match")
+        self.assertIsNotNone(mod)
+        self.assertEqual(mod["DefinitionPicture"], "")
 
     def test_batch_stats_summary(self):
         """Verify BatchStats summary message formatting."""
-        stats = BatchStats(total=5, added=3, skipped=1, not_found=1)
+        stats = BatchStats(total=5, added=3, skipped=1, no_match=1)
         self.assertIn("Added: 3", stats.summary_message)
         self.assertIn("Skipped: 1", stats.summary_message)
-        self.assertIn("Not found: 1", stats.summary_message)
+        self.assertIn("No match: 1", stats.summary_message)
 
-        stats_with_err = BatchStats(total=6, added=2, skipped=1, not_found=1, errors=2, canceled=True)
+        stats_with_err = BatchStats(total=6, added=2, skipped=1, no_match=1, errors=2, canceled=True)
         self.assertIn("Canceled.", stats_with_err.summary_message)
         self.assertIn("Errors: 2", stats_with_err.summary_message)
 
@@ -140,20 +147,25 @@ class TestBatchLogic(unittest.TestCase):
     def test_batch_stats_fallback_summary(self):
         """Verify BatchStats summary formatting when fallback matches occur."""
         stats = BatchStats(total=5, added=3, direct_matches=2, fallback_matches=1, skipped=1, not_found=1)
-        self.assertIn("Added: 3 (2 direct, 1 via fallback)", stats.summary_message)
+        self.assertIn("Added: 3 (2 direct, 1 approximate)", stats.summary_message)
 
     def test_process_note_reading_fallback_and_tagging(self):
-        """Verify process_note_record falls back to note reading field and applies audit tag."""
+        """Verify process_note_record holds back phonetic reading match with review status and tag."""
         class MockNote(dict):
-            def __init__(self, *args, **kwargs):
-                super().__init__(*args, **kwargs)
-                self.tags = []
+            """Mock dictionary-based note with tag management."""
 
-            def add_tag(self, tag):
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                """Initialize mock note with empty tags list."""
+                super().__init__(*args, **kwargs)
+                self.tags: List[str] = []
+
+            def add_tag(self, tag: str) -> None:
+                """Add a tag to the mock note if not already present."""
                 if tag not in self.tags:
                     self.tags.append(tag)
 
-            def remove_tag(self, tag):
+            def remove_tag(self, tag: str) -> None:
+                """Remove a tag from the mock note if present."""
                 if tag in self.tags:
                     self.tags.remove(tag)
 
@@ -178,23 +190,74 @@ class TestBatchLogic(unittest.TestCase):
             allow_tier2=True
         )
 
+        self.assertEqual(status, "review")
+        self.assertIsNotNone(mod)
+        self.assertEqual(mod["DefinitionPicture"], "")
+        self.assertIn("irasutoya::review", note.tags)
+
+    def test_process_note_tier2_exemplar_auto_fills_and_tags_approximate(self):
+        """Verify Tier 2 visual exemplar / deinflection auto-fills and tags irasutoya::approximate."""
+        class MockNote(dict):
+            """Mock dictionary-based note with tag management."""
+
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                """Initialize mock note with empty tags list."""
+                super().__init__(*args, **kwargs)
+                self.tags: List[str] = []
+
+            def add_tag(self, tag: str) -> None:
+                """Add a tag to the mock note if not already present."""
+                if tag not in self.tags:
+                    self.tags.append(tag)
+
+            def remove_tag(self, tag: str) -> None:
+                """Remove a tag from the mock note if present."""
+                if tag in self.tags:
+                    self.tags.remove(tag)
+
+        note = MockNote({"Expression": "走っている", "DefinitionPicture": ""})
+
+        deinflected_img = IrasutoyaImage(
+            title="走る人のイラスト",
+            image_url="https://example.com/run.png",
+            thumb_url="https://example.com/thumb.png",
+            post_title="走る人のイラスト"
+        )
+        # Primary "走っている" returns empty, deinflection "走る" returns image
+        client = MockIrasutoyaClient(search_mapping={"走る": [deinflected_img]})
+
+        status, mod = process_note_record(
+            note=note,
+            source_field="Expression",
+            target_field="DefinitionPicture",
+            overwrite_mode="skip",
+            client=client,
+            write_media_func=lambda f, d: f,
+            allow_tier2=True
+        )
+
         self.assertEqual(status, "added")
         self.assertIsNotNone(mod)
-        self.assertIn("irasutoya::fallback_reading", note.tags)
-        self.assertIn(urllib.parse.quote("irasutoya_そのまま_そのままのイラスト.png"), mod["DefinitionPicture"])
+        self.assertIn("irasutoya::approximate", note.tags)
+        self.assertIn(urllib.parse.quote("irasutoya_走る_走る人のイラスト.png"), mod["DefinitionPicture"])
 
     def test_batch_removes_stale_fallback_tag_on_direct_match(self):
         """Verify direct Tier 1 match removes any stale fallback audit tag from previous runs."""
         class MockNote(dict):
-            def __init__(self, *args, **kwargs):
-                super().__init__(*args, **kwargs)
-                self.tags = ["irasutoya::fallback_reading", "other_tag"]
+            """Mock dictionary-based note with tag management."""
 
-            def add_tag(self, tag):
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                """Initialize mock note with empty tags list."""
+                super().__init__(*args, **kwargs)
+                self.tags: List[str] = ["irasutoya::fallback_reading", "irasutoya::approximate", "irasutoya::review", "other_tag"]
+
+            def add_tag(self, tag: str) -> None:
+                """Add a tag to the mock note if not already present."""
                 if tag not in self.tags:
                     self.tags.append(tag)
 
-            def remove_tag(self, tag):
+            def remove_tag(self, tag: str) -> None:
+                """Remove a tag from the mock note if present."""
                 if tag in self.tags:
                     self.tags.remove(tag)
 
@@ -219,17 +282,18 @@ class TestBatchLogic(unittest.TestCase):
 
         self.assertEqual(status, "added")
         self.assertNotIn("irasutoya::fallback_reading", note.tags)
+        self.assertNotIn("irasutoya::approximate", note.tags)
+        self.assertNotIn("irasutoya::review", note.tags)
         self.assertIn("other_tag", note.tags)
 
     def test_batch_skips_decorative_assets(self):
-        """Verify batch processor excludes decorative frames and continues to fallback illustration."""
+        """Verify batch processor excludes decorative frames and continues to valid illustration."""
         frame_img = IrasutoyaImage("フレームのイラスト", "https://example.com/f.png", "https://example.com/t.png", "フレーム")
         real_img = IrasutoyaImage("猫のイラスト", "https://example.com/c.png", "https://example.com/t.png", "猫")
 
-        note = {"Expression": "其の儘", "Reading": "猫", "DefinitionPicture": ""}
+        note = {"Expression": "猫", "DefinitionPicture": ""}
         client = MockIrasutoyaClient(search_mapping={
-            "其の儘": [frame_img],
-            "猫": [real_img]
+            "猫": [frame_img, real_img]
         })
 
         status, mod = process_note_record(
@@ -267,7 +331,7 @@ class TestBatchLogic(unittest.TestCase):
             write_media_func=lambda f, d: f,
             allow_tier2=True
         )
-        self.assertEqual(status, "not_found")
+        self.assertEqual(status, "no_match")
         expected = [
             c[0] for c in generate_search_candidates(
                 note["Expression"], note=note, allow_tier2=True, allow_deinflection=True
@@ -358,6 +422,29 @@ class TestBatchLogic(unittest.TestCase):
         self.assertEqual(finished_stats[0].skipped, 1)
         self.assertEqual(finished_stats[0].added, 0)
         self.assertIn("Offline catalog unavailable", finished_stats[0].summary_message)
+
+    def test_resolve_surface_term_prefers_primary_over_curated(self) -> None:
+        """Verify resolve_surface_term picks the candidate marked 'primary' even when curated targets precede it."""
+        from addon.batch import resolve_surface_term
+
+        # Curated candidate in Group 1 precedes primary
+        candidates = [
+            ("怪しい儀式のイラスト", "llm_concept", 1),
+            ("儀式", "primary", 1),
+            ("ぎしき", "reading", 2),
+        ]
+        self.assertEqual(resolve_surface_term(candidates, raw_source="儀式"), "儀式")
+
+        # When primary is absent, falls back to cleaned raw_source
+        candidates_no_primary = [
+            ("怪しい儀式のイラスト", "llm_concept", 1),
+            ("ぎしき", "reading", 2),
+        ]
+        self.assertEqual(resolve_surface_term(candidates_no_primary, raw_source="儀式"), "儀式")
+
+        # When raw_source is empty, falls back to first candidate
+        self.assertEqual(resolve_surface_term(candidates_no_primary, raw_source=""), "怪しい儀式のイラスト")
+        self.assertEqual(resolve_surface_term([], raw_source=""), "")
 
 
 if __name__ == "__main__":

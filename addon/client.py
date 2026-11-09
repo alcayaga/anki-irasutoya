@@ -15,13 +15,18 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 from .catalog import CatalogStore, default_store
 from .feed import IrasutoyaImage, ParsedPost, is_allowed_image_host, parse_entry, upgrade_image_url
 from .ranking import (
+    has_standalone_title_match,
     has_title_illustration_match,
     infer_pos_type,
     is_decorative_asset,
     is_image_relevant,
     rank_relevant_images,
 )
-from .text_utils import PHONETIC_REASON_PREFIXES
+from .text_utils import (
+    LATE_FALLBACK_REASON_PREFIXES,
+    PHONETIC_REASON_PREFIXES,
+    PRIMARY_COMPOUND_REASON,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -362,12 +367,18 @@ class IrasutoyaClient:
             (ranked_images, matched_candidate, best_image)
         """
         first_weak_fallback: Optional[Tuple[List[IrasutoyaImage], Tuple[str, str, int], IrasutoyaImage]] = None
+        deferred_primary_compound: Optional[Tuple[List[IrasutoyaImage], Tuple[str, str, int], IrasutoyaImage]] = None
 
         for cand in candidates:
             if is_cancelled and is_cancelled():
                 break
             term = cand[0]
             reason = cand[1]
+
+            # Before evaluating a late fallback (Group 4) candidate, return deferred primary compound if present
+            if deferred_primary_compound is not None and reason.startswith(LATE_FALLBACK_REASON_PREFIXES):
+                return deferred_primary_compound
+
             images = self.search(term, max_results=None, image_size=image_size)
 
             # Filter out non-illustration/decorative assets and images not relevant to the query term
@@ -376,22 +387,34 @@ class IrasutoyaClient:
                 if not is_decorative_asset(img, term) and is_image_relevant(img, term)
             ]
             if illustration_candidates:
-                wins_now = (
-                    not reason.startswith(PHONETIC_REASON_PREFIXES)
-                    or first_weak_fallback is None
-                ) and has_title_illustration_match(illustration_candidates, term)
-                if not wins_now and first_weak_fallback is not None:
-                    continue
-
+                has_title_match = has_title_illustration_match(illustration_candidates, term)
                 cand_pos = pos_type or infer_pos_type(term, cand_reason=reason)
                 ranked = rank_relevant_images(illustration_candidates, term, pos_type=cand_pos)
                 if max_results and max_results > 0:
                     ranked = ranked[:max_results]
 
+                # Standalone title guard for primary: if primary matches ONLY as a compound title,
+                # defer it as (term, PRIMARY_COMPOUND_REASON, 2) and continue evaluating Group 2-3 candidates.
+                if reason == "primary" and has_title_match and not has_standalone_title_match(illustration_candidates, term):
+                    if deferred_primary_compound is None:
+                        deferred_primary_compound = (ranked, (term, PRIMARY_COMPOUND_REASON, 2), ranked[0])
+                    continue
+
+                wins_now = (
+                    not reason.startswith(PHONETIC_REASON_PREFIXES)
+                    or first_weak_fallback is None
+                ) and has_title_match
+
+                if not wins_now and first_weak_fallback is not None:
+                    continue
+
                 if wins_now:
                     return ranked, cand, ranked[0]
 
                 first_weak_fallback = (ranked, cand, ranked[0])
+
+        if deferred_primary_compound is not None:
+            return deferred_primary_compound
 
         if first_weak_fallback is not None:
             return first_weak_fallback

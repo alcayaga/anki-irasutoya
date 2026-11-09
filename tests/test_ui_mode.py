@@ -51,6 +51,8 @@ def _install_catalog_counts(dlg, counts_map, desc_terms=None):
     """Fixture helper to install mocked CatalogIndex counts on a dialog."""
     desc_set = set(desc_terms or [])
     mock_index = MagicMock()
+    mock_index.is_rejected.return_value = False
+    mock_index.get_rejection_reason.return_value = None
 
     def _search(q, **kw):
         count = counts_map.get(q, 0)
@@ -1527,6 +1529,114 @@ class TestUIMode(unittest.TestCase):
         mock_fut.cancel.assert_called_once()
         self.assertEqual(len(loader.pending_futures), 0)
         self.assertEqual(len(loader.pixmap_cache), 0)
+
+    def test_single_card_mode_llm_rejected_banner(self) -> None:
+        """Verify non-visual informational banner is shown in Single Card Mode for llm_rejected terms while search stays active."""
+        from addon.ui.styles import STATUS_INFO_AMBER_STYLE
+
+        mock_mw = MagicMock()
+        mock_note = {"Expression": "外見", "DefinitionPicture": ""}
+        mock_mw.col.get_note.return_value = mock_note
+
+        with patch("addon.ui.mw", mock_mw):
+            with patch("addon.ui.single_view.is_llm_rejected", return_value=True):
+                with patch("addon.ui.single_view.get_llm_rejection_reason", return_value="abstract grammatical concept"):
+                    dlg = IrasutoyaDialog(parent=None, browser=None, note_ids=[1001])
+                    self.addCleanup(dlg.close)
+
+                    # Initial input remains enabled and functional, and status label wraps long banners
+                    self.assertTrue(dlg.query_input.isEnabled())
+                    self.assertTrue(dlg.status_label.wordWrap())
+
+                    mock_img = IrasutoyaImage(
+                        title="目玉焼きクラゲのイラスト",
+                        image_url="https://example.com/jellyfish.png",
+                        thumb_url="https://example.com/jellyfish_t.png",
+                        post_title="目玉焼きクラゲのイラスト",
+                    )
+
+                    # 1. Search finished with results (description matches)
+                    dlg._on_search_finished(
+                        gen=dlg._search_generation,
+                        query="外見",
+                        display_chips=[("外見", "primary", 1), ("がいけん", "reading", 2), ("ガイケン", "katakana", 2)],
+                        matched_cand=("外見", "primary", 1),
+                        images=[mock_img],
+                        probed_counts={"外見": 1, "がいけん": 0, "ガイケン": 0},
+                        probed_desc_matches={"外見"},
+                    )
+
+                    self.assertIn("Non-visual concept", dlg.status_label.text())
+                    self.assertIn("abstract grammatical concept", dlg.status_label.text())
+                    self.assertIn("description matches below", dlg.status_label.text())
+                    self.assertEqual(dlg.status_label.styleSheet(), STATUS_INFO_AMBER_STYLE)
+
+                    # Dead chips (0 hits) are suppressed; only '外見' had hits and is active, so chips row hides
+                    self.assertTrue(dlg.chips_widget.isHidden())
+
+                    # 2. Search finished with alternative chip that has results
+                    dlg._on_search_finished(
+                        gen=dlg._search_generation,
+                        query="外見",
+                        display_chips=[("外見", "primary", 1), ("見た目", "synonym", 2)],
+                        matched_cand=("外見", "primary", 1),
+                        images=[mock_img],
+                        probed_counts={"外見": 1, "見た目": 4},
+                        probed_desc_matches={"外見"},
+                    )
+                    self.assertFalse(dlg.chips_widget.isHidden())
+
+                    # 3. Search finished with zero results
+                    dlg._on_search_finished(
+                        gen=dlg._search_generation,
+                        query="外見",
+                        display_chips=[("外見", "primary", 1)],
+                        matched_cand=None,
+                        images=[],
+                        probed_counts={"外見": 0},
+                    )
+
+                    self.assertIn("Non-visual concept", dlg.status_label.text())
+                    self.assertIn("No direct illustrations found", dlg.status_label.text())
+                    self.assertEqual(dlg.status_label.styleSheet(), STATUS_INFO_AMBER_STYLE)
+
+    def test_single_card_manual_selection_clears_status_tags(self) -> None:
+        """Verify committing an image in Single Card Mode strips all 4 taxonomy status tags."""
+        from addon.batch import (
+            TAG_APPROXIMATE,
+            TAG_NO_MATCH,
+            TAG_NON_VISUAL,
+            TAG_REVIEW,
+            apply_status_tag,
+        )
+
+        class MockNote(dict):
+            """Mock dictionary note with tag management."""
+
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                """Initialize mock note with initial tags."""
+                super().__init__(*args, **kwargs)
+                self.tags: List[str] = [TAG_APPROXIMATE, TAG_NON_VISUAL, TAG_REVIEW, TAG_NO_MATCH, "keep_me"]
+
+            def remove_tag(self, tag: str) -> None:
+                """Remove a tag from the mock note if present."""
+                if tag in self.tags:
+                    self.tags.remove(tag)
+
+            def add_tag(self, tag: str) -> None:
+                """Add a tag to the mock note if not already present."""
+                if tag not in self.tags:
+                    self.tags.append(tag)
+
+        note = MockNote({"Expression": "テスト", "DefinitionPicture": ""})
+        # Single card commit invokes apply_status_tag(note, None)
+        apply_status_tag(note, None)
+
+        self.assertNotIn(TAG_APPROXIMATE, note.tags)
+        self.assertNotIn(TAG_NON_VISUAL, note.tags)
+        self.assertNotIn(TAG_REVIEW, note.tags)
+        self.assertNotIn(TAG_NO_MATCH, note.tags)
+        self.assertIn("keep_me", note.tags)
 
 
 if __name__ == "__main__":

@@ -3,7 +3,10 @@ import logging
 import re
 from typing import Any, List, Optional, Set
 
-from .catalog import CatalogStore, default_store
+from .catalog import (
+    CatalogStore,
+    default_store,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +118,50 @@ def lookup_llm_concept_tier2(
         List of catalog-verified search queries from the 'llm_concept_tier2' source.
     """
     return lookup_synonyms(term, source="llm_concept_tier2", store=store)
+
+
+def get_llm_rejection_reason(
+    term: str,
+    store: Optional[CatalogStore] = None,
+) -> Optional[str]:
+    """Return the rejection reason string if term was rejected by the LLM as non-visual, else None.
+
+    Args:
+        term: Japanese vocabulary headword or phrase to look up.
+        store: Optional CatalogStore instance (defaults to global default_store()).
+
+    Returns:
+        Rejection reason string, or None if the term was not rejected.
+    """
+    if not term:
+        return None
+    active_store = store or default_store()
+    index = active_store.get_index()
+    if index is None:
+        return None
+    return index.get_rejection_reason(term)
+
+
+def is_llm_rejected(
+    term: str,
+    store: Optional[CatalogStore] = None,
+) -> bool:
+    """Return True if term was rejected by the LLM as non-visual and not merely unverified.
+
+    Args:
+        term: Japanese vocabulary headword or phrase to look up.
+        store: Optional CatalogStore instance (defaults to global default_store()).
+
+    Returns:
+        True if rejected as non-visual, False otherwise.
+    """
+    if not term:
+        return False
+    active_store = store or default_store()
+    index = active_store.get_index()
+    if index is None:
+        return False
+    return index.is_rejected(term)
 
 
 ENGLISH_STOP_WORDS = frozenset({

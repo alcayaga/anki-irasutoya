@@ -18,12 +18,13 @@ from aqt.qt import (
 )
 from aqt.utils import showWarning, tooltip
 
-from ..batch import make_safe_media_filename
+from ..batch import apply_status_tag, make_safe_media_filename
 from ..config import (
     CONFIG_KEY_IMAGE_SIZE,
     CONFIG_KEY_THUMB_DELAY,
 )
 from ..feed import IrasutoyaImage
+from ..synonyms import get_llm_rejection_reason, is_llm_rejected
 from ..text_utils import clean_search_query, generate_search_candidates
 from .helpers import (
     _description_match_term,
@@ -40,6 +41,7 @@ from .styles import (
     PAGE_SIZE,
     STATUS_ACTIVE_STYLE,
     STATUS_ERROR_STYLE,
+    STATUS_INFO_AMBER_STYLE,
     STATUS_INFO_BLUE_STYLE,
     STATUS_MUTED_STYLE,
 )
@@ -75,8 +77,9 @@ class _SingleNoteModeMixin:
             self._card_source_term = clean_search_query(raw_val)
             initial_query = self._card_source_term
             if raw_val:
+                store = getattr(self.client, "catalog", None)
                 self._card_candidates = generate_search_candidates(
-                    raw_val, note=self.first_note, allow_tier2=True
+                    raw_val, note=self.first_note, allow_tier2=True, store=store
                 )
 
         self.query_input = QLineEdit(initial_query, self)
@@ -114,6 +117,7 @@ class _SingleNoteModeMixin:
         # Status Label
         self.status_label = QLabel("Search for an illustration or click 'Search' above.", self)
         self.status_label.setStyleSheet(STATUS_MUTED_STYLE)
+        self.status_label.setWordWrap(True)
         main_layout.addWidget(self.status_label)
 
         # Gallery Scroll Area with Right Margin Gutter
@@ -166,7 +170,6 @@ class _SingleNoteModeMixin:
 
         self._check_target_media_status()
 
-        # Auto-trigger search asynchronously after dialog displays
         if initial_query:
             from aqt.qt import QTimer
             QTimer.singleShot(50, self._do_search)
@@ -226,8 +229,9 @@ class _SingleNoteModeMixin:
             raw_val = self.first_note[new_field]
             new_query = clean_search_query(raw_val)
             self._card_source_term = new_query
+            store = getattr(self.client, "catalog", None)
             self._card_candidates = (
-                generate_search_candidates(raw_val, note=self.first_note, allow_tier2=True)
+                generate_search_candidates(raw_val, note=self.first_note, allow_tier2=True, store=store)
                 if raw_val
                 else []
             )
@@ -328,9 +332,20 @@ class _SingleNoteModeMixin:
         active_term = matched_cand[0] if (matched_cand and images) else query
         self._current_query = active_term
 
+        store = getattr(self.client, "catalog", None)
+        is_non_visual = bool(query and is_llm_rejected(query, store=store))
+        rejection_reason = get_llm_rejection_reason(query, store=store) if is_non_visual else ""
+        reason_suffix = f" ({rejection_reason})" if rejection_reason else ""
+
         if not images:
-            self.status_label.setStyleSheet(STATUS_ERROR_STYLE)
-            self.status_label.setText(f"No illustrations found for '{query}'.")
+            if is_non_visual:
+                self.status_label.setStyleSheet(STATUS_INFO_AMBER_STYLE)
+                self.status_label.setText(
+                    f"⚠️ Non-visual concept: '{query}' is an abstract concept{reason_suffix}. No direct illustrations found."
+                )
+            else:
+                self.status_label.setStyleSheet(STATUS_ERROR_STYLE)
+                self.status_label.setText(f"No illustrations found for '{query}'.")
             self._update_suggestion_chips(
                 display_chips,
                 active_term=active_term,
@@ -342,9 +357,32 @@ class _SingleNoteModeMixin:
                 self.pagination_label.setText("")
             return
 
-        if matched_cand and matched_cand[0] != query:
+        if is_non_visual:
+            self.status_label.setStyleSheet(STATUS_INFO_AMBER_STYLE)
+            if probed_desc_matches is not None:
+                all_desc = query in probed_desc_matches
+            else:
+                all_desc = _is_desc_only_match(images, query)
+            count_str = f"{len(images)} illustration" if len(images) == 1 else f"{len(images)} illustrations"
+            if matched_cand and matched_cand[0] != query:
+                self.status_label.setText(
+                    f"⚠️ Non-visual concept: '{query}' is abstract{reason_suffix}. Showing results for '{matched_cand[0]}' ({matched_cand[1]})."
+                )
+            elif all_desc:
+                self.status_label.setText(
+                    f"⚠️ Non-visual concept: '{query}' is abstract{reason_suffix}. Found {count_str} (description matches below)."
+                )
+            elif matched_cand and matched_cand[1] == "primary_compound":
+                self.status_label.setText(
+                    f"⚠️ Non-visual concept: '{query}' is abstract{reason_suffix}. Found {count_str} (compound title match)."
+                )
+            else:
+                self.status_label.setText(
+                    f"⚠️ Non-visual concept: '{query}' is abstract{reason_suffix}. Found {count_str}. Click one to select."
+                )
+        elif matched_cand and matched_cand[0] != query:
             self.status_label.setStyleSheet(STATUS_INFO_BLUE_STYLE)
-            reason_text = format_fallback_reason(query, probed_counts, probed_desc_matches)
+            reason_text = format_fallback_reason(query, probed_counts, probed_desc_matches, reason=matched_cand[1])
             self.status_label.setText(
                 f"ℹ️ {reason_text}. Showing results for '{matched_cand[0]}' ({matched_cand[1]})."
             )
@@ -357,6 +395,8 @@ class _SingleNoteModeMixin:
             count_str = f"{len(images)} illustration" if len(images) == 1 else f"{len(images)} illustrations"
             if all_desc:
                 self.status_label.setText(f"Found {count_str} (description match). Click one to select.")
+            elif matched_cand and matched_cand[1] == "primary_compound":
+                self.status_label.setText(f"Found {count_str} (compound title match). Click one to select.")
             else:
                 self.status_label.setText(f"Found {count_str}. Click one to select.")
 
@@ -598,6 +638,7 @@ class _SingleNoteModeMixin:
                         stored_filename = col.media.write_data(filename, img_bytes)
                         encoded_src = urllib.parse.quote(stored_filename)
                         fresh_note[target_field] = f'<img src="{encoded_src}">'
+                        apply_status_tag(fresh_note, None)
                         return fresh_note
 
                     def on_committed(fresh_note: Any) -> None:

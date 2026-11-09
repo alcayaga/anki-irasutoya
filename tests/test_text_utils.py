@@ -765,13 +765,15 @@ class TestTextUtils(unittest.TestCase):
         self.assertEqual(form_cands, ["見本二", "見本三", "見本四"])
 
     def test_generate_search_candidates_emits_concept_map(self) -> None:
-        """Verify generate_search_candidates emits manual concept map targets in Tier 2."""
+        """Verify generate_search_candidates emits manual concept map targets in Tier 1 before primary."""
         with patch("addon.text_utils.lookup_concept_map", return_value=["お葬式", "墓"]):
             cands = generate_search_candidates("亡くなる", allow_tier2=True)
             concept_cands = [c for c in cands if c[1] == "concept_map"]
             self.assertEqual(len(concept_cands), 2)
-            self.assertEqual(concept_cands[0], ("お葬式", "concept_map", 2))
-            self.assertEqual(concept_cands[1], ("墓", "concept_map", 2))
+            self.assertEqual(concept_cands[0], ("お葬式", "concept_map", 1))
+            self.assertEqual(concept_cands[1], ("墓", "concept_map", 1))
+            reasons = [c[1] for c in cands]
+            self.assertLess(reasons.index("concept_map"), reasons.index("primary"))
 
     def test_generate_search_candidates_deinflected_concept_map(self) -> None:
         """Verify generate_search_candidates deinflects surface term to match concept map."""
@@ -782,10 +784,22 @@ class TestTextUtils(unittest.TestCase):
             self.assertEqual(concept_cands[0], ("獲得", "concept_map", 2))
             self.assertEqual(concept_cands[1], ("宝箱", "concept_map", 2))
 
-    def test_generate_search_candidates_suppressed_when_tier2_false(self) -> None:
-        """Verify concept map targets are suppressed when allow_tier2 is False."""
+    def test_generate_search_candidates_surface_concept_map_retained_when_tier2_false(self) -> None:
+        """Verify surface concept map targets (Group 1) are retained in Tier 1 even when allow_tier2 is False."""
         with patch("addon.text_utils.lookup_concept_map", return_value=["お葬式", "墓"]):
             cands = generate_search_candidates("亡くなる", allow_tier2=False)
+            concept_cands = [c for c in cands if c[1] == "concept_map"]
+            self.assertEqual(len(concept_cands), 2)
+            self.assertEqual(concept_cands[0], ("お葬式", "concept_map", 1))
+            self.assertEqual(concept_cands[1], ("墓", "concept_map", 1))
+
+    def test_generate_search_candidates_deinflected_concept_map_suppressed_when_tier2_false(self) -> None:
+        """Verify deinflected concept map targets (Group 3) are suppressed when allow_tier2 is False."""
+        with patch(
+            "addon.text_utils.lookup_concept_map",
+            side_effect=lambda term: ["獲得", "宝箱"] if term == "手に入れる" else [],
+        ):
+            cands = generate_search_candidates("手に入れている", allow_tier2=False, allow_deinflection=True)
             concept_cands = [c for c in cands if c[1] == "concept_map"]
             self.assertEqual(len(concept_cands), 0)
 
@@ -798,16 +812,18 @@ class TestTextUtils(unittest.TestCase):
         )
         concept_cands = [c for c in cands if c[1] == "concept_map"]
         self.assertEqual(len(concept_cands), 2)
-        self.assertEqual(concept_cands[0], ("お葬式", "concept_map", 2))
-        self.assertEqual(concept_cands[1], ("墓", "concept_map", 2))
+        self.assertEqual(concept_cands[0], ("お葬式", "concept_map", 1))
+        self.assertEqual(concept_cands[1], ("墓", "concept_map", 1))
 
     def test_generate_search_candidates_emits_kaishi_concept(self) -> None:
-        """Verify generate_search_candidates emits Kaishi concept map targets in Tier 2."""
+        """Verify generate_search_candidates emits Kaishi concept map targets in Tier 1 before primary."""
         with patch("addon.text_utils.lookup_kaishi_concept", return_value=["「ダメ」のポーズをする人"]):
             cands = generate_search_candidates("全然", allow_tier2=True)
             kaishi_cands = [c for c in cands if c[1] == "kaishi_concept"]
             self.assertEqual(len(kaishi_cands), 1)
-            self.assertEqual(kaishi_cands[0], ("「ダメ」のポーズをする人", "kaishi_concept", 2))
+            self.assertEqual(kaishi_cands[0], ("「ダメ」のポーズをする人", "kaishi_concept", 1))
+            reasons = [c[1] for c in cands]
+            self.assertLess(reasons.index("kaishi_concept"), reasons.index("primary"))
 
     def test_generate_search_candidates_ordering_manual_then_kaishi_then_reading(self) -> None:
         """Verify candidate ordering: concept_map (manual) -> kaishi_concept -> note_reading."""
@@ -821,16 +837,19 @@ class TestTextUtils(unittest.TestCase):
             with patch("addon.text_utils.lookup_kaishi_concept", return_value=["カイシ走る"]):
                 cands = generate_search_candidates("走る", note=mock_note, allow_tier2=True)
                 reasons = [c[1] for c in cands]
-                # concept_map must appear before kaishi_concept
-                # kaishi_concept must appear before note_reading
+                # Group 1 concept_map and kaishi_concept must appear before Group 2 primary
+                # and before Group 4 note_reading
                 self.assertIn("concept_map", reasons)
                 self.assertIn("kaishi_concept", reasons)
+                self.assertIn("primary", reasons)
                 self.assertIn("note_reading_Reading", reasons)
                 idx_manual = reasons.index("concept_map")
                 idx_kaishi = reasons.index("kaishi_concept")
+                idx_primary = reasons.index("primary")
                 idx_reading = reasons.index("note_reading_Reading")
                 self.assertLess(idx_manual, idx_kaishi)
-                self.assertLess(idx_kaishi, idx_reading)
+                self.assertLess(idx_kaishi, idx_primary)
+                self.assertLess(idx_primary, idx_reading)
 
     def test_generate_search_candidates_deinflected_kaishi_concept(self) -> None:
         """Verify generate_search_candidates deinflects surface term to match kaishi concept map."""
@@ -852,7 +871,7 @@ class TestTextUtils(unittest.TestCase):
         )
         kaishi_cands = [c for c in cands if c[1] == "kaishi_concept"]
         self.assertEqual(len(kaishi_cands), 1)
-        self.assertEqual(kaishi_cands[0], ("「ダメ」のポーズをする人", "kaishi_concept", 2))
+        self.assertEqual(kaishi_cands[0], ("「ダメ」のポーズをする人", "kaishi_concept", 1))
 
     def test_generate_search_candidates_emits_sudachi_synonym(self) -> None:
         """Verify generate_search_candidates emits Sudachi synonym targets in Tier 2."""
@@ -920,7 +939,7 @@ class TestTextUtils(unittest.TestCase):
                 self.assertEqual(sudachi_cands[0], ("キューピッド", "sudachi_synonym", 2))
 
     def test_candidate_ordering_tier2_hierarchy_with_sudachi(self) -> None:
-        """Verify candidate ordering: concept_map -> kaishi_concept -> note_reading -> same_field -> sudachi_synonym."""
+        """Verify candidate ordering: concept_map -> kaishi_concept -> sudachi_synonym -> note_reading -> same_field."""
         mock_note = {"Reading": "そうこう"}
         with patch("addon.text_utils.lookup_concept_map", return_value=["マニュアル走る"]):
             with patch("addon.text_utils.lookup_kaishi_concept", return_value=["カイシ走る"]):
@@ -929,20 +948,20 @@ class TestTextUtils(unittest.TestCase):
                     reasons = [c[1] for c in cands]
                     self.assertIn("concept_map", reasons)
                     self.assertIn("kaishi_concept", reasons)
+                    self.assertIn("sudachi_synonym", reasons)
                     self.assertIn("note_reading_Reading", reasons)
                     self.assertIn("same_field_reading_katakana", reasons)
-                    self.assertIn("sudachi_synonym", reasons)
 
                     idx_manual = reasons.index("concept_map")
                     idx_kaishi = reasons.index("kaishi_concept")
+                    idx_sudachi = reasons.index("sudachi_synonym")
                     idx_reading = reasons.index("note_reading_Reading")
                     idx_same_kana = reasons.index("same_field_reading_katakana")
-                    idx_sudachi = reasons.index("sudachi_synonym")
 
                     self.assertLess(idx_manual, idx_kaishi)
-                    self.assertLess(idx_kaishi, idx_reading)
+                    self.assertLess(idx_kaishi, idx_sudachi)
+                    self.assertLess(idx_sudachi, idx_reading)
                     self.assertLess(idx_reading, idx_same_kana)
-                    self.assertLess(idx_same_kana, idx_sudachi)
 
     def test_generate_search_candidates_emits_llm_concept_tier1(self) -> None:
         """Verify generate_search_candidates emits direct surface matches with reason 'llm_concept' in Tier 1."""
@@ -1006,7 +1025,7 @@ class TestTextUtils(unittest.TestCase):
         self.assertEqual(llm_cands[0], ("悩む人のイラスト", "llm_concept_tier2", 2))
 
     def test_candidate_ordering_tier2_hierarchy_with_llm_concept_tier2(self) -> None:
-        """Verify candidate ordering: sudachi_synonym -> llm_concept_tier2 -> bilingual_gloss."""
+        """Verify candidate ordering: llm_concept_tier2 -> sudachi_synonym -> bilingual_gloss."""
         mock_note = {"Expression": "テスト", "Meaning": "test"}
         with patch("addon.text_utils.lookup_sudachi_synonyms", return_value=["スダチターゲット"]):
             with patch("addon.text_utils.lookup_llm_concept_tier2", return_value=["LLMターゲット2"]):
@@ -1021,8 +1040,27 @@ class TestTextUtils(unittest.TestCase):
                     idx_llm = reasons.index("llm_concept_tier2")
                     idx_bilingual = reasons.index("bilingual_gloss")
 
-                    self.assertLess(idx_sudachi, idx_llm)
-                    self.assertLess(idx_llm, idx_bilingual)
+                    self.assertLess(idx_llm, idx_sudachi)
+                    self.assertLess(idx_sudachi, idx_bilingual)
+
+    def test_curated_concept_matching_surface_preserves_primary_reason(self) -> None:
+        """Verify that when a curated concept lookup returns the exact surface query, it does not steal 'primary'."""
+        with patch("addon.text_utils.lookup_concept_map", return_value=["猫"]):
+            with patch("addon.text_utils.lookup_kaishi_concept", return_value=["猫"]):
+                with patch("addon.text_utils.lookup_llm_concept", return_value=["猫"]):
+                    cands = generate_search_candidates("猫", allow_tier2=True)
+                    # "猫" must be emitted as "primary", not concept_map/kaishi/llm
+                    primary_cands = [c for c in cands if c[0] == "猫"]
+                    self.assertEqual(len(primary_cands), 1)
+                    self.assertEqual(primary_cands[0], ("猫", "primary", 1))
+
+    def test_grammar_function_word_returns_only_primary(self) -> None:
+        """Verify grammar function words (e.g. の, に) return only the primary candidate."""
+        with patch("addon.text_utils.lookup_concept_map", return_value=["テスト"]):
+            with patch("addon.text_utils.lookup_kaishi_concept", return_value=["テスト"]):
+                with patch("addon.text_utils.lookup_llm_concept", return_value=["テスト"]):
+                    cands = generate_search_candidates("の", allow_tier2=True)
+                    self.assertEqual(cands, [("の", "primary", 1)])
 
     def test_generate_search_candidates_emits_bilingual_gloss(self) -> None:
         """Verify generate_search_candidates emits Tier 2 candidates from bilingual definition glosses."""
