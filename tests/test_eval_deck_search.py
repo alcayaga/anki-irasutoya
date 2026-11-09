@@ -41,13 +41,24 @@ class TestEvalDeckSearch(unittest.TestCase):
         self.assertEqual(build_search_query("Mining", "flag:4 or flag:3"), 'deck:"Mining" (flag:4 or flag:3)')
         self.assertEqual(build_search_query("Mining", 'deck:"Other" tag:marked'), 'deck:"Other" tag:marked')
         self.assertEqual(build_search_query("Mining", "DECK:Special"), "DECK:Special")
+        # Standalone fully quoted deck selectors
+        self.assertEqual(build_search_query("Mining", '"deck:Other Deck" flag:4'), '"deck:Other Deck" flag:4')
+        self.assertEqual(build_search_query("Mining", 'flag:4 ("deck:Other Deck")'), 'flag:4 ("deck:Other Deck")')
+        self.assertEqual(build_search_query("Mining", '-"deck:Other Deck" flag:4'), 'deck:"Mining" (-"deck:Other Deck" flag:4)')
+        self.assertEqual(build_search_query("Mining", '"deck:Mining"'), '"deck:Mining"')
         # Negative deck selectors must not suppress the requested deck scope
         self.assertEqual(build_search_query("Mining", "-deck:Other flag:4"), 'deck:"Mining" (-deck:Other flag:4)')
         self.assertEqual(build_search_query("Mining", "flag:4 (-deck:Other)"), 'deck:"Mining" (flag:4 (-deck:Other))')
         self.assertEqual(build_search_query("Mining", "-(deck:Other) flag:4"), 'deck:"Mining" (-(deck:Other) flag:4)')
         self.assertEqual(build_search_query("Mining", '-(deck:Other or deck:Sub) flag:4'), 'deck:"Mining" (-(deck:Other or deck:Sub) flag:4)')
-        # Deck selectors inside double-quoted field values must not be treated as deck operands
+        self.assertEqual(build_search_query("Mining", '-((deck:Other) or tag:foo) flag:4'), 'deck:"Mining" (-((deck:Other) or tag:foo) flag:4)')
+        # Deck selectors inside double-quoted field values or unquoted values must not be treated as deck operands
         self.assertEqual(build_search_query("Mining", 'Front:"deck:Other" flag:4'), 'deck:"Mining" (Front:"deck:Other" flag:4)')
+        self.assertEqual(build_search_query("Mining", r'Front:"say \"deck:Other\" now" flag:4'), r'deck:"Mining" (Front:"say \"deck:Other\" now" flag:4)')
+        self.assertEqual(build_search_query("Mining", 'Front:deck:Other flag:4'), 'deck:"Mining" (Front:deck:Other flag:4)')
+        self.assertEqual(build_search_query("Mining", '-Front:"say deck:Other now" flag:4'), 'deck:"Mining" (-Front:"say deck:Other now" flag:4)')
+        # Explicit positive deck selectors inside parens
+        self.assertEqual(build_search_query("Mining", 'flag:4 (deck:Other)'), 'flag:4 (deck:Other)')
         # Combined positive and negative deck selectors preserve raw query
         self.assertEqual(build_search_query("Mining", "deck:Mining -deck:Mining::Subdeck"), "deck:Mining -deck:Mining::Subdeck")
         self.assertEqual(build_search_query("", "flag:4"), "flag:4")

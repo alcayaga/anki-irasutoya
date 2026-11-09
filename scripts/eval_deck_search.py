@@ -167,29 +167,98 @@ def anki_invoke(action: str, anki_url: str = "http://localhost:8765", **params: 
         ) from e
 
 
+def _strip_nested_negated_parens(s: str) -> str:
+    """Strip any parenthesized group that is preceded by '-' even if nested.
+
+    Args:
+        s: Search query string.
+
+    Returns:
+        Query string with negated parenthesized groups replaced by whitespace.
+    """
+    out: List[str] = []
+    i = 0
+    n = len(s)
+    in_quote = False
+    escape = False
+    while i < n:
+        ch = s[i]
+        if escape:
+            escape = False
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "\\":
+            escape = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == '"':
+            in_quote = not in_quote
+            out.append(ch)
+            i += 1
+            continue
+        if not in_quote and ch == "-" and i + 1 < n and s[i + 1] == "(":
+            depth = 1
+            i += 2
+            while i < n and depth > 0:
+                c = s[i]
+                if c == "\\":
+                    i += 2
+                    continue
+                if c == '"':
+                    i += 1
+                    while i < n:
+                        if s[i] == "\\":
+                            i += 2
+                        elif s[i] == '"':
+                            i += 1
+                            break
+                        else:
+                            i += 1
+                    continue
+                if c == "(":
+                    depth += 1
+                elif c == ")":
+                    depth -= 1
+                i += 1
+            out.append(" ")
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def has_explicit_positive_deck(query: str) -> bool:
     """Return True if query contains an explicit positive deck selector operand.
 
-    Ignores deck selectors inside double-quoted field values (e.g. Front:"deck:Other"),
-    negated parenthesized groups (e.g. -(deck:Other)), and negated tokens (e.g. -deck:Other).
+    Recognizes both unquoted and fully quoted deck operands (e.g. deck:Other,
+    deck:"Other Deck", "deck:Other Deck").
+    Ignores deck selectors inside field values (e.g. Front:"deck:Other",
+    Front:"say \\"deck:Other\\" now", Front:deck:Other), negated parenthesized groups
+    (e.g. -((deck:Other) or tag:foo)), and negated tokens (e.g. -deck:Other, -"deck:Other").
 
     Args:
         query: Raw Anki search query.
 
     Returns:
-        True if an unnegated, unquoted positive 'deck:' operand is present.
+        True if an unnegated positive 'deck:' operand is present.
     """
     if not query:
         return False
-    # 1. Strip double-quoted string literals so field values like Front:"deck:Other" are ignored
-    q = re.sub(r'"[^"]*"', '""', query)
-    # 2. Strip negated parenthesized groups e.g. -(deck:Other or tag:foo)
-    while re.search(r'-\([^()]*\)', q):
-        q = re.sub(r'-\([^()]*\)', '', q)
-    # 3. Strip negated tokens e.g. -deck:Other
-    q = re.sub(r'(?:^|\s)-[^\s()]+', ' ', q)
-    # 4. Check if standalone unnegated deck: remains
-    return bool(re.search(r'(?<!-)\bdeck:', q, re.IGNORECASE))
+    # 1. Strip negated parenthesized groups including nested parens: -(...) or -((...))
+    q = _strip_nested_negated_parens(query)
+    # 2. Strip negated tokens: -deck:foo, -"deck:foo", -tag:bar, -Front:"...", etc.
+    q = re.sub(
+        r'(?:^|[\s(])-(?:"(?:\\.|[^"\\])*"|[^"\s():]+:"(?:\\.|[^"\\])*"|[^\s()]+)',
+        ' ',
+        q,
+    )
+    # 3. Strip non-deck field values (both quoted and unquoted e.g. Front:"deck:Other", Front:deck:Other)
+    q = re.sub(r'\b(?!deck:)[^\s():]+:"(?:\\.|[^"\\])*"', ' ', q, flags=re.IGNORECASE)
+    q = re.sub(r'\b(?!deck:)[^\s():]+:[^\s()]+', ' ', q, flags=re.IGNORECASE)
+    # 4. Check if standalone unnegated deck: or "deck: remains at operand boundary
+    return bool(re.search(r'(?:^|[\s(])"?deck:', q, re.IGNORECASE))
 
 
 def build_search_query(deck_name: str, query: Optional[str] = None) -> str:

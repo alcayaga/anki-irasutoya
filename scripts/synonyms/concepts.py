@@ -146,7 +146,7 @@ def _validate_concept_json_mapping(
                         clean_hw,
                     )
                 continue
-            if source in ("llm_concept", "llm_concept_tier2") and _is_disallowed_text_callout_target(clean_tgt, clean_hw):
+            if source.startswith("llm_concept") and _is_disallowed_text_callout_target(clean_tgt, clean_hw):
                 validation_failures.append((clean_hw, f"<disallowed text callout: {clean_tgt}>"))
                 continue
             results = filter_relevant_illustrations(index.search(clean_tgt), clean_tgt)
