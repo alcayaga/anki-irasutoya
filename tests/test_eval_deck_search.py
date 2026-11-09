@@ -59,6 +59,7 @@ class TestEvalDeckSearch(unittest.TestCase):
         self.assertEqual(build_search_query("Mining", '-Front:"say deck:Other now" flag:4'), 'deck:"Mining" (-Front:"say deck:Other now" flag:4)')
         # Deck-like text inside quoted general search phrases must not be treated as deck selectors
         self.assertEqual(build_search_query("Mining", '"w:see (deck:x) now" flag:4'), 'deck:"Mining" ("w:see (deck:x) now" flag:4)')
+        self.assertEqual(build_search_query("Mining", r'"say \"hello\" (deck:x) now" flag:4'), r'deck:"Mining" ("say \"hello\" (deck:x) now" flag:4)')
         # Explicit positive deck selectors inside parens
         self.assertEqual(build_search_query("Mining", 'flag:4 (deck:Other)'), 'flag:4 (deck:Other)')
         # Combined positive and negative deck selectors preserve raw query
