@@ -439,6 +439,14 @@ def populate_llm_concepts(
     raw_aliases = data.get("aliases")
     aliases_data = dict(raw_aliases) if isinstance(raw_aliases, dict) else {}
 
+    if aliases_data:
+        resolve_uk_aliases(
+            aliases=aliases_data,
+            concepts=concepts_data,
+            tier2_concepts=tier2_data,
+            rejected=rejected_data,
+        )
+
     if jpdb_path:
         curated_terms = load_curated_terms(catalog_path)
 
@@ -454,13 +462,6 @@ def populate_llm_concepts(
         if res is None:
             logger.error("Failed to propagate uk aliases from JPDB file: %s", jpdb_path)
             return False
-    elif aliases_data:
-        resolve_uk_aliases(
-            aliases=aliases_data,
-            concepts=concepts_data,
-            tier2_concepts=tier2_data,
-            rejected=rejected_data,
-        )
 
     has_t1 = bool(concepts_data)
     has_t2 = bool(tier2_data)

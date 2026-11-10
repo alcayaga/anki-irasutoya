@@ -1280,28 +1280,38 @@ class TestBuildSynonyms(unittest.TestCase):
                 "滅茶苦茶\tめちゃくちゃ\t10178\t3398\n"
                 "コーヒー\tコーヒー\t3296\t\n"
                 "珈琲\tコーヒー\t20325\t3296\n"
+                # 瓦斯: 2-mora loanword allowed via SAFE_2MORA_LOANWORDS exception
+                "ガス\tガス\t6789\t\n"
+                "瓦斯\tガス\t48225\t6789\n"
             )
 
-        concepts: Dict[str, List[str]] = {"コーヒー": ["猫"]}
+        concepts: Dict[str, List[str]] = {
+            "コーヒー": ["猫"],
+            "ガス": ["猫"],
+        }
         tier2_concepts: Dict[str, List[str]] = {"めちゃくちゃ": ["猫"]}
         rejected: Dict[str, str] = {
             "ようにする": "助動詞のため非視覚的",
             "よくある": "頻度表現のため非視覚的",
         }
 
-        p1, p2, prej = propagate_kana_uk_concepts(
+        res = propagate_kana_uk_concepts(
             concepts=concepts,
             tier2_concepts=tier2_concepts,
             rejected=rejected,
             jpdb_path=tsv_path,
         )
+        self.assertIsNotNone(res)
+        assert res is not None
+        p1, p2, prej = res
 
-        self.assertEqual(p1, 1)
+        self.assertEqual(p1, 2)
         self.assertEqual(p2, 1)
         self.assertEqual(prej, 2)
 
         # Confirm exact propagated mappings
         self.assertEqual(concepts.get("珈琲"), ["猫"])
+        self.assertEqual(concepts.get("瓦斯"), ["猫"])
         self.assertEqual(tier2_concepts.get("滅茶苦茶"), ["猫"])
         self.assertEqual(rejected.get("様にする"), "助動詞のため非視覚的")
         self.assertEqual(rejected.get("良くある"), "頻度表現のため非視覚的")
@@ -1522,12 +1532,64 @@ class TestBuildSynonyms(unittest.TestCase):
                 "rejected": {},
             }, f)
 
-        ok = populate_llm_concepts(
+        # Case 1: Non-existent file early return
+        ok_nonexistent = populate_llm_concepts(
             catalog_path=self.db_path,
             llm_json_path=json_path,
             jpdb_path="/nonexistent/invalid_jpdb.tsv",
         )
-        self.assertFalse(ok)
+        self.assertFalse(ok_nonexistent)
+
+        # Case 2: Existing file that raises an error during propagation
+        corrupt_jpdb = os.path.join(self.temp_dir.name, "corrupt_jpdb.tsv")
+        with open(corrupt_jpdb, "w", encoding="utf-8") as f:
+            f.write("term\treading\tfrequency\tkana_frequency\n")
+        with patch("scripts.synonyms.concepts.propagate_kana_uk_concepts", return_value=None) as mock_prop:
+            ok_corrupt = populate_llm_concepts(
+                catalog_path=self.db_path,
+                llm_json_path=json_path,
+                jpdb_path=corrupt_jpdb,
+            )
+            self.assertFalse(ok_corrupt)
+            mock_prop.assert_called_once()
+
+    def test_populate_llm_concepts_explicit_aliases_resolved_with_jpdb(self) -> None:
+        """Verify explicit aliases in JSON are resolved even when jpdb_path is passed."""
+        tsv_path = os.path.join(self.temp_dir.name, "mock_jpdb_explicit.tsv")
+        with open(tsv_path, "w", encoding="utf-8") as f:
+            f.write(
+                "term\treading\tfrequency\tkana_frequency\n"
+                "ようにする\tようにする\t375\t\n"
+                "様にする\tようにする\t16413\t375\n"
+            )
+
+        json_path = os.path.join(self.temp_dir.name, "llm_explicit_aliases.json")
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "concepts": {"猫": ["猫"]},
+                "tier2_concepts": {},
+                "rejected": {"ようにする": "助動詞"},
+                "aliases": {"ネコ": "猫"},
+            }, f)
+
+        ok = populate_llm_concepts(
+            catalog_path=self.db_path,
+            llm_json_path=json_path,
+            jpdb_path=tsv_path,
+            min_matched=1,
+            strict=True,
+        )
+        self.assertTrue(ok)
+
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT term, target FROM synonyms WHERE term IN ('ネコ', '様にする')")
+        rows = dict(cur.fetchall())
+        conn.close()
+
+        self.assertIn("ネコ", rows)
+        self.assertEqual(rows["ネコ"], "猫")
+        self.assertIn("様にする", rows)
 
 
 

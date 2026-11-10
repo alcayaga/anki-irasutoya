@@ -24,6 +24,7 @@ from addon.text_utils import (
     SAFE_2MORA_LOANWORDS,
     generate_search_candidates,
     is_grammar_function_word,
+    to_hiragana,
 )
 from addon.yomitan_parser import VERB_POS_PATTERN, YomitanMetadata, is_grammar_sense
 from scripts.synonyms.common import (
@@ -501,7 +502,11 @@ def load_curated_terms(catalog_path: str) -> Set[str]:
         finally:
             conn.close()
     except Exception as exc:
-        logger.debug("Failed to read curated synonyms from %s: %s", catalog_path, exc)
+        logger.warning(
+            "Failed to read curated synonyms from %s: %s; curated-term guard is disabled for this run",
+            catalog_path,
+            exc,
+        )
         return set()
 
 
@@ -610,8 +615,8 @@ def propagate_kana_uk_concepts(
             if term == reading or not kf or term in all_existing:
                 continue
 
-            # 2. Guard: Length/Loanword Guard
-            if not (len(reading) >= 3 or reading in SAFE_2MORA_LOANWORDS):
+            # 2. Guard: Length/Loanword Guard (supports both Hiragana and Katakana representations)
+            if not (len(reading) >= 3 or reading in SAFE_2MORA_LOANWORDS or to_hiragana(reading) in SAFE_2MORA_LOANWORDS):
                 continue
 
             # 3. Guard: Competing top-10k lexemes guard (blocks 辺り/あたり vs 当たり/あたり)
