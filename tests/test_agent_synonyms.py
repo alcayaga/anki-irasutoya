@@ -2890,6 +2890,63 @@ class TestPullModelsAndEmbedPresearch(unittest.TestCase):
             self.assertTrue(ok2)
             mock_batch.assert_called_once()
 
+    def test_run_ollama_compile_skips_propagated_uk_aliases(self) -> None:
+        """Verify run_ollama_compile prunes candidate pool with propagated uk aliases."""
+        llm_out = os.path.join(self.temp_dir.name, "llm_prop_skip.json")
+        with open(llm_out, "w", encoding="utf-8") as f:
+            json.dump({
+                "schema_version": 1,
+                "concepts": {},
+                "tier2_concepts": {},
+                "rejected": {"ようにする": "助動詞表現"},
+            }, f)
+
+        mock_candidates = [
+            {"term": "様にする", "reading": "ようにする", "frequency": 16413, "pos_tags": [], "english_glosses": [], "is_uk": True}
+        ]
+        mock_jpdb_path = os.path.join(self.temp_dir.name, "prop_jpdb.tsv")
+        with open(mock_jpdb_path, "w", encoding="utf-8") as f:
+            f.write(
+                "term\treading\tfrequency\tkana_frequency\n"
+                "ようにする\tようにする\t375\t\n"
+                "様にする\tようにする\t16413\t375\n"
+            )
+
+        cache_dir = os.path.join(self.temp_dir.name, "cache_prop_test")
+        os.makedirs(cache_dir, exist_ok=True)
+        ycache_path = os.path.join(cache_dir, "yomitan_api_cache.json")
+        with open(ycache_path, "w", encoding="utf-8") as f:
+            json.dump({"http://127.0.0.1:19633\tようにする\tようにする": {"is_uk": True}}, f)
+
+        with (
+            patch("scripts.synonyms.ollama_agent.load_jpdb_candidates", return_value=(mock_candidates, 0)),
+            patch("scripts.synonyms.ollama_agent.check_ollama_availability", return_value=(True, None)),
+            patch("scripts.synonyms.ollama_agent.run_ollama_agent_batch", return_value=({"様にする": ["猫"]}, 0)) as mock_batch,
+        ):
+            # Case 1: recheck_rejected=False -> "様にする" is skipped because "ようにする" was rejected
+            ok1 = run_ollama_compile(
+                catalog_path=self.db_path,
+                jpdb_path=mock_jpdb_path,
+                llm_out_path=llm_out,
+                cache_dir=cache_dir,
+                recheck_rejected=False,
+                no_embed=True,
+            )
+            self.assertTrue(ok1)
+            mock_batch.assert_not_called()
+
+            # Case 2: recheck_rejected=True -> "様にする" is included for re-evaluation
+            ok2 = run_ollama_compile(
+                catalog_path=self.db_path,
+                jpdb_path=mock_jpdb_path,
+                llm_out_path=llm_out,
+                cache_dir=cache_dir,
+                recheck_rejected=True,
+                no_embed=True,
+            )
+            self.assertTrue(ok2)
+            mock_batch.assert_called_once()
+
     def test_main_cli_agent_synonyms_new_flags(self) -> None:
         """Verify agent_synonyms main CLI passes --embed-model, --no-embed, --recheck-rejected, --pull-models."""
         with (
