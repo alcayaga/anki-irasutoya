@@ -905,6 +905,8 @@ def resolve_uk_aliases(
     res_t2 = 0
     res_rej = 0
     for alias, source_kana in sorted(aliases.items()):
+        if not isinstance(alias, str) or not isinstance(source_kana, str):
+            continue
         if alias in concepts or alias in tier2_concepts or alias in rejected:
             continue
         if source_kana in concepts:

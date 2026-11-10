@@ -1542,16 +1542,14 @@ class TestBuildSynonyms(unittest.TestCase):
 
         # Case 2: Existing file that raises an error during propagation
         corrupt_jpdb = os.path.join(self.temp_dir.name, "corrupt_jpdb.tsv")
-        with open(corrupt_jpdb, "w", encoding="utf-8") as f:
-            f.write("term\treading\tfrequency\tkana_frequency\n")
-        with patch("scripts.synonyms.concepts.propagate_kana_uk_concepts", return_value=None) as mock_prop:
-            ok_corrupt = populate_llm_concepts(
-                catalog_path=self.db_path,
-                llm_json_path=json_path,
-                jpdb_path=corrupt_jpdb,
-            )
-            self.assertFalse(ok_corrupt)
-            mock_prop.assert_called_once()
+        with open(corrupt_jpdb, "wb") as f:
+            f.write(b"\xff\xfe\xfa\xfb invalid utf-8 \x80\x81")
+        ok_corrupt = populate_llm_concepts(
+            catalog_path=self.db_path,
+            llm_json_path=json_path,
+            jpdb_path=corrupt_jpdb,
+        )
+        self.assertFalse(ok_corrupt)
 
     def test_populate_llm_concepts_explicit_aliases_resolved_with_jpdb(self) -> None:
         """Verify explicit aliases in JSON are resolved even when jpdb_path is passed."""
@@ -1569,7 +1567,11 @@ class TestBuildSynonyms(unittest.TestCase):
                 "concepts": {"猫": ["猫"]},
                 "tier2_concepts": {},
                 "rejected": {"ようにする": "助動詞"},
-                "aliases": {"ネコ": "猫"},
+                "aliases": {
+                    "ネコ": "猫",
+                    "bad_list": ["not_a_string"],
+                    123: "number_key",
+                },
             }, f)
 
         ok = populate_llm_concepts(

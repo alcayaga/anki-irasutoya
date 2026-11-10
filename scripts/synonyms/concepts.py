@@ -437,7 +437,11 @@ def populate_llm_concepts(
     raw_unver = data.get("unverified")
     unverified_data = dict(raw_unver) if isinstance(raw_unver, dict) else {}
     raw_aliases = data.get("aliases")
-    aliases_data = dict(raw_aliases) if isinstance(raw_aliases, dict) else {}
+    aliases_data = (
+        {k: v for k, v in raw_aliases.items() if isinstance(k, str) and isinstance(v, str)}
+        if isinstance(raw_aliases, dict)
+        else {}
+    )
 
     if aliases_data:
         resolve_uk_aliases(

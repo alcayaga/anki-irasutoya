@@ -2897,11 +2897,12 @@ class TestPullModelsAndEmbedPresearch(unittest.TestCase):
             json.dump({
                 "schema_version": 1,
                 "concepts": {
-                    "めちゃくちゃ": ["猫"],
                     "コーヒー": ["猫"],
                     "ガス": ["猫"],
                 },
-                "tier2_concepts": {},
+                "tier2_concepts": {
+                    "めちゃくちゃ": ["猫"],
+                },
                 "rejected": {
                     "ようにする": "助動詞表現",
                     "がん": "擬音語",
