@@ -1333,6 +1333,11 @@ class TestBuildSynonyms(unittest.TestCase):
                 "倉\tくら\t10085\t7581\n"
                 "なぞ\tなぞ\t1000\t\n"
                 "謎\tなぞ\t2000\t1000\n"
+                # Guard 5: Competing top-10k lexemes sharing reading (reading len >= 3)
+                "あたり\tあたり\t1484\t\n"
+                "辺り\tあたり\t1647\t1484\n"
+                "当たり\tあたり\t5483\t7403\n"
+                "あたり\tあたり\t7403\t\n"
                 # Curated term protection (reading len >= 3)
                 "すます\tすます\t651\t\n"
                 "済ます\tすます\t706\t651\n"
@@ -1343,6 +1348,7 @@ class TestBuildSynonyms(unittest.TestCase):
             "とめる": ["猫"],
             "ならい": ["猫"],
             "なぞ": ["猫"],
+            "あたり": ["猫"],
             "すます": ["猫"],
         }
         tier2_concepts: Dict[str, List[str]] = {}
@@ -1353,13 +1359,17 @@ class TestBuildSynonyms(unittest.TestCase):
         }
         curated_terms: Set[str] = {"済ます"}
 
-        p1, p2, prej = propagate_kana_uk_concepts(
+        res = propagate_kana_uk_concepts(
             concepts=concepts,
             tier2_concepts=tier2_concepts,
             rejected=rejected,
             jpdb_path=tsv_path,
             curated_terms=curated_terms,
         )
+
+        self.assertIsNotNone(res)
+        assert res is not None
+        p1, p2, prej = res
 
         # None of the guarded words should be propagated
         self.assertEqual(p1, 0)
@@ -1373,6 +1383,8 @@ class TestBuildSynonyms(unittest.TestCase):
         self.assertNotIn("癌", rejected)
         self.assertNotIn("倉", rejected)
         self.assertNotIn("謎", concepts)
+        self.assertNotIn("辺り", concepts)
+        self.assertNotIn("当たり", concepts)
         self.assertNotIn("済ます", concepts)
 
     def test_populate_llm_concepts_with_jpdb_propagates_uk_aliases_into_catalog(self) -> None:
@@ -1488,7 +1500,7 @@ class TestBuildSynonyms(unittest.TestCase):
         aliases_out: Dict[str, str] = {}
 
         with patch("scripts.synonyms.yomitan_jpdb._filter_alias_targets", side_effect=RuntimeError("Processing failure")):
-            p1, p2, prej = propagate_kana_uk_concepts(
+            res = propagate_kana_uk_concepts(
                 concepts=concepts,
                 tier2_concepts=tier2_concepts,
                 rejected=rejected,
@@ -1496,9 +1508,26 @@ class TestBuildSynonyms(unittest.TestCase):
                 aliases_out=aliases_out,
             )
 
-        self.assertEqual((p1, p2, prej), (0, 0, 0))
+        self.assertIsNone(res)
         self.assertNotIn("様にする", concepts)
         self.assertNotIn("様にする", aliases_out)
+
+    def test_populate_llm_concepts_failure_on_invalid_jpdb_surfaces_to_caller(self) -> None:
+        """Verify populate_llm_concepts returns False when jpdb_path fails, enabling workflow fallbacks."""
+        json_path = os.path.join(self.temp_dir.name, "llm_fail.json")
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "concepts": {"猫": ["猫のイラスト"]},
+                "tier2_concepts": {},
+                "rejected": {},
+            }, f)
+
+        ok = populate_llm_concepts(
+            catalog_path=self.db_path,
+            llm_json_path=json_path,
+            jpdb_path="/nonexistent/invalid_jpdb.tsv",
+        )
+        self.assertFalse(ok)
 
 
 

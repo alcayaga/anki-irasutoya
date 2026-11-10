@@ -2896,13 +2896,14 @@ class TestPullModelsAndEmbedPresearch(unittest.TestCase):
         with open(llm_out, "w", encoding="utf-8") as f:
             json.dump({
                 "schema_version": 1,
-                "concepts": {},
+                "concepts": {"めちゃくちゃ": ["猫"]},
                 "tier2_concepts": {},
                 "rejected": {"ようにする": "助動詞表現"},
             }, f)
 
         mock_candidates = [
-            {"term": "様にする", "reading": "ようにする", "frequency": 16413, "pos_tags": [], "english_glosses": [], "is_uk": True}
+            {"term": "様にする", "reading": "ようにする", "frequency": 16413, "pos_tags": [], "english_glosses": [], "is_uk": True},
+            {"term": "滅茶苦茶", "reading": "めちゃくちゃ", "frequency": 10178, "pos_tags": [], "english_glosses": [], "is_uk": True},
         ]
         mock_jpdb_path = os.path.join(self.temp_dir.name, "prop_jpdb.tsv")
         with open(mock_jpdb_path, "w", encoding="utf-8") as f:
@@ -2910,20 +2911,19 @@ class TestPullModelsAndEmbedPresearch(unittest.TestCase):
                 "term\treading\tfrequency\tkana_frequency\n"
                 "ようにする\tようにする\t375\t\n"
                 "様にする\tようにする\t16413\t375\n"
+                "めちゃくちゃ\tめちゃくちゃ\t3398\t\n"
+                "滅茶苦茶\tめちゃくちゃ\t10178\t3398\n"
             )
 
         cache_dir = os.path.join(self.temp_dir.name, "cache_prop_test")
         os.makedirs(cache_dir, exist_ok=True)
-        ycache_path = os.path.join(cache_dir, "yomitan_api_cache.json")
-        with open(ycache_path, "w", encoding="utf-8") as f:
-            json.dump({"http://127.0.0.1:19633\tようにする\tようにする": {"is_uk": True}}, f)
 
         with (
             patch("scripts.synonyms.ollama_agent.load_jpdb_candidates", return_value=(mock_candidates, 0)),
             patch("scripts.synonyms.ollama_agent.check_ollama_availability", return_value=(True, None)),
             patch("scripts.synonyms.ollama_agent.run_ollama_agent_batch", return_value=({"様にする": ["猫"]}, 0)) as mock_batch,
         ):
-            # Case 1: recheck_rejected=False -> "様にする" is skipped because "ようにする" was rejected
+            # Case 1: recheck_rejected=False -> both "様にする" (rejected) and "滅茶苦茶" (concept) are skipped
             ok1 = run_ollama_compile(
                 catalog_path=self.db_path,
                 jpdb_path=mock_jpdb_path,
@@ -2935,7 +2935,7 @@ class TestPullModelsAndEmbedPresearch(unittest.TestCase):
             self.assertTrue(ok1)
             mock_batch.assert_not_called()
 
-            # Case 2: recheck_rejected=True -> "様にする" is included for re-evaluation
+            # Case 2: recheck_rejected=True -> "様にする" (rejected) is re-evaluated, but "滅茶苦茶" (concept) remains skipped
             ok2 = run_ollama_compile(
                 catalog_path=self.db_path,
                 jpdb_path=mock_jpdb_path,
@@ -2946,6 +2946,10 @@ class TestPullModelsAndEmbedPresearch(unittest.TestCase):
             )
             self.assertTrue(ok2)
             mock_batch.assert_called_once()
+            call_candidates = mock_batch.call_args.kwargs.get("candidates", [])
+            batch_terms = [c["term"] for c in call_candidates]
+            self.assertIn("様にする", batch_terms)
+            self.assertNotIn("滅茶苦茶", batch_terms)
 
     def test_main_cli_agent_synonyms_new_flags(self) -> None:
         """Verify agent_synonyms main CLI passes --embed-model, --no-embed, --recheck-rejected, --pull-models."""

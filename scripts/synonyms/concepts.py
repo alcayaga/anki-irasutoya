@@ -442,7 +442,7 @@ def populate_llm_concepts(
     if jpdb_path:
         curated_terms = load_curated_terms(catalog_path)
 
-        propagate_kana_uk_concepts(
+        res = propagate_kana_uk_concepts(
             concepts=concepts_data,
             tier2_concepts=tier2_data,
             rejected=rejected_data,
@@ -451,6 +451,9 @@ def populate_llm_concepts(
             curated_terms=curated_terms,
             aliases_out=aliases_data,
         )
+        if res is None:
+            logger.error("Failed to propagate uk aliases from JPDB file: %s", jpdb_path)
+            return False
     elif aliases_data:
         resolve_uk_aliases(
             aliases=aliases_data,

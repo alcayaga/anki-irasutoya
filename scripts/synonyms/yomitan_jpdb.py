@@ -531,15 +531,16 @@ def propagate_kana_uk_concepts(
     unverified: Optional[Dict[str, str]] = None,
     curated_terms: Optional[Set[str]] = None,
     aliases_out: Optional[Dict[str, str]] = None,
-) -> Tuple[int, int, int]:
+) -> Optional[Tuple[int, int, int]]:
     """Propagate llm_concept, llm_concept_tier2, and llm_rejected to JPDB uk Kanji headwords.
 
     Matches JPDB rows (term, reading, frequency, kana_frequency) where kana_frequency
-    points to a compiled kana headword, subject to four precision guards:
+    points to a compiled kana headword, subject to five precision guards:
       1. len(reading) >= 3 or reading in SAFE_2MORA_LOANWORDS (avoids short homophone collisions)
-      2. min_reading_freq[reading] == kana_frequency and kana_frequency < frequency (lexeme is kana-dominant)
-      3. min_term_freq[term] == frequency (row represents primary reading of Kanji term)
-      4. Term is not in curated or existing sets.
+      2. len(top10k_kana_freqs[reading]) <= 1 (no competing top-10k lexemes sharing reading, blocking 辺り/あたり vs 当たり)
+      3. min_reading_freq[reading] == kana_frequency and kana_frequency < frequency (lexeme is kana-dominant)
+      4. min_term_freq[term] == frequency (row represents primary reading of Kanji term)
+      5. Term is not in curated or existing sets.
 
     Args:
         concepts: In-memory dictionary of Tier 1 visual concept mappings.
@@ -551,14 +552,11 @@ def propagate_kana_uk_concepts(
         aliases_out: Optional dictionary to store Kanji alias -> kana headword mapping.
 
     Returns:
-        Tuple of (prop_t1, prop_t2, prop_rej).
+        Tuple of (prop_t1, prop_t2, prop_rej) on success, or None on failure.
     """
-    prop_t1 = 0
-    prop_t2 = 0
-    prop_rej = 0
     if not os.path.isfile(jpdb_path):
         logger.warning("JPDB frequency file not found at %s; skipping uk alias propagation.", jpdb_path)
-        return 0, 0, 0
+        return None
 
     new_t1: Dict[str, List[str]] = {}
     new_t2: Dict[str, List[str]] = {}
@@ -576,17 +574,24 @@ def propagate_kana_uk_concepts(
 
         min_term_freq: Dict[str, int] = {}
         min_read_freq: Dict[str, int] = {}
+        top10k_kana_freqs: Dict[str, Set[int]] = {}
         
         # Pre-scan for frequency guards
         for r in rows:
             if len(r) < 3:
                 continue
             term, reading, freq_str = r[0], r[1], r[2]
+            kf_str = r[3] if len(r) > 3 else ""
             if not freq_str.isdigit():
                 continue
             freq = int(freq_str)
+            kf = int(kf_str) if kf_str.isdigit() else 0
             min_term_freq[term] = min(min_term_freq.get(term, freq), freq)
             min_read_freq[reading] = min(min_read_freq.get(reading, freq), freq)
+            if term == reading and freq <= 10000:
+                top10k_kana_freqs.setdefault(reading, set()).add(freq)
+            if kf and kf <= 10000:
+                top10k_kana_freqs.setdefault(reading, set()).add(kf)
 
         all_existing = set(concepts) | set(tier2_concepts) | set(rejected) | (set(unverified) if unverified else set())
         if curated_terms:
@@ -609,11 +614,15 @@ def propagate_kana_uk_concepts(
             if not (len(reading) >= 3 or reading in SAFE_2MORA_LOANWORDS):
                 continue
 
-            # 3. Guard: Primary Lexeme Guard
+            # 3. Guard: Competing top-10k lexemes guard (blocks 辺り/あたり vs 当たり/あたり)
+            if len(top10k_kana_freqs.get(reading, set())) > 1:
+                continue
+
+            # 4. Guard: Primary Lexeme Guard
             if min_read_freq.get(reading) != kf or kf >= freq:
                 continue
 
-            # 4. Guard: Primary Term Guard
+            # 5. Guard: Primary Term Guard
             if min_term_freq.get(term) != freq:
                 continue
 
@@ -648,7 +657,7 @@ def propagate_kana_uk_concepts(
                     
     except Exception as exc:
         logger.warning("Error propagating uk concepts from %s: %s", jpdb_path, exc)
-        return 0, 0, 0
+        return None
 
     logger.info("Propagated uk aliases from JPDB: %d Tier 1, %d Tier 2, %d rejected", prop_t1, prop_t2, prop_rej)
     return prop_t1, prop_t2, prop_rej
