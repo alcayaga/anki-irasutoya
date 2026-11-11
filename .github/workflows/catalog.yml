@@ -62,6 +62,7 @@ jobs:
           if ! python scripts/build_synonyms.py \
             --catalog addon/data/catalog.sqlite \
             --llm scripts/sources/llm_concepts.json \
+            --jpdb-github \
             --non-strict; then
             python scripts/build_synonyms.py \
               --catalog addon/data/catalog.sqlite \

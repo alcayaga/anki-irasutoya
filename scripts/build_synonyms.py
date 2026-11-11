@@ -46,6 +46,12 @@ from scripts.synonyms.sudachi import (  # noqa: E402
     fetch_sudachi_github,
     populate_sudachi_synonyms,
 )
+from scripts.synonyms.yomitan_jpdb import (  # noqa: E402
+    fetch_jpdb_freq_github,
+    load_curated_terms,
+    propagate_kana_uk_concepts,
+    resolve_uk_aliases,
+)
 
 __all__ = [
     "BILINGUAL_MIN_MATCHED",
@@ -59,9 +65,11 @@ __all__ = [
     "clean_alt_text",
     "clean_sudachi_headword",
     "extract_collection_from_apkg",
+    "fetch_jpdb_freq_github",
     "fetch_kaishi_github_slice",
     "fetch_sudachi_github",
     "filter_relevant_illustrations",
+    "load_curated_terms",
     "main",
     "normalize_stem",
     "populate_bilingual_glosses",
@@ -69,7 +77,9 @@ __all__ = [
     "populate_llm_concepts",
     "populate_manual_concepts",
     "populate_sudachi_synonyms",
+    "propagate_kana_uk_concepts",
     "prune_stale_synonyms",
+    "resolve_uk_aliases",
     "update_catalog_sha256",
     "validate_catalog_synonyms",
 ]
@@ -101,6 +111,15 @@ def main(argv: Sequence[str]) -> int:
         nargs="?",
         const=DEFAULT_LLM_CONCEPTS_PATH,
         help=f"Path to LLM concepts JSON file to compile into catalog (default: {DEFAULT_LLM_CONCEPTS_PATH})",
+    )
+    parser.add_argument(
+        "--jpdb",
+        help="Path to local JPDB v2.2 frequency list CSV/TSV to propagate uk aliases",
+    )
+    parser.add_argument(
+        "--jpdb-github",
+        action="store_true",
+        help="Fetch JPDB v2.2 frequency list from GitHub and propagate uk aliases",
     )
     parser.add_argument(
         "--strict",
@@ -157,6 +176,22 @@ def main(argv: Sequence[str]) -> int:
 
     args = parser.parse_args(argv)
 
+    jpdb_path = args.jpdb
+    if args.jpdb_github:
+        if not args.llm:
+            parser.error("--jpdb-github requires --llm")
+        try:
+            jpdb_path = fetch_jpdb_freq_github(cache_dir=args.cache_dir)
+        except Exception as exc:
+            logger.error("Failed to fetch JPDB frequency list from GitHub: %s", exc)
+            return 1
+    elif args.jpdb:
+        if not args.llm:
+            parser.error("--jpdb requires --llm")
+        if not os.path.isfile(args.jpdb):
+            logger.error("JPDB frequency list not found: %s", args.jpdb)
+            return 1
+
     if args.prune_stale:
         pruned = prune_stale_synonyms(catalog_path=args.catalog, source=args.prune_stale)
         if pruned < 0:
@@ -187,6 +222,7 @@ def main(argv: Sequence[str]) -> int:
             catalog_path=args.catalog,
             llm_json_path=args.llm,
             strict=args.strict,
+            jpdb_path=jpdb_path,
         )
         if not ok:
             return 1

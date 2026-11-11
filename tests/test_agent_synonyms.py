@@ -2890,6 +2890,107 @@ class TestPullModelsAndEmbedPresearch(unittest.TestCase):
             self.assertTrue(ok2)
             mock_batch.assert_called_once()
 
+    def test_run_ollama_compile_skips_propagated_uk_aliases(self) -> None:
+        """Verify run_ollama_compile prunes candidate pool with propagated uk aliases."""
+        llm_out = os.path.join(self.temp_dir.name, "llm_prop_skip.json")
+        with open(llm_out, "w", encoding="utf-8") as f:
+            json.dump({
+                "schema_version": 1,
+                "concepts": {
+                    "コーヒー": ["猫"],
+                    "ガス": ["猫"],
+                },
+                "tier2_concepts": {
+                    "めちゃくちゃ": ["猫"],
+                },
+                "rejected": {
+                    "ようにする": "助動詞表現",
+                    "がん": "擬音語",
+                    "あたり": "名詞",
+                },
+            }, f)
+
+        mock_candidates = [
+            {"term": "様にする", "reading": "ようにする", "frequency": 16413, "pos_tags": [], "english_glosses": [], "is_uk": True},
+            {"term": "滅茶苦茶", "reading": "めちゃくちゃ", "frequency": 10178, "pos_tags": [], "english_glosses": [], "is_uk": True},
+            {"term": "珈琲", "reading": "コーヒー", "frequency": 20325, "pos_tags": [], "english_glosses": [], "is_uk": True},
+            {"term": "瓦斯", "reading": "ガス", "frequency": 48225, "pos_tags": [], "english_glosses": [], "is_uk": True},
+            # Negative guards: 2-mora non-loanword and competing top-10k homophone
+            {"term": "癌", "reading": "がん", "frequency": 28156, "pos_tags": [], "english_glosses": [], "is_uk": True},
+            {"term": "辺り", "reading": "あたり", "frequency": 1647, "pos_tags": [], "english_glosses": [], "is_uk": True},
+        ]
+        mock_jpdb_path = os.path.join(self.temp_dir.name, "prop_jpdb.tsv")
+        with open(mock_jpdb_path, "w", encoding="utf-8") as f:
+            f.write(
+                "term\treading\tfrequency\tkana_frequency\n"
+                "ようにする\tようにする\t375\t\n"
+                "様にする\tようにする\t16413\t375\n"
+                "めちゃくちゃ\tめちゃくちゃ\t3398\t\n"
+                "滅茶苦茶\tめちゃくちゃ\t10178\t3398\n"
+                "コーヒー\tコーヒー\t3296\t\n"
+                "珈琲\tコーヒー\t20325\t3296\n"
+                "ガス\tガス\t6789\t\n"
+                "瓦斯\tガス\t48225\t6789\n"
+                # Negative guard rows: 癌 is 2-mora non-loanword; 辺り has competing 当たり row
+                "がん\tがん\t7188\t\n"
+                "癌\tがん\t28156\t7188\n"
+                "あたり\tあたり\t1484\t\n"
+                "辺り\tあたり\t1647\t1484\n"
+                "当たり\tあたり\t5483\t7403\n"
+                "あたり\tあたり\t7403\t\n"
+            )
+
+        cache_dir = os.path.join(self.temp_dir.name, "cache_prop_test")
+        os.makedirs(cache_dir, exist_ok=True)
+
+        with (
+            patch("scripts.synonyms.ollama_agent.load_jpdb_candidates", return_value=(mock_candidates, 0)),
+            patch("scripts.synonyms.ollama_agent.check_ollama_availability", return_value=(True, None)),
+            patch("scripts.synonyms.ollama_agent.run_ollama_agent_batch", return_value=({"様にする": ["猫"]}, 0)) as mock_batch,
+        ):
+            # Case 1: recheck_rejected=False -> propagated uk aliases (concept & rejected) are skipped,
+            # but unpropagated negative guard terms (癌, 辺り) remain for evaluation.
+            ok1 = run_ollama_compile(
+                catalog_path=self.db_path,
+                jpdb_path=mock_jpdb_path,
+                llm_out_path=llm_out,
+                cache_dir=cache_dir,
+                recheck_rejected=False,
+                no_embed=True,
+            )
+            self.assertTrue(ok1)
+            mock_batch.assert_called_once()
+            c1_candidates = mock_batch.call_args.kwargs.get("candidates", [])
+            c1_terms = [c["term"] for c in c1_candidates]
+            # Propagated uk aliases must be skipped
+            self.assertNotIn("様にする", c1_terms)
+            self.assertNotIn("滅茶苦茶", c1_terms)
+            self.assertNotIn("珈琲", c1_terms)
+            self.assertNotIn("瓦斯", c1_terms)
+            # Blocked negative guard terms are not propagated, so they remain candidates
+            self.assertIn("癌", c1_terms)
+            self.assertIn("辺り", c1_terms)
+
+            # Case 2: recheck_rejected=True -> rejected alias "様にする" is re-evaluated,
+            # but concept aliases (滅茶苦茶, 珈琲, 瓦斯) remain skipped.
+            mock_batch.reset_mock()
+            ok2 = run_ollama_compile(
+                catalog_path=self.db_path,
+                jpdb_path=mock_jpdb_path,
+                llm_out_path=llm_out,
+                cache_dir=cache_dir,
+                recheck_rejected=True,
+                no_embed=True,
+            )
+            self.assertTrue(ok2)
+            mock_batch.assert_called_once()
+            c2_candidates = mock_batch.call_args.kwargs.get("candidates", [])
+            c2_terms = [c["term"] for c in c2_candidates]
+            self.assertIn("様にする", c2_terms)
+            self.assertNotIn("滅茶苦茶", c2_terms)
+            self.assertNotIn("珈琲", c2_terms)
+            self.assertNotIn("瓦斯", c2_terms)
+
     def test_main_cli_agent_synonyms_new_flags(self) -> None:
         """Verify agent_synonyms main CLI passes --embed-model, --no-embed, --recheck-rejected, --pull-models."""
         with (

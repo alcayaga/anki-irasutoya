@@ -23,6 +23,11 @@ from scripts.synonyms.common import (
     filter_relevant_illustrations,
     update_catalog_sha256,
 )
+from scripts.synonyms.yomitan_jpdb import (
+    load_curated_terms,
+    propagate_kana_uk_concepts,
+    resolve_uk_aliases,
+)
 
 logger = logging.getLogger("synonyms.concepts")
 
@@ -53,6 +58,7 @@ def _validate_concept_json_mapping(
     concept_key: str = "concepts",
     validate_canonical_headwords: bool = False,
     strict: bool = True,
+    raw_concepts_override: Optional[Dict[str, List[str]]] = None,
 ) -> Optional[Dict[str, List[str]]]:
     """Validate JSON visual concepts against catalog illustration titles.
 
@@ -64,6 +70,7 @@ def _validate_concept_json_mapping(
         concept_key: Key in the JSON dictionary to extract concepts from (default: 'concepts').
         validate_canonical_headwords: If True, validates headwords match canonical English glosses.
         strict: If True, requires 100% of targets to validate against the catalog.
+        raw_concepts_override: Optional in-memory mapping to validate instead of reading from JSON.
 
     Returns:
         Clean validated mapping if validation succeeded, None otherwise.
@@ -86,7 +93,9 @@ def _validate_concept_json_mapping(
         logger.error("Root JSON value in %s is not an object", json_path)
         return None
 
-    if concept_key == "concepts":
+    if raw_concepts_override is not None:
+        raw_concepts = raw_concepts_override
+    elif concept_key == "concepts":
         raw_concepts = data.get("concepts") or data.get("mappings") or {}
     else:
         raw_concepts = data.get(concept_key) or {}
@@ -391,6 +400,7 @@ def populate_llm_concepts(
     llm_json_path: str,
     min_matched: int = 1,
     strict: bool = True,
+    jpdb_path: Optional[str] = None,
 ) -> bool:
     """Compile LLM-curated visual concepts (Tier 1 & Tier 2) into catalog.sqlite synonyms table.
 
@@ -399,6 +409,7 @@ def populate_llm_concepts(
         llm_json_path: Path to source JSON file containing LLM concepts.
         min_matched: Minimum required concept mappings before writing (defaults to 1).
         strict: If True, requires 100% of targets to validate against the catalog.
+        jpdb_path: Optional path to JPDB v2.2 frequency list CSV/TSV to propagate uk aliases.
 
     Returns:
         True if all targets validated and populated successfully, False otherwise.
@@ -419,9 +430,45 @@ def populate_llm_concepts(
             logger.error("Invalid '%s' structure in %s: expected object", field, llm_json_path)
             return False
 
-    has_t1 = bool(data.get("concepts") or data.get("mappings"))
-    has_t2 = bool(data.get("tier2_concepts"))
+    concepts_data = dict(data.get("concepts") or data.get("mappings") or {})
+    tier2_data = dict(data.get("tier2_concepts") or {})
     raw_rej = data.get("rejected")
+    rejected_data = dict(raw_rej) if isinstance(raw_rej, dict) else {}
+    raw_unver = data.get("unverified")
+    unverified_data = dict(raw_unver) if isinstance(raw_unver, dict) else {}
+    raw_aliases = data.get("aliases")
+    aliases_data = (
+        {k: v for k, v in raw_aliases.items() if isinstance(k, str) and isinstance(v, str)}
+        if isinstance(raw_aliases, dict)
+        else {}
+    )
+
+    if aliases_data:
+        resolve_uk_aliases(
+            aliases=aliases_data,
+            concepts=concepts_data,
+            tier2_concepts=tier2_data,
+            rejected=rejected_data,
+        )
+
+    if jpdb_path:
+        curated_terms = load_curated_terms(catalog_path)
+
+        res = propagate_kana_uk_concepts(
+            concepts=concepts_data,
+            tier2_concepts=tier2_data,
+            rejected=rejected_data,
+            jpdb_path=jpdb_path,
+            unverified=unverified_data,
+            curated_terms=curated_terms,
+            aliases_out=aliases_data,
+        )
+        if res is None:
+            logger.error("Failed to propagate uk aliases from JPDB file: %s", jpdb_path)
+            return False
+
+    has_t1 = bool(concepts_data)
+    has_t2 = bool(tier2_data)
 
     # Phase 1: Validate both Tier 1 and Tier 2 (if present) before mutating the catalog
     validated_t1: Dict[str, List[str]] = {}
@@ -434,6 +481,7 @@ def populate_llm_concepts(
             concept_key="concepts",
             validate_canonical_headwords=False,
             strict=strict,
+            raw_concepts_override=concepts_data,
         )
         if res_t1 is None:
             return False
@@ -449,6 +497,7 @@ def populate_llm_concepts(
             concept_key="tier2_concepts",
             validate_canonical_headwords=False,
             strict=strict,
+            raw_concepts_override=tier2_data,
         )
         if res_t2 is None:
             return False
@@ -465,8 +514,8 @@ def populate_llm_concepts(
 
     # Extract semantic rejections, filtering out unverified target misses and validated positive concepts
     rejection_mapping: Dict[str, List[str]] = {}
-    if isinstance(raw_rej, dict):
-        for term, reason in sorted(raw_rej.items()):
+    if rejected_data:
+        for term, reason in sorted(rejected_data.items()):
             if not isinstance(reason, str):
                 continue
             clean_term = canonicalize_synonym_term(term)

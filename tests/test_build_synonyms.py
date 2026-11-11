@@ -8,7 +8,7 @@ import tempfile
 import unittest
 import urllib.error
 import zipfile
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Set
 from unittest.mock import patch
 
 from addon.catalog import CatalogStore, create_schema, write_posts, write_synonyms
@@ -18,12 +18,14 @@ from scripts.build_synonyms import (
     clean_sudachi_headword,
     fetch_kaishi_github_slice,
     fetch_sudachi_github,
+    load_curated_terms,
     main,
     populate_bilingual_glosses,
     populate_kaishi_concepts,
     populate_llm_concepts,
     populate_manual_concepts,
     populate_sudachi_synonyms,
+    propagate_kana_uk_concepts,
     prune_stale_synonyms,
     validate_catalog_synonyms,
 )
@@ -1263,6 +1265,334 @@ class TestBuildSynonyms(unittest.TestCase):
 
         # Should refuse replacement because distinct keyword count (1) < 80% of existing (10)
         self.assertFalse(populate_kaishi_concepts(target_db, small_kaishi, min_matched=1))
+
+    def test_propagate_kana_uk_concepts_issue_72_cases(self) -> None:
+        """Verify Issue #72 uk cases inherit llm_rejected, llm_concept_tier2, and llm_concept."""
+        tsv_path = os.path.join(self.temp_dir.name, "mock_jpdb_issue72.tsv")
+        with open(tsv_path, "w", encoding="utf-8") as f:
+            f.write(
+                "term\treading\tfrequency\tkana_frequency\n"
+                "ようにする\tようにする\t375\t\n"
+                "様にする\tようにする\t16413\t375\n"
+                "よくある\tよくある\t2952\t\n"
+                "良くある\tよくある\t30975\t2952\n"
+                "めちゃくちゃ\tめちゃくちゃ\t3398\t\n"
+                "滅茶苦茶\tめちゃくちゃ\t10178\t3398\n"
+                "コーヒー\tコーヒー\t3296\t\n"
+                "珈琲\tコーヒー\t20325\t3296\n"
+                # 瓦斯: 2-mora loanword allowed via SAFE_2MORA_LOANWORDS exception
+                "ガス\tガス\t6789\t\n"
+                "瓦斯\tガス\t48225\t6789\n"
+            )
+
+        concepts: Dict[str, List[str]] = {
+            "コーヒー": ["猫"],
+            "ガス": ["猫"],
+        }
+        tier2_concepts: Dict[str, List[str]] = {"めちゃくちゃ": ["猫"]}
+        rejected: Dict[str, str] = {
+            "ようにする": "助動詞のため非視覚的",
+            "よくある": "頻度表現のため非視覚的",
+        }
+
+        res = propagate_kana_uk_concepts(
+            concepts=concepts,
+            tier2_concepts=tier2_concepts,
+            rejected=rejected,
+            jpdb_path=tsv_path,
+        )
+        self.assertIsNotNone(res)
+        assert res is not None
+        p1, p2, prej = res
+
+        self.assertEqual(p1, 2)
+        self.assertEqual(p2, 1)
+        self.assertEqual(prej, 2)
+
+        # Confirm exact propagated mappings
+        self.assertEqual(concepts.get("珈琲"), ["猫"])
+        self.assertEqual(concepts.get("瓦斯"), ["猫"])
+        self.assertEqual(tier2_concepts.get("滅茶苦茶"), ["猫"])
+        self.assertEqual(rejected.get("様にする"), "助動詞のため非視覚的")
+        self.assertEqual(rejected.get("良くある"), "頻度表現のため非視覚的")
+
+    def test_propagate_kana_uk_concepts_precision_guards(self) -> None:
+        """Verify non-uk homophones, homographs, and non-uk cache entries are blocked by guards."""
+        tsv_path = os.path.join(self.temp_dir.name, "mock_jpdb_guards.tsv")
+        with open(tsv_path, "w", encoding="utf-8") as f:
+            f.write(
+                "term\treading\tfrequency\tkana_frequency\n"
+                # Guard 1: Secondary kana homophone rank pointing to non-primary kana row (reading len >= 3)
+                "ことば\tことば\t573\t\n"
+                "言葉\tことば\t136\t108601\n"
+                "ことば\tことば\t108601\t\n"
+                # Guard 2: Kanji-dominant lexemes where Kanji is more frequent than kana (reading len >= 3)
+                "頭\tあたま\t238\t9993\n"
+                "あたま\tあたま\t9993\t\n"
+                "止める\tとめる\t298\t5587\n"
+                "とめる\tとめる\t5587\t\n"
+                "停める\tとめる\t10411\t5587\n"
+                # Guard 3: Kanji homograph where row is a rarer secondary reading (reading len >= 3)
+                "風\tかぜ\t747\t\n"
+                "ならい\tならい\t6088\t\n"
+                "風\tならい\t15401\t6088\n"
+                # Guard 4: 2-mora homophone length guard (len < 3 and not in SAFE_2MORA_LOANWORDS)
+                "がん\tがん\t7188\t\n"
+                "癌\tがん\t28156\t7188\n"
+                "くら\tくら\t7581\t\n"
+                "倉\tくら\t10085\t7581\n"
+                "なぞ\tなぞ\t1000\t\n"
+                "謎\tなぞ\t2000\t1000\n"
+                # Guard 5: Competing top-10k lexemes sharing reading (reading len >= 3)
+                "あたり\tあたり\t1484\t\n"
+                "辺り\tあたり\t1647\t1484\n"
+                "当たり\tあたり\t5483\t7403\n"
+                "あたり\tあたり\t7403\t\n"
+                # Curated term protection (reading len >= 3)
+                "すます\tすます\t651\t\n"
+                "済ます\tすます\t706\t651\n"
+            )
+
+        concepts: Dict[str, List[str]] = {
+            "あたま": ["猫"],
+            "とめる": ["猫"],
+            "ならい": ["猫"],
+            "なぞ": ["猫"],
+            "あたり": ["猫"],
+            "すます": ["猫"],
+        }
+        tier2_concepts: Dict[str, List[str]] = {}
+        rejected: Dict[str, str] = {
+            "ことば": "感嘆詞",
+            "がん": "擬音語",
+            "くら": "名詞",
+        }
+        curated_terms: Set[str] = {"済ます"}
+
+        res = propagate_kana_uk_concepts(
+            concepts=concepts,
+            tier2_concepts=tier2_concepts,
+            rejected=rejected,
+            jpdb_path=tsv_path,
+            curated_terms=curated_terms,
+        )
+
+        self.assertIsNotNone(res)
+        assert res is not None
+        p1, p2, prej = res
+
+        # None of the guarded words should be propagated
+        self.assertEqual(p1, 0)
+        self.assertEqual(p2, 0)
+        self.assertEqual(prej, 0)
+
+        self.assertNotIn("言葉", rejected)
+        self.assertNotIn("頭", concepts)
+        self.assertNotIn("停める", concepts)
+        self.assertNotIn("風", concepts)
+        self.assertNotIn("癌", rejected)
+        self.assertNotIn("倉", rejected)
+        self.assertNotIn("謎", concepts)
+        self.assertNotIn("辺り", concepts)
+        self.assertNotIn("当たり", concepts)
+        self.assertNotIn("済ます", concepts)
+
+    def test_populate_llm_concepts_with_jpdb_propagates_uk_aliases_into_catalog(self) -> None:
+        """Verify populate_llm_concepts compiles propagated uk aliases directly into SQLite."""
+        tsv_path = os.path.join(self.temp_dir.name, "mock_jpdb_populate.tsv")
+        with open(tsv_path, "w", encoding="utf-8") as f:
+            f.write(
+                "term\treading\tfrequency\tkana_frequency\n"
+                "ようにする\tようにする\t375\t\n"
+                "様にする\tようにする\t16413\t375\n"
+                "めちゃくちゃ\tめちゃくちゃ\t3398\t\n"
+                "滅茶苦茶\tめちゃくちゃ\t10178\t3398\n"
+                "コーヒー\tコーヒー\t3296\t\n"
+                "珈琲\tコーヒー\t20325\t3296\n"
+            )
+
+        json_path = os.path.join(self.temp_dir.name, "llm_populate.json")
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "concepts": {"コーヒー": ["猫"]},
+                "tier2_concepts": {"めちゃくちゃ": ["猫"]},
+                "rejected": {"ようにする": "助動詞表現"},
+            }, f)
+
+        ok = populate_llm_concepts(
+            catalog_path=self.db_path,
+            llm_json_path=json_path,
+            jpdb_path=tsv_path,
+            min_matched=1,
+            strict=True,
+        )
+        self.assertTrue(ok)
+
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT term, target, source FROM synonyms ORDER BY source, term")
+        rows = cur.fetchall()
+        conn.close()
+
+        # Both the original kana headwords and their propagated uk Kanji aliases must be present
+        t1_terms = [r[0] for r in rows if r[2] == "llm_concept"]
+        t2_terms = [r[0] for r in rows if r[2] == "llm_concept_tier2"]
+        rej_terms = [r[0] for r in rows if r[2] == "llm_rejected"]
+
+        self.assertIn("コーヒー", t1_terms)
+        self.assertIn("珈琲", t1_terms)
+        self.assertIn("めちゃくちゃ", t2_terms)
+        self.assertIn("滅茶苦茶", t2_terms)
+        self.assertIn("ようにする", rej_terms)
+        self.assertIn("様にする", rej_terms)
+
+    def test_load_curated_terms_extracts_manual_and_kaishi_sources(self) -> None:
+        """Verify load_curated_terms retrieves terms with source manual or donkuri/kaishi."""
+        # Non-existent DB returns empty set
+        self.assertEqual(load_curated_terms("/nonexistent/catalog.sqlite"), set())
+
+        # Empty schema returns empty set
+        empty_db = os.path.join(self.temp_dir.name, "empty_curated.sqlite")
+        conn = sqlite3.connect(empty_db)
+        conn.close()
+        self.assertEqual(load_curated_terms(empty_db), set())
+
+        # DB with synonyms table
+        conn = sqlite3.connect(self.db_path)
+        create_schema(conn)
+        cur = conn.cursor()
+        cur.executemany(
+            "INSERT INTO synonyms (term, target, source) VALUES (?, ?, ?)",
+            [
+                ("猫", "猫のイラスト", "manual"),
+                ("犬", "犬のイラスト", "donkuri/kaishi"),
+                ("車", "車のイラスト", "sudachi"),
+                ("本", "本のイラスト", "llm_concept"),
+            ],
+        )
+        conn.commit()
+        conn.close()
+        curated = load_curated_terms(self.db_path)
+        self.assertEqual(curated, {"猫", "犬"})
+
+    def test_main_cli_jpdb_validation(self) -> None:
+        """Verify main() enforces --llm when --jpdb or --jpdb-github is passed and checks file existence."""
+        # Case 1: --jpdb passed without --llm raises parser error
+        with self.assertRaises(SystemExit):
+            main(["--catalog", self.db_path, "--jpdb", "/some/path.tsv"])
+
+        # Case 2: --jpdb pointing to non-existent file returns 1
+        ret = main(["--catalog", self.db_path, "--llm", "--jpdb", "/nonexistent/fake_jpdb.tsv"])
+        self.assertEqual(ret, 1)
+
+        # Case 3: --jpdb-github passed without --llm raises parser error
+        with self.assertRaises(SystemExit):
+            main(["--catalog", self.db_path, "--jpdb-github"])
+
+        # Case 4: --jpdb-github fetch failure returns 1
+        with patch("scripts.build_synonyms.fetch_jpdb_freq_github", side_effect=ValueError("Download failed")):
+            ret = main(["--catalog", self.db_path, "--llm", "--jpdb-github"])
+            self.assertEqual(ret, 1)
+
+    def test_propagate_kana_uk_concepts_atomic_rollback_on_error(self) -> None:
+        """Verify propagate_kana_uk_concepts rolls back mutations atomically if an exception occurs mid-run."""
+        tsv_path = os.path.join(self.temp_dir.name, "mock_jpdb_atomic.tsv")
+        with open(tsv_path, "w", encoding="utf-8") as f:
+            f.write(
+                "term\treading\tfrequency\tkana_frequency\n"
+                "ようにする\tようにする\t375\t\n"
+                "様にする\tようにする\t16413\t375\n"
+            )
+
+        concepts: Dict[str, List[str]] = {"ようにする": ["猫"]}
+        tier2_concepts: Dict[str, List[str]] = {}
+        rejected: Dict[str, str] = {}
+        aliases_out: Dict[str, str] = {}
+
+        with patch("scripts.synonyms.yomitan_jpdb._filter_alias_targets", side_effect=RuntimeError("Processing failure")):
+            res = propagate_kana_uk_concepts(
+                concepts=concepts,
+                tier2_concepts=tier2_concepts,
+                rejected=rejected,
+                jpdb_path=tsv_path,
+                aliases_out=aliases_out,
+            )
+
+        self.assertIsNone(res)
+        self.assertNotIn("様にする", concepts)
+        self.assertNotIn("様にする", aliases_out)
+
+    def test_populate_llm_concepts_failure_on_invalid_jpdb_surfaces_to_caller(self) -> None:
+        """Verify populate_llm_concepts returns False when jpdb_path fails, enabling workflow fallbacks."""
+        json_path = os.path.join(self.temp_dir.name, "llm_fail.json")
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "concepts": {"猫": ["猫のイラスト"]},
+                "tier2_concepts": {},
+                "rejected": {},
+            }, f)
+
+        # Case 1: Non-existent file early return
+        ok_nonexistent = populate_llm_concepts(
+            catalog_path=self.db_path,
+            llm_json_path=json_path,
+            jpdb_path="/nonexistent/invalid_jpdb.tsv",
+        )
+        self.assertFalse(ok_nonexistent)
+
+        # Case 2: Existing file that raises an error during propagation
+        corrupt_jpdb = os.path.join(self.temp_dir.name, "corrupt_jpdb.tsv")
+        with open(corrupt_jpdb, "wb") as f:
+            f.write(b"\xff\xfe\xfa\xfb invalid utf-8 \x80\x81")
+        ok_corrupt = populate_llm_concepts(
+            catalog_path=self.db_path,
+            llm_json_path=json_path,
+            jpdb_path=corrupt_jpdb,
+        )
+        self.assertFalse(ok_corrupt)
+
+    def test_populate_llm_concepts_explicit_aliases_resolved_with_jpdb(self) -> None:
+        """Verify explicit aliases in JSON are resolved even when jpdb_path is passed."""
+        tsv_path = os.path.join(self.temp_dir.name, "mock_jpdb_explicit.tsv")
+        with open(tsv_path, "w", encoding="utf-8") as f:
+            f.write(
+                "term\treading\tfrequency\tkana_frequency\n"
+                "ようにする\tようにする\t375\t\n"
+                "様にする\tようにする\t16413\t375\n"
+            )
+
+        json_path = os.path.join(self.temp_dir.name, "llm_explicit_aliases.json")
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "concepts": {"猫": ["猫"]},
+                "tier2_concepts": {},
+                "rejected": {"ようにする": "助動詞"},
+                "aliases": {
+                    "ネコ": "猫",
+                    "bad_list": ["not_a_string"],
+                    123: "number_key",
+                },
+            }, f)
+
+        ok = populate_llm_concepts(
+            catalog_path=self.db_path,
+            llm_json_path=json_path,
+            jpdb_path=tsv_path,
+            min_matched=1,
+            strict=True,
+        )
+        self.assertTrue(ok)
+
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT term, target FROM synonyms WHERE term IN ('ネコ', '様にする')")
+        rows = dict(cur.fetchall())
+        conn.close()
+
+        self.assertIn("ネコ", rows)
+        self.assertEqual(rows["ネコ"], "猫")
+        self.assertIn("様にする", rows)
+
 
 
 if __name__ == "__main__":

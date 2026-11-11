@@ -21,11 +21,15 @@ from addon.ranking import (
 from addon.text_utils import (
     BIKAGO_PREFIX_WORDS,
     HONORIFIC_STRIP_BLOCKLIST,
+    SAFE_2MORA_LOANWORDS,
     generate_search_candidates,
     is_grammar_function_word,
+    to_hiragana,
 )
 from addon.yomitan_parser import VERB_POS_PATTERN, YomitanMetadata, is_grammar_sense
 from scripts.synonyms.common import (
+    UNVERIFIED_REASON_PREFIX,
+    _is_disallowed_text_callout_target,
     _readonly_catalog_uri,
     filter_relevant_illustrations,
 )
@@ -475,6 +479,195 @@ def _save_yomitan_cache(cache: Dict[str, Any], path: str) -> None:
     os.replace(tmp_path, abs_path)
 
 
+def load_curated_terms(catalog_path: str) -> Set[str]:
+    """Retrieve human-curated and validated Kaishi terms from the catalog.
+
+    Args:
+        catalog_path: Path to the SQLite catalog database.
+
+    Returns:
+        Set of Japanese terms with source 'manual' or 'donkuri/kaishi'.
+    """
+    if not catalog_path or not os.path.isfile(catalog_path):
+        return set()
+    try:
+        conn = sqlite3.connect(_readonly_catalog_uri(catalog_path), uri=True)
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='synonyms'")
+            if cur.fetchone() is None:
+                return set()
+            cur.execute("SELECT term FROM synonyms WHERE source IN ('manual', 'donkuri/kaishi')")
+            return {r[0] for r in cur.fetchall()}
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.warning(
+            "Failed to read curated synonyms from %s: %s; curated-term guard is disabled for this run",
+            catalog_path,
+            exc,
+        )
+        return set()
+
+
+def _filter_alias_targets(raw_tgts: Any, alias: str) -> List[str]:
+    """Filter raw targets to valid string illustrations not disallowed for the alias.
+
+    Args:
+        raw_tgts: Raw targets value (expected List[str]).
+        alias: Target Kanji alias term to validate against text callouts.
+
+    Returns:
+        Filtered list of illustration title strings.
+    """
+    if not isinstance(raw_tgts, list):
+        return []
+    return [
+        t for t in raw_tgts
+        if isinstance(t, str) and not _is_disallowed_text_callout_target(t, alias)
+    ]
+
+
+def propagate_kana_uk_concepts(
+    concepts: Dict[str, List[str]],
+    tier2_concepts: Dict[str, List[str]],
+    rejected: Dict[str, str],
+    jpdb_path: str,
+    unverified: Optional[Dict[str, str]] = None,
+    curated_terms: Optional[Set[str]] = None,
+    aliases_out: Optional[Dict[str, str]] = None,
+) -> Optional[Tuple[int, int, int]]:
+    """Propagate llm_concept, llm_concept_tier2, and llm_rejected to JPDB uk Kanji headwords.
+
+    Matches JPDB rows (term, reading, frequency, kana_frequency) where kana_frequency
+    points to a compiled kana headword, subject to five precision guards:
+      1. len(reading) >= 3 or reading in SAFE_2MORA_LOANWORDS (avoids short homophone collisions)
+      2. len(top10k_kana_freqs[reading]) <= 1 (no competing top-10k lexemes sharing reading, blocking 辺り/あたり vs 当たり)
+      3. min_reading_freq[reading] == kana_frequency and kana_frequency < frequency (lexeme is kana-dominant)
+      4. min_term_freq[term] == frequency (row represents primary reading of Kanji term)
+      5. Term is not in curated or existing sets.
+
+    Args:
+        concepts: In-memory dictionary of Tier 1 visual concept mappings.
+        tier2_concepts: In-memory dictionary of Tier 2 visual exemplar mappings.
+        rejected: In-memory dictionary of semantic rejections.
+        jpdb_path: Path to the JPDB v2.2 frequency list CSV/TSV.
+        unverified: Optional mapping of unverified concepts.
+        curated_terms: Optional set of curated/validated terms.
+        aliases_out: Optional dictionary to store Kanji alias -> kana headword mapping.
+
+    Returns:
+        Tuple of (prop_t1, prop_t2, prop_rej) on success, or None on failure.
+    """
+    if not os.path.isfile(jpdb_path):
+        logger.warning("JPDB frequency file not found at %s; skipping uk alias propagation.", jpdb_path)
+        return None
+
+    new_t1: Dict[str, List[str]] = {}
+    new_t2: Dict[str, List[str]] = {}
+    new_rej: Dict[str, str] = {}
+    new_aliases: Dict[str, str] = {}
+
+    try:
+        with open(jpdb_path, "r", encoding="utf-8-sig", newline="") as jpdb_file:
+            first_line = jpdb_file.readline()
+            delimiter = "\t" if "\t" in first_line else ","
+            jpdb_file.seek(0)
+            rows = list(csv.reader(jpdb_file, delimiter=delimiter))
+        if rows and rows[0][:1] == ["term"]:
+            rows = rows[1:]
+
+        min_term_freq: Dict[str, int] = {}
+        min_read_freq: Dict[str, int] = {}
+        top10k_kana_freqs: Dict[str, Set[int]] = {}
+        
+        # Pre-scan for frequency guards
+        for r in rows:
+            if len(r) < 3:
+                continue
+            term, reading, freq_str = r[0], r[1], r[2]
+            kf_str = r[3] if len(r) > 3 else ""
+            if not freq_str.isdigit():
+                continue
+            freq = int(freq_str)
+            kf = int(kf_str) if kf_str.isdigit() else 0
+            min_term_freq[term] = min(min_term_freq.get(term, freq), freq)
+            min_read_freq[reading] = min(min_read_freq.get(reading, freq), freq)
+            if term == reading and freq <= 10000:
+                top10k_kana_freqs.setdefault(reading, set()).add(freq)
+            if kf and kf <= 10000:
+                top10k_kana_freqs.setdefault(reading, set()).add(kf)
+
+        all_existing = set(concepts) | set(tier2_concepts) | set(rejected) | (set(unverified) if unverified else set())
+        if curated_terms:
+            all_existing.update(curated_terms)
+
+        for r in rows:
+            if len(r) < 3:
+                continue
+            term, reading, freq_str = r[0], r[1], r[2]
+            kf_str = r[3] if len(r) > 3 else ""
+            if not freq_str.isdigit():
+                continue
+            freq, kf = int(freq_str), (int(kf_str) if kf_str.isdigit() else 0)
+
+            # 1. Skip kana rows, entries without kana frequency, or already covered entries
+            if term == reading or not kf or term in all_existing:
+                continue
+
+            # 2. Guard: Length/Loanword Guard (supports both Hiragana and Katakana representations)
+            if not (len(reading) >= 3 or reading in SAFE_2MORA_LOANWORDS or to_hiragana(reading) in SAFE_2MORA_LOANWORDS):
+                continue
+
+            # 3. Guard: Competing top-10k lexemes guard (blocks 辺り/あたり vs 当たり/あたり)
+            if len(top10k_kana_freqs.get(reading, set())) > 1:
+                continue
+
+            # 4. Guard: Primary Lexeme Guard
+            if min_read_freq.get(reading) != kf or kf >= freq:
+                continue
+
+            # 5. Guard: Primary Term Guard
+            if min_term_freq.get(term) != freq:
+                continue
+
+            # Propagation (accumulate in temporary dicts to ensure atomic commits)
+            if reading in concepts:
+                targets = _filter_alias_targets(concepts[reading], term)
+                if targets:
+                    new_t1[term] = targets
+                    all_existing.add(term)
+                    new_aliases[term] = reading
+            elif reading in tier2_concepts:
+                targets = _filter_alias_targets(tier2_concepts[reading], term)
+                if targets:
+                    new_t2[term] = targets
+                    all_existing.add(term)
+                    new_aliases[term] = reading
+            elif reading in rejected:
+                reason = rejected[reading]
+                if isinstance(reason, str) and not reason.startswith(UNVERIFIED_REASON_PREFIX):
+                    new_rej[term] = reason
+                    all_existing.add(term)
+                    new_aliases[term] = reading
+
+        concepts.update(new_t1)
+        tier2_concepts.update(new_t2)
+        rejected.update(new_rej)
+        if aliases_out is not None:
+            aliases_out.update(new_aliases)
+        prop_t1 = len(new_t1)
+        prop_t2 = len(new_t2)
+        prop_rej = len(new_rej)
+                    
+    except Exception as exc:
+        logger.warning("Error propagating uk concepts from %s: %s", jpdb_path, exc)
+        return None
+
+    logger.info("Propagated uk aliases from JPDB: %d Tier 1, %d Tier 2, %d rejected", prop_t1, prop_t2, prop_rej)
+    return prop_t1, prop_t2, prop_rej
+
+
 def load_jpdb_candidates(
     catalog_path: str,
     jpdb_path: str,
@@ -518,20 +711,7 @@ def load_jpdb_candidates(
         except Exception as exc:
             logger.warning("Could not read Yomitan cache from %s: %s", yomitan_cache_path, exc)
 
-    existing_manual: Set[str] = set()
-    existing_kaishi: Set[str] = set()
-    try:
-        conn = sqlite3.connect(_readonly_catalog_uri(catalog_path), uri=True)
-        try:
-            cur = conn.cursor()
-            cur.execute("SELECT term FROM synonyms WHERE source = 'manual'")
-            existing_manual = {r[0] for r in cur.fetchall()}
-            cur.execute("SELECT term FROM synonyms WHERE source = 'donkuri/kaishi'")
-            existing_kaishi = {r[0] for r in cur.fetchall()}
-        finally:
-            conn.close()
-    except Exception as exc:
-        logger.debug("Failed to read existing catalog synonyms: %s", exc)
+    curated_terms = load_curated_terms(catalog_path)
 
     candidates: List[Dict[str, Any]] = []
     deferred_count = 0
@@ -576,7 +756,7 @@ def load_jpdb_candidates(
             if is_grammar_function_word(term):
                 continue
 
-            if term in existing_manual or term in existing_kaishi:
+            if term in curated_terms:
                 continue
 
             yomitan_meta: Optional[YomitanMetadata] = None
@@ -702,3 +882,49 @@ def load_jpdb_candidates(
             logger.warning("Failed to save Yomitan cache to %s: %s", yomitan_cache_path, exc)
 
     return candidates, deferred_count
+
+
+def resolve_uk_aliases(
+    aliases: Dict[str, str],
+    concepts: Dict[str, List[str]],
+    tier2_concepts: Dict[str, List[str]],
+    rejected: Dict[str, str],
+) -> Tuple[int, int, int]:
+    """Resolve propagated uk Kanji aliases from canonical kana concept mappings.
+
+    Args:
+        aliases: Mapping of Kanji alias to canonical kana headword.
+        concepts: Tier 1 concepts mapping to populate.
+        tier2_concepts: Tier 2 concepts mapping to populate.
+        rejected: Semantic rejections mapping to populate.
+
+    Returns:
+        Tuple of (resolved_tier1_count, resolved_tier2_count, resolved_rejected_count).
+    """
+    res_t1 = 0
+    res_t2 = 0
+    res_rej = 0
+    for alias, source_kana in sorted(aliases.items()):
+        if not isinstance(alias, str) or not isinstance(source_kana, str):
+            continue
+        if alias in concepts or alias in tier2_concepts or alias in rejected:
+            continue
+        if source_kana in concepts:
+            targets = _filter_alias_targets(concepts[source_kana], alias)
+            if targets:
+                concepts[alias] = targets
+                res_t1 += 1
+        elif source_kana in tier2_concepts:
+            targets = _filter_alias_targets(tier2_concepts[source_kana], alias)
+            if targets:
+                tier2_concepts[alias] = targets
+                res_t2 += 1
+        elif source_kana in rejected:
+            raw_reason = rejected[source_kana]
+            if isinstance(raw_reason, str):
+                reason = raw_reason.strip()
+                if reason and not reason.startswith(UNVERIFIED_REASON_PREFIX):
+                    rejected[alias] = reason
+                    res_rej += 1
+    return res_t1, res_t2, res_rej
+

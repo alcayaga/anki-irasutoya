@@ -43,7 +43,9 @@ from scripts.synonyms.yomitan_jpdb import (
     _fetch_yomitan_term_entries,
     _parse_yomitan_metadata,
     fetch_jpdb_freq_github,
+    load_curated_terms,
     load_jpdb_candidates,
+    propagate_kana_uk_concepts,
 )
 
 logger = logging.getLogger("synonyms.ollama_agent")
@@ -883,6 +885,25 @@ def run_ollama_compile(
             logger.warning("Could not initialize vector index (%s); using pure lexical pre-search", vec_exc)
             vector_index = None
 
+    propagated_covered_terms: Set[str] = set()
+    if jpdb_path and os.path.isfile(jpdb_path) and not terms:
+        curated_terms = load_curated_terms(catalog_path)
+        temp_c = dict(existing_concepts)
+        temp_t2 = dict(existing_tier2_concepts)
+        temp_rej = dict(existing_rejected)
+        propagate_kana_uk_concepts(
+            concepts=temp_c,
+            tier2_concepts=temp_t2,
+            rejected=temp_rej,
+            jpdb_path=jpdb_path,
+            unverified=existing_unverified,
+            curated_terms=curated_terms,
+        )
+        propagated_covered_terms.update(temp_c.keys())
+        propagated_covered_terms.update(temp_t2.keys())
+        if not recheck_rejected:
+            propagated_covered_terms.update(temp_rej.keys())
+
     has_artifact_updates = bool(stale_raw_concepts or migrated_unverified or has_dropped_targets)
     if not candidates:
         logger.warning("No candidates found to compile.")
@@ -913,9 +934,16 @@ def run_ollama_compile(
         if c_term in seen_terms:
             continue
         if not force_explicit:
-            if c_term in existing_concepts or c_term in existing_tier2_concepts:
+            if (
+                c_term in existing_concepts
+                or c_term in existing_tier2_concepts
+                or c_term in propagated_covered_terms
+            ):
                 continue
-            if not recheck_rejected and (c_term in existing_rejected or c_term in existing_unverified):
+            if not recheck_rejected and (
+                c_term in existing_rejected
+                or c_term in existing_unverified
+            ):
                 continue
         seen_terms.add(c_term)
         remaining_candidates.append(c)
