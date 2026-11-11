@@ -1523,6 +1523,17 @@ class TestRanking(unittest.TestCase):
         )
         self.assertTrue(is_image_relevant(ppe_sub_img, "パーツ"))
 
+        # Coordinated title where one entity is a compound containing the query ("猫と猫背のイラスト"):
+        # "猫背のイラスト" must NOT match "猫"
+        hunchback_sub_img = IrasutoyaImage(
+            title="猫背のイラスト",
+            image_url="https://blogger.googleusercontent.com/img/b/R29/s800/cat_hunchback.png",
+            thumb_url="https://blogger.googleusercontent.com/img/b/R29/s120-c/cat_hunchback.png",
+            post_title="猫と猫背のイラスト",
+            is_single_image_post=False,
+        )
+        self.assertFalse(is_image_relevant(hunchback_sub_img, "猫"))
+
     def test_select_best_image_prefers_individual_illustrations_over_teaser_collage(self) -> None:
         """Verify select_best_image selects individual illustration instead of teaser collage for multi-image posts."""
         collage_img = IrasutoyaImage(

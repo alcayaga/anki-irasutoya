@@ -705,6 +705,21 @@ def is_thumbnail_collage_asset(img: IrasutoyaImage) -> bool:
     return bool(COLLAGE_URL_RE.search(url))
 
 
+def _chunk_matches_term(chunk: str, term: str) -> bool:
+    """Return True if chunk represents term with boundary validity."""
+    if not chunk or not term:
+        return False
+    clean_chunk = chunk.strip()
+    clean_term = term.strip()
+    if clean_chunk == clean_term:
+        return True
+    if clean_term in clean_chunk and _is_valid_boundary_match(None, clean_chunk, clean_term):
+        return True
+    if clean_chunk in clean_term and _is_valid_boundary_match(None, clean_term, clean_chunk):
+        return True
+    return False
+
+
 def _has_contrasting_coordinating_entity(title: str, post_title: str, query: str) -> bool:
     """Return True if post_title coordinates multiple entities and title matches an entity other than query."""
     if not title or not post_title or not query:
@@ -735,13 +750,14 @@ def _has_contrasting_coordinating_entity(title: str, post_title: str, query: str
 
     matching_chunks = [
         c for c in clean_chunks
-        if c in query or query in c or any(t in c for t in query.split() if len(t) >= 2)
+        if _chunk_matches_term(c, query)
+        or any(_chunk_matches_term(c, t) for t in query.split() if len(t) >= 2)
     ]
     non_matching_chunks = [c for c in clean_chunks if c not in matching_chunks]
 
     if matching_chunks and non_matching_chunks:
         for nmc in non_matching_chunks:
-            if nmc in title and not any(mc in title for mc in matching_chunks):
+            if _chunk_matches_term(title, nmc) and not any(_chunk_matches_term(title, mc) for mc in matching_chunks):
                 return True
 
     return False

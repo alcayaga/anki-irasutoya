@@ -478,6 +478,7 @@ class TestFeedParser(unittest.TestCase):
             "content": {
                 "$t": (
                     '<img class="postthumb" src="https://blogger.googleusercontent.com/img/b/R29/s800/thumbnail_school_juku.jpg" /><br />'
+                    '<img src="https://blogger.googleusercontent.com/img/b/R29/s800/bare_school_juku.jpg" /><br />'
                     '<div class="separator">'
                     '<a href="https://blogger.googleusercontent.com/img/b/R29/s800/school_juku_man.png">'
                     '<img alt="教師と生徒のイラスト（男性）" src="https://blogger.googleusercontent.com/img/b/R29/s400/school_juku_man.png" />'
@@ -492,9 +493,10 @@ class TestFeedParser(unittest.TestCase):
 
         parsed_post = parse_entry(entry, image_size="s800")
         self.assertEqual(len(parsed_post.images), 2)
-        # Verify the unlinked thumbnail_school_juku.jpg collage is omitted
+        # Verify the unlinked thumbnail_school_juku.jpg collage and bare image are omitted
         urls: List[str] = [img.image_url for img in parsed_post.images]
         self.assertNotIn("https://blogger.googleusercontent.com/img/b/R29/s800/thumbnail_school_juku.jpg", urls)
+        self.assertNotIn("https://blogger.googleusercontent.com/img/b/R29/s800/bare_school_juku.jpg", urls)
         self.assertEqual(parsed_post.images[0].title, "教師と生徒のイラスト（男性）")
         self.assertEqual(parsed_post.images[0].image_url, "https://blogger.googleusercontent.com/img/b/R29/s800/school_juku_man.png")
         self.assertFalse(parsed_post.images[0].is_single_image_post)
