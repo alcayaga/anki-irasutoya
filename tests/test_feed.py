@@ -1,5 +1,6 @@
 """Unit tests for Irasutoya Blogger feed parsing, HTML extraction, and URL helpers."""
 import unittest
+from typing import List
 from unittest.mock import patch
 
 from addon.feed import (
@@ -42,6 +43,26 @@ class TestFeedParser(unittest.TestCase):
         self.assertEqual(
             to_thumbnail_url(url_multi, "s120-c"),
             "https://blogger.googleusercontent.com/img/b/s100/s120-c/image.png",
+        )
+
+        # Blogger /img/a/...=sNNN format with query parameters and fragments
+        url_equals_dim = "https://blogger.googleusercontent.com/img/a/AVvXsEj=s250?download=1#frag"
+        self.assertEqual(
+            upgrade_image_url(url_equals_dim, "s800"),
+            "https://blogger.googleusercontent.com/img/a/AVvXsEj=s800?download=1#frag",
+        )
+        self.assertEqual(
+            to_thumbnail_url(url_equals_dim, "s120-c"),
+            "https://blogger.googleusercontent.com/img/a/AVvXsEj=s120-c?download=1#frag",
+        )
+        url_equals_cropped = "https://blogger.googleusercontent.com/img/a/AVvXsEj=s72-c?download=1"
+        self.assertEqual(
+            upgrade_image_url(url_equals_cropped, "s800"),
+            "https://blogger.googleusercontent.com/img/a/AVvXsEj=s800?download=1",
+        )
+        self.assertEqual(
+            to_thumbnail_url(url_equals_cropped, "s120-c"),
+            "https://blogger.googleusercontent.com/img/a/AVvXsEj=s120-c?download=1",
         )
 
     def test_is_allowed_image_host(self):
@@ -444,6 +465,120 @@ class TestFeedParser(unittest.TestCase):
         self.assertEqual(len(images), 1)
         self.assertEqual(images[0].image_url, "https://1.bp.blogspot.com/shared.png")
         self.assertEqual(images[0].post_title, "成功ポスト")
+
+    def test_parse_entry_multi_image_filters_unlinked_postthumb_and_bare_img(self) -> None:
+        """Verify that multi-image posts filter out unlinked postthumb teasers and bare collages when linked illustrations exist."""
+        entry: dict = {
+            "id": {"$t": "tag:blogger.com,1999:blog.post-2255331467161957298"},
+            "title": {"$t": "教師と生徒のイラスト"},
+            "summary": {"$t": "学校や塾などの教師と生徒のイラストです。"},
+            "published": {"$t": "2020-04-10T11:00:00Z"},
+            "updated": {"$t": "2020-04-10T11:00:00Z"},
+            "category": [{"term": "学校"}, {"term": "教育"}],
+            "content": {
+                "$t": (
+                    '<img class="postthumb" src="https://blogger.googleusercontent.com/img/b/R29/s800/thumbnail_school_juku.jpg" /><br />'
+                    '<div class="separator">'
+                    '<a href="https://blogger.googleusercontent.com/img/b/R29/s800/school_juku_man.png">'
+                    '<img alt="教師と生徒のイラスト（男性）" src="https://blogger.googleusercontent.com/img/b/R29/s400/school_juku_man.png" />'
+                    '</a>'
+                    '<a href="https://blogger.googleusercontent.com/img/b/R29/s800/school_juku_woman.png">'
+                    '<img alt="教師と生徒のイラスト（女性）" src="https://blogger.googleusercontent.com/img/b/R29/s400/school_juku_woman.png" />'
+                    '</a>'
+                    '</div>'
+                )
+            },
+        }
+
+        parsed_post = parse_entry(entry, image_size="s800")
+        self.assertEqual(len(parsed_post.images), 2)
+        # Verify the unlinked thumbnail_school_juku.jpg collage is omitted
+        urls: List[str] = [img.image_url for img in parsed_post.images]
+        self.assertNotIn("https://blogger.googleusercontent.com/img/b/R29/s800/thumbnail_school_juku.jpg", urls)
+        self.assertEqual(parsed_post.images[0].title, "教師と生徒のイラスト（男性）")
+        self.assertEqual(parsed_post.images[0].image_url, "https://blogger.googleusercontent.com/img/b/R29/s800/school_juku_man.png")
+        self.assertFalse(parsed_post.images[0].is_single_image_post)
+        self.assertEqual(parsed_post.images[1].title, "教師と生徒のイラスト（女性）")
+        self.assertEqual(parsed_post.images[1].image_url, "https://blogger.googleusercontent.com/img/b/R29/s800/school_juku_woman.png")
+        self.assertFalse(parsed_post.images[1].is_single_image_post)
+
+    def test_parse_entry_single_real_image_with_postthumb_marks_single_image_post(self) -> None:
+        """Verify that a post with one real illustration plus a postthumb teaser sets is_single_image_post=True."""
+        entry: dict = {
+            "id": {"$t": "tag:blogger.com,1999:blog.post-999"},
+            "title": {"$t": "単一イラストポスト"},
+            "summary": {"$t": "単一イラストです。"},
+            "published": {"$t": "2021-01-01T00:00:00Z"},
+            "updated": {"$t": "2021-01-01T00:00:00Z"},
+            "category": [],
+            "content": {
+                "$t": (
+                    '<img class="postthumb" src="https://blogger.googleusercontent.com/img/b/R29/s800/thumbnail_teaser.jpg" /><br />'
+                    '<div class="separator">'
+                    '<a href="https://blogger.googleusercontent.com/img/b/R29/s800/single_real.png">'
+                    '<img alt="単一イラスト" src="https://blogger.googleusercontent.com/img/b/R29/s400/single_real.png" />'
+                    '</a>'
+                    '</div>'
+                )
+            },
+        }
+
+        parsed_post = parse_entry(entry, image_size="s800")
+        self.assertEqual(len(parsed_post.images), 1)
+        self.assertEqual(parsed_post.images[0].title, "単一イラスト")
+        self.assertEqual(parsed_post.images[0].image_url, "https://blogger.googleusercontent.com/img/b/R29/s800/single_real.png")
+        self.assertTrue(parsed_post.images[0].is_single_image_post)
+
+    def test_parse_entry_zero_linked_images_preserves_bare_img_fallback(self) -> None:
+        """Verify that posts with zero <a>-enclosed images fall back to bare <img> tags cleanly."""
+        entry: dict = {
+            "id": {"$t": "tag:blogger.com,1999:blog.post-888"},
+            "title": {"$t": "日本の47都道府県の地図のイラスト"},
+            "summary": {"$t": "日本地図です。"},
+            "published": {"$t": "2018-05-01T00:00:00Z"},
+            "updated": {"$t": "2018-05-01T00:00:00Z"},
+            "category": [],
+            "content": {
+                "$t": (
+                    '<div class="separator">'
+                    '<img src="https://blogger.googleusercontent.com/img/b/R29/s800/japan_map.png" alt="日本地図" />'
+                    '</div>'
+                )
+            },
+        }
+
+        parsed_post = parse_entry(entry, image_size="s800")
+        self.assertEqual(len(parsed_post.images), 1)
+        self.assertEqual(parsed_post.images[0].title, "日本地図")
+        self.assertEqual(parsed_post.images[0].image_url, "https://blogger.googleusercontent.com/img/b/R29/s800/japan_map.png")
+        self.assertTrue(parsed_post.images[0].is_single_image_post)
+
+    def test_parse_entry_blogger_img_a_equals_s_dimensions_support(self) -> None:
+        """Verify that Blogger /img/a/...=sNNN URLs are normalized, upgraded, and thumbnailed properly."""
+        entry: dict = {
+            "id": {"$t": "tag:blogger.com,1999:blog.post-777"},
+            "title": {"$t": "いろいろな色のパプリカのイラスト"},
+            "summary": {"$t": "パプリカのイラストです。"},
+            "published": {"$t": "2022-08-01T00:00:00Z"},
+            "updated": {"$t": "2022-08-01T00:00:00Z"},
+            "category": [],
+            "content": {
+                "$t": (
+                    '<div class="separator">'
+                    '<a href="https://blogger.googleusercontent.com/img/a/AVvXsEjb4wOoJli53NPnWiF9keYt7oLJrh4-wG9gfAgO8Uu7GdUuG0fwD_YOB0pXQi1mHluRYGcRle8mql7svjzATvkefNUuEMjx9xK5ba-3cbOrg_yrPzjQox1b1wx1WPQyBdHVjnnLzijCg9H370PkiyOEBacNB4vmUVJiY73-1sabmYGus2kD-2ef5C8QFQ=s795">'
+                    '<img alt="パプリカ（赤）" src="https://blogger.googleusercontent.com/img/a/AVvXsEjb4wOoJli53NPnWiF9keYt7oLJrh4-wG9gfAgO8Uu7GdUuG0fwD_YOB0pXQi1mHluRYGcRle8mql7svjzATvkefNUuEMjx9xK5ba-3cbOrg_yrPzjQox1b1wx1WPQyBdHVjnnLzijCg9H370PkiyOEBacNB4vmUVJiY73-1sabmYGus2kD-2ef5C8QFQ=s250" />'
+                    '</a>'
+                    '</div>'
+                )
+            },
+        }
+
+        parsed_post = parse_entry(entry, image_size="s800")
+        self.assertEqual(len(parsed_post.images), 1)
+        self.assertEqual(parsed_post.images[0].title, "パプリカ（赤）")
+        self.assertTrue(parsed_post.images[0].image_url.endswith("=s800"))
+        self.assertTrue(parsed_post.images[0].thumb_url.endswith("=s120-c"))
+        self.assertTrue(parsed_post.images[0].is_single_image_post)
 
 
 if __name__ == "__main__":

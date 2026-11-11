@@ -37,18 +37,31 @@ def is_image_url(url: str) -> bool:
         and bool(
             re.search(r"\.(png|jpe?g|webp)($|\?)", parsed.path, re.IGNORECASE)
             or re.search(r"/s\d+(-c)?/", parsed.path)
+            or re.search(r"=s\d+(-c)?$", parsed.path)
         )
     )
 
 
 def upgrade_image_url(url: str, image_size: str = "s800") -> str:
-    """Replace Blogger thumbnail dimension codes like /s72-c/ or /s300/ with /s800/ or /s0/."""
-    return re.sub(r"/s\d+(-c)?/(?=[^/]+$)", f"/{image_size}/", url)
+    """Replace Blogger thumbnail dimension codes like /s72-c/ or =s795 with /s800/ or =s800."""
+    parsed = urllib.parse.urlsplit(url)
+    path = parsed.path
+    if re.search(r"=s\d+(-c)?$", path):
+        path = re.sub(r"=s\d+(-c)?$", f"={image_size}", path)
+    else:
+        path = re.sub(r"/s\d+(-c)?/(?=[^/]+$)", f"/{image_size}/", path)
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, path, parsed.query, parsed.fragment))
 
 
 def to_thumbnail_url(url: str, size: str = "s120-c") -> str:
     """Scale a Blogger image URL to a compact thumbnail format."""
-    return re.sub(r"/s\d+(-c)?/(?=[^/]+$)", f"/{size}/", url)
+    parsed = urllib.parse.urlsplit(url)
+    path = parsed.path
+    if re.search(r"=s\d+(-c)?$", path):
+        path = re.sub(r"=s\d+(-c)?$", f"={size}", path)
+    else:
+        path = re.sub(r"/s\d+(-c)?/(?=[^/]+$)", f"/{size}/", path)
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, path, parsed.query, parsed.fragment))
 
 
 def is_meaningful_title(text: str) -> bool:
@@ -86,18 +99,18 @@ class ParsedPost:
 
 
 class _BloggerContentParser(HTMLParser):
-    """HTML parser to reliably extract (href, src, alt) image tuples and body text from Blogger content."""
+    """HTML parser to reliably extract (href, src, alt, is_postthumb) image tuples and body text from Blogger content."""
 
     def __init__(self) -> None:
         """Initialize parser state, text chunks, and items list."""
         super().__init__(convert_charrefs=True)
-        self.items: List[Tuple[Optional[str], str, str]] = []
+        self.items: List[Tuple[Optional[str], str, str, bool]] = []
         self.text_chunks: List[str] = []
         self._current_href: Optional[str] = None
         self._ignored_depth: int = 0
 
     def handle_starttag(self, tag: str, attrs: Sequence[Tuple[str, Optional[str]]]) -> None:
-        """Track active anchor href and capture nested or standalone img src and alt attributes."""
+        """Track active anchor href and capture nested or standalone img src, alt, and postthumb class."""
         tag_lower = tag.lower()
         if tag_lower in ("script", "style", "noscript"):
             self._ignored_depth += 1
@@ -110,7 +123,9 @@ class _BloggerContentParser(HTMLParser):
         elif tag_lower == "img":
             src = attr_dict.get("src", "")
             alt = attr_dict.get("alt", "")
-            self.items.append((self._current_href, src, alt))
+            classes = attr_dict.get("class", "").split()
+            is_postthumb = "postthumb" in classes
+            self.items.append((self._current_href, src, alt, is_postthumb))
 
     def handle_endtag(self, tag: str) -> None:
         """Clear active anchor when </a> is closed, and track script/style closing tags."""
@@ -163,16 +178,28 @@ def parse_entry(
         seen_urls = set()
     post_urls = set()
 
-    for href, src, alt in parser.items:
-        candidate_url = None
-        if href and is_image_url(href):
-            candidate_url = href
+    # Partition parsed items into linked illustrations and bare fallback items
+    linked_items: List[Tuple[str, str, str]] = []
+    bare_items: List[Tuple[str, str, str, bool]] = []
+
+    for href, src, alt, is_postthumb in parser.items:
+        if href and is_image_url(href) and not is_postthumb:
+            linked_items.append((href, src, alt))
         elif src and is_image_url(src):
-            candidate_url = src
+            bare_items.append((src, src, alt, is_postthumb))
 
-        if not candidate_url:
-            continue
+    if linked_items:
+        candidate_items: List[Tuple[str, str, str]] = linked_items
+    else:
+        # If no linked illustrations exist, fall back to bare img elements,
+        # filtering out postthumb teasers if non-postthumb bare images exist
+        non_pt_bare = [item[:3] for item in bare_items if not item[3]]
+        if non_pt_bare:
+            candidate_items = non_pt_bare
+        else:
+            candidate_items = [item[:3] for item in bare_items]
 
+    for candidate_url, src, alt in candidate_items:
         high_res = upgrade_image_url(candidate_url, image_size)
         post_urls.add(high_res)
         if high_res in seen_urls:

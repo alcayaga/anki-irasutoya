@@ -691,6 +691,62 @@ def _is_valid_boundary_match(img: IrasutoyaImage, text: str, query: str) -> bool
     return True
 
 
+COLLAGE_URL_RE = re.compile(
+    r"/(?:thumb(?:n?m?a?i?l?|nai)?_|banner_|.*_thumbnail\.)",
+    re.IGNORECASE,
+)
+
+
+def is_thumbnail_collage_asset(img: IrasutoyaImage) -> bool:
+    """Return True if image URL matches known Blogger preview collage/thumbnail patterns in a multi-image post."""
+    if getattr(img, "is_single_image_post", True):
+        return False
+    url = getattr(img, "image_url", "")
+    return bool(COLLAGE_URL_RE.search(url))
+
+
+def _has_contrasting_coordinating_entity(title: str, post_title: str, query: str) -> bool:
+    """Return True if post_title coordinates multiple entities and title matches an entity other than query."""
+    if not title or not post_title or not query:
+        return False
+
+    chunks: List[str] = []
+    for m in re.finditer(r"[「『]([^」』]+)[」』]", post_title):
+        for part in re.split(r"[・、,]|と", m.group(1)):
+            p = part.strip()
+            if p:
+                chunks.append(p)
+    if len(chunks) < 2 and "と" in post_title:
+        base_post = re.sub(r"[「『（][^」』）]*[」』）]", "", post_title)
+        if "と" in base_post:
+            chunks = [c.strip() for c in re.split(r"と", base_post) if c.strip()]
+
+    if len(chunks) < 2:
+        return False
+
+    clean_chunks: List[str] = []
+    for c in chunks:
+        cc = re.sub(r"^(?:いろいろな(?:色の|形の|種類の)?|様々な)", "", c).strip()
+        cc = re.sub(r"(?:のイラスト|のキャラクター|のマーク|の顔|イラスト)$", "", cc).strip("「」『』（）")
+        if cc:
+            clean_chunks.append(cc)
+    if len(clean_chunks) < 2:
+        return False
+
+    matching_chunks = [
+        c for c in clean_chunks
+        if c in query or query in c or any(t in c for t in query.split() if len(t) >= 2)
+    ]
+    non_matching_chunks = [c for c in clean_chunks if c not in matching_chunks]
+
+    if matching_chunks and non_matching_chunks:
+        for nmc in non_matching_chunks:
+            if nmc in title and not any(mc in title for mc in matching_chunks):
+                return True
+
+    return False
+
+
 def is_image_relevant(img: IrasutoyaImage, query: str) -> bool:
     """Check if the individual image itself is semantically relevant with boundary safety.
 
@@ -706,7 +762,14 @@ def is_image_relevant(img: IrasutoyaImage, query: str) -> bool:
     if _is_valid_boundary_match(img, title, clean_q):
         return True
 
-    # 2. Single-image post caption/description match
+    # 2. Multi-image post parent title boundary classification
+    if not getattr(img, "is_single_image_post", True):
+        post_title = getattr(img, "post_title", "").strip()
+        if post_title and _is_valid_boundary_match(img, post_title, clean_q):
+            if not _has_contrasting_coordinating_entity(title, post_title, clean_q):
+                return True
+
+    # 3. Single-image post caption/description match
     if (
         getattr(img, "is_single_image_post", True)
         and not is_grammar_function_word(clean_q)
@@ -718,10 +781,23 @@ def is_image_relevant(img: IrasutoyaImage, query: str) -> bool:
             if qual_desc in ("exact_quoted", "standalone", "polite_prefix", "inflected"):
                 return True
 
-    # 3. Multi-word queries
+    # 4. Multi-word queries
     tokens = clean_q.split()
-    if len(tokens) > 1 and all(classify_match_boundary(title, t) != "none" for t in tokens):
-        return True
+    if len(tokens) > 1:
+        if all(classify_match_boundary(title, t) != "none" for t in tokens):
+            return True
+        if not getattr(img, "is_single_image_post", True):
+            post_title = getattr(img, "post_title", "").strip()
+            if (
+                post_title
+                and not _has_contrasting_coordinating_entity(title, post_title, clean_q)
+                and all(
+                    _is_valid_boundary_match(img, title, t)
+                    or _is_valid_boundary_match(img, post_title, t)
+                    for t in tokens
+                )
+            ):
+                return True
 
     return False
 
@@ -823,13 +899,32 @@ def score_candidate_image(
         else:
             score += 20.0
     elif relevant:
-        # Matched only via description on single-image post
-        score += 15.0
+        # Matched via description or multi-image post_title
+        if not getattr(img, "is_single_image_post", True) and post_title:
+            qual_post = classify_match_boundary(post_title, clean_q)
+            if qual_post == "exact_quoted":
+                score += 50.0
+            elif qual_post == "polite_prefix":
+                score += 40.0
+            elif qual_post == "standalone":
+                score += 30.0
+            elif qual_post == "inflected":
+                score += 25.0
+            elif qual_post == "compound":
+                score += 20.0
+            else:
+                score += 15.0
+        else:
+            score += 15.0
     else:
         score -= 50.0  # Heavy penalty: image does not mention the query
 
     # 3. Penalize length (shorter, direct titles are more archetypal)
     score -= len(title) * 0.8
+
+    # Penalize thumbnail collages so individual illustrations always win
+    if is_thumbnail_collage_asset(img):
+        score -= 80.0
 
     # 4. Situational, hazard, and mark noise penalty
     is_canonical_mark = _is_canonical_mark_title(title, clean_q)
@@ -995,14 +1090,23 @@ def rank_relevant_images(
     query: str,
     pos_type: Optional[str] = None,
 ) -> List[IrasutoyaImage]:
-    """Rank relevant images by preference: non-callout illustrations first, then text callouts, ordered by score."""
+    """Rank relevant images by preference: individual illustrations first, then teaser collages, then text callouts."""
     scored = [
         (img, score_candidate_image(img, query, pos_type=pos_type), is_callout_asset(img, query))
         for img in candidates
     ]
-    non_callouts = sorted((s for s in scored if not s[2]), key=lambda s: s[1], reverse=True)
+    individual_illustrations = sorted(
+        (s for s in scored if not s[2] and not is_thumbnail_collage_asset(s[0])),
+        key=lambda s: s[1],
+        reverse=True,
+    )
+    collage_illustrations = sorted(
+        (s for s in scored if not s[2] and is_thumbnail_collage_asset(s[0])),
+        key=lambda s: s[1],
+        reverse=True,
+    )
     callouts = sorted((s for s in scored if s[2]), key=lambda s: s[1], reverse=True)
-    return [s[0] for s in non_callouts + callouts]
+    return [s[0] for s in individual_illustrations + collage_illustrations + callouts]
 
 
 def select_best_image(
@@ -1015,9 +1119,37 @@ def select_best_image(
         return None
     illustration_candidates = [
         img for img in images
-        if not is_decorative_asset(img, query) and is_image_relevant(img, query)
+        if not is_decorative_asset(img, query)
+        and not is_thumbnail_collage_asset(img)
+        and not is_callout_asset(img, query)
+        and is_image_relevant(img, query)
     ]
     if illustration_candidates:
         return rank_relevant_images(illustration_candidates, query, pos_type=pos_type)[0]
-    fallback_pool = [img for img in images if not is_decorative_asset(img, query)] or images
+
+    # If no individual illustration is relevant, prefer a relevant collage asset before text callouts
+    relevant_collages = [
+        img for img in images
+        if not is_decorative_asset(img, query)
+        and is_thumbnail_collage_asset(img)
+        and not is_callout_asset(img, query)
+        and is_image_relevant(img, query)
+    ]
+    if relevant_collages:
+        return rank_relevant_images(relevant_collages, query, pos_type=pos_type)[0]
+
+    # If no illustration or collage is relevant, allow a relevant text callout
+    relevant_callouts = [
+        img for img in images
+        if not is_decorative_asset(img, query)
+        and is_callout_asset(img, query)
+        and is_image_relevant(img, query)
+    ]
+    if relevant_callouts:
+        return rank_relevant_images(relevant_callouts, query, pos_type=pos_type)[0]
+
+    fallback_pool = [
+        img for img in images
+        if not is_decorative_asset(img, query) and not is_thumbnail_collage_asset(img)
+    ] or [img for img in images if not is_decorative_asset(img, query)] or images
     return max(fallback_pool, key=lambda img: score_candidate_image(img, query, pos_type=pos_type))
