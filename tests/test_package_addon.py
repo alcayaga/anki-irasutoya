@@ -1,6 +1,7 @@
 """Unit tests for the add-on packager, allowlist filters, version injection, and integrity checks."""
 import json
 import os
+import shutil
 import sqlite3
 import tempfile
 import unittest
@@ -28,6 +29,12 @@ class TestPackageAddon(unittest.TestCase):
         # Create mock payload files
         with open(os.path.join(self.mock_addon, "__init__.py"), "w") as f:
             f.write("# init\n")
+        self.policy_module_names = ("ranking_constants.py", "synonym_constants.py")
+        for mod_name in self.policy_module_names:
+            shutil.copyfile(
+                os.path.join(os.path.dirname(__file__), "..", "addon", mod_name),
+                os.path.join(self.mock_addon, mod_name),
+            )
         os.makedirs(os.path.join(self.mock_addon, "ui"), exist_ok=True)
         self.ui_module_names = [
             "__init__.py",
@@ -99,6 +106,10 @@ class TestPackageAddon(unittest.TestCase):
             names = set(zf.namelist())
             self.assertIn("manifest.json", names)
             self.assertIn("__init__.py", names)
+            for mod_name in self.policy_module_names:
+                self.assertIn(mod_name, names)
+                with open(os.path.join(self.mock_addon, mod_name), "rb") as source:
+                    self.assertEqual(zf.read(mod_name), source.read())
             for mod_name in self.ui_module_names:
                 self.assertIn(f"ui/{mod_name}", names)
             self.assertIn("data/catalog.sqlite", names)
