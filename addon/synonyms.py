@@ -7,6 +7,22 @@ from .catalog import (
     CatalogStore,
     default_store,
 )
+from .synonym_constants import (
+    BILINGUAL_ACTION_TARGETS,
+    ENGLISH_NOUN_ONLY_COLLISIONS,
+    ENGLISH_PREPOSITIONS,
+    ENGLISH_STOP_WORDS,
+    LOCOMOTION_ACTION_TARGETS,
+    LOCOMOTION_ACTION_WORDS,
+    MAX_BILINGUAL_TARGETS,
+    MIN_GLOSS_TOKEN_LENGTH,
+    NEGATION_OR_IDIOM_TOKENS,
+    SPATIAL_MARGIN_GLOSSES,
+    STYLE_SCHOOL_GLOSSES,
+)
+from .synonym_constants import (
+    PASS2_BLOCKED_PREFIXES as PASS2_BLOCKED_PREFIXES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -164,80 +180,6 @@ def is_llm_rejected(
     return index.is_rejected(term)
 
 
-ENGLISH_STOP_WORDS = frozenset({
-    "in", "of", "for", "a", "an", "the", "to", "at", "on", "by", "with",
-    "and", "or", "from", "as", "about", "into", "over", "after", "one's",
-    "sb", "sth", "someone", "something", "etc", "esp", "chiefly", "especially",
-})
-ENGLISH_PREPOSITIONS = frozenset({"in", "of", "for", "with", "at", "from", "on", "by", "about"})
-ENGLISH_NOUN_ONLY_COLLISIONS = frozenset({"train", "weather"})
-
-BILINGUAL_ACTION_TARGETS = frozenset({
-    "手伝う",
-    "協力",
-    "走る",
-    "全力疾走",
-    "徒競走",
-    "ランニング",
-    "歩く",
-    "散歩",
-    "泳ぐ",
-    "水泳",
-    "歌う",
-    "寝る",
-    "睡眠",
-    "起きる",
-    "飲む",
-    "食べる",
-    "怒る",
-    "休む",
-    "休憩",
-    "働く",
-    "仕事",
-    "勉強",
-    "学ぶ",
-    "旅行",
-    "買い物",
-    "読書",
-    "本を読む",
-    "ダンス",
-    "踊る",
-    "料理",
-    "聞く",
-    "死ぬ",
-    "亡くなる",
-    "葬式",
-    "お葬式",
-    "墓",
-})
-
-LOCOMOTION_ACTION_TARGETS = frozenset({
-    "走る",
-    "全力疾走",
-    "徒競走",
-    "ランニング",
-    "歩く",
-    "散歩",
-    "泳ぐ",
-    "水泳",
-})
-
-NEGATION_OR_IDIOM_TOKENS = frozenset({
-    "cannot", "can't", "unable", "not", "never", "without", "no", "please",
-})
-
-PASS2_BLOCKED_PREFIXES = (
-    "the rest",
-    "rest of",
-    "work of",
-    "head of",
-    "school of",
-    "early bird",
-)
-
-LOCOMOTION_ACTION_WORDS = frozenset({"run", "walk", "swim", "fly"})
-
-
 def _is_verbal_gloss_phrase(gloss: str) -> bool:
     """Return True if a gloss phrase represents a verbal or infinitive action.
 
@@ -376,8 +318,8 @@ def lookup_bilingual_glosses(
     is_suru_transitive = bool(
         pos_tags and "n" in pos_tags and any(t.startswith("vs") for t in pos_tags) and "vt" in pos_tags
     )
-    has_spatial_margin = any(g in ("gap", "space", "opening", "margin", "clearance") for g in glosses)
-    has_style_school = any(g in ("style", "manner", "doctrine", "method", "tradition") for g in glosses)
+    has_spatial_margin = any(g in SPATIAL_MARGIN_GLOSSES for g in glosses)
+    has_style_school = any(g in STYLE_SCHOOL_GLOSSES for g in glosses)
 
     # Pass 1: exact matches on full normalized glosses
     for gloss in glosses:
@@ -393,7 +335,7 @@ def lookup_bilingual_glosses(
             if t not in seen:
                 seen.add(t)
                 targets.append(t)
-                if len(targets) >= 3:
+                if len(targets) >= MAX_BILINGUAL_TARGETS:
                     return targets
 
     # Pass 2: headword and constituent words from multi-word glosses
@@ -413,7 +355,7 @@ def lookup_bilingual_glosses(
             raw_words = gloss.split()
             if len(raw_words) <= 1:
                 continue
-            words = [w for w in raw_words if w not in ENGLISH_STOP_WORDS and len(w) > 2]
+            words = [w for w in raw_words if w not in ENGLISH_STOP_WORDS and len(w) >= MIN_GLOSS_TOKEN_LENGTH]
             if not words:
                 continue
             if len(words) == 1:
@@ -435,7 +377,7 @@ def lookup_bilingual_glosses(
                     if t not in seen:
                         seen.add(t)
                         targets.append(t)
-                        if len(targets) >= 3:
+                        if len(targets) >= MAX_BILINGUAL_TARGETS:
                             return targets
 
     return targets

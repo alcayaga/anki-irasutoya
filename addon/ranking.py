@@ -1,9 +1,73 @@
 """Boundary classification, relevance scoring, and archetype ranking for Irasutoya illustrations."""
 import logging
 import re
-from typing import Any, FrozenSet, List, Optional, Sequence, Tuple
+from typing import Any, FrozenSet, List, Optional, Sequence
 
 from .feed import IrasutoyaImage
+from .ranking_constants import (
+    ACTION_ARCHETYPE_CATEGORIES,
+    ADJECTIVE_ARCHETYPE_CATEGORIES,
+    ANTI_ARCHETYPE_PENALTY_CAP,
+    ATTRIBUTIVE_ENDINGS,
+    BACKGROUND_ASSET_PENALTY,
+    BACKGROUND_MENTION_PENALTY,
+    BYPRODUCT_MODIFIER_PENALTY,
+    BYPRODUCT_MODIFIER_SEPARATORS,
+    CANONICAL_MARK_BONUS,
+    CANONICAL_POST_TITLE_BONUS,
+    CANONICAL_TITLE_BONUS,
+    CATEGORY_BOOST_CAP,
+    CLOSING_BRACKETS,
+    COLLAGE_URL_RE,
+    COLLECTION_PREFIXES,
+    COLLECTION_TITLE_BONUS,
+    COMMON_ABSTRACT_NOUNS,
+    COMMON_KANA_VERBS,
+    COMMON_OKURIGANA_NOUNS,
+    COMPOUND_BOUNDARY_BONUS,
+    COMPOUND_HEADWORD_SYNONYMS,
+    COMPOUND_SYNONYM_BONUS,
+    CUTE_CANONICAL_TITLE_BONUS,
+    DECORATIVE_ASSET_PENALTY,
+    DECORATIVE_NOISE_KEYWORDS,
+    DESCRIPTION_RELEVANCE_BONUS,
+    EXACT_CATEGORY_BOOST,
+    EXACT_TITLE_BONUS,
+    HIRAGANA_CHAR_RE,
+    INFLECTED_BOUNDARY_BONUS,
+    INVALID_COMPOUND_PENALTY,
+    IRRELEVANT_IMAGE_PENALTY,
+    KANJI_CHAR_RE,
+    KATAKANA_CHAR_RE,
+    MULTI_CHAR_PARTICLES,
+    NATURAL_DISASTER_QUERIES,
+    OBJECT_ARCHETYPE_CATEGORIES,
+    POLITE_BOUNDARY_BONUS,
+    POLITE_CANONICAL_TITLE_BONUS,
+    POST_COMPOUND_BOUNDARY_BONUS,
+    POST_INFLECTED_BOUNDARY_BONUS,
+    POST_POLITE_BOUNDARY_BONUS,
+    POST_QUOTED_BOUNDARY_BONUS,
+    POST_RELEVANCE_BONUS,
+    POST_STANDALONE_BOUNDARY_BONUS,
+    POST_TITLE_PREFIX_BONUS,
+    QUOTED_BOUNDARY_BONUS,
+    SINGLE_CHAR_PARTICLES,
+    SITUATIONAL_HAZARD_CATEGORIES,
+    SITUATIONAL_NOISE_KEYWORDS,
+    SITUATIONAL_NOISE_PENALTY,
+    STANDALONE_BOUNDARY_BONUS,
+    STANDALONE_MATCH_BOUNDARIES,
+    SUBTYPE_ENTITY_QUERIES,
+    SUBTYPE_PREFIXES,
+    TEXT_CALLOUT_KEYWORDS,  # noqa: F401 - preserve the existing module export
+    TEXT_CALLOUT_PENALTY,
+    THUMBNAIL_COLLAGE_PENALTY,
+    TITLE_LENGTH_PENALTY_PER_CHAR,
+    TITLE_PREFIX_BONUS,
+    UNIVERSAL_ANTI_ARCHETYPE_CATEGORIES,
+    VERB_TERMINAL_ENDINGS,
+)
 from .text_utils import (
     NON_VERB_GODAN_LOOKALIKES,
     PRONOUN_KATAKANA_BLOCKLIST,
@@ -14,49 +78,6 @@ from .text_utils import (
 )
 
 logger = logging.getLogger(__name__)
-
-KANJI_CHAR_RE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf々〆〇]")
-HIRAGANA_CHAR_RE = re.compile(r"[\u3040-\u309F]")
-# Exclude ゠ (U+30A0) and ・ (U+30FB); they are word separators, not Katakana letters.
-KATAKANA_CHAR_RE = re.compile(r"[\u30A1-\u30FA\u30FC-\u30FF]")
-
-DECORATIVE_NOISE_KEYWORDS = ("ライン素材", "フレーム", "枠", "テンプレート", "壁紙")
-TEXT_CALLOUT_KEYWORDS = ("イラスト文字",)
-SITUATIONAL_NOISE_KEYWORDS = ("事故", "トラブル", "失敗", "注意", "禁止", "マーク")
-VERB_TERMINAL_ENDINGS = ("う", "く", "ぐ", "す", "つ", "ぬ", "ぶ", "む", "る", "た", "だ")
-SINGLE_CHAR_PARTICLES = ("の", "が", "を", "に", "で", "と", "は", "も", "へ", "や", "な", "か")
-MULTI_CHAR_PARTICLES = ("から", "より", "ながら", "など", "だけ", "ほど", "ばかり", "まで")
-ATTRIBUTIVE_ENDINGS = ("い",) + VERB_TERMINAL_ENDINGS
-COLLECTION_PREFIXES = ("いろいろな", "色々な", "様々な", "さまざまな")
-COMPOUND_HEADWORD_SYNONYMS = {
-    "仮面": ("マスク", "お面", "面"),
-}
-BYPRODUCT_MODIFIER_SEPARATORS = ("のついた", "がついた", "の付いた", "が付いた", "の入った", "が入った")
-NATURAL_DISASTER_QUERIES = frozenset({
-    "台風", "地震", "津波", "洪水", "噴火", "竜巻", "落雷", "土砂崩れ", "雪崩",
-    "豪雨", "暴風", "暴風雨", "大雨", "大雪", "嵐", "ハリケーン", "サイクロン",
-    "山火事", "火災", "火事", "災害", "自然災害", "避難", "防災",
-})
-SUBTYPE_PREFIXES = frozenset({
-    # Colors
-    "黒", "白", "赤", "青", "黄", "茶", "灰", "緑", "紫", "金", "銀",
-    # Size & age
-    "大", "小", "子", "巨", "微", "老", "若", "新", "古",
-    # Species & attributes
-    "柴", "野",
-})
-# Single-Kanji queries eligible for fallback subtype matching via SUBTYPE_PREFIXES when categories are absent
-SUBTYPE_ENTITY_QUERIES = frozenset({
-    "犬", "猫", "鳥", "魚", "虫", "馬", "牛", "豚", "羊", "熊", "鹿",
-    "車", "船", "花", "木", "草", "葉", "雨", "雪", "雲", "茶", "本",
-})
-COMMON_OKURIGANA_NOUNS = frozenset({
-    "祭り", "祭", "周り", "香り", "祈り", "便り", "望み", "恵み", "答え", "知らせ",
-    "怒り", "踊り", "誓い", "願い", "想い", "思い", "集まり", "始まり", "終わり",
-    "こたつ", "くつ", "ねずみ", "さる",
-    "一つ", "二つ", "三つ", "四つ", "五つ", "六つ", "七つ", "八つ", "九つ",
-    "近く", "遠く", "多く",
-})
 
 PRONOUNS_DESCRIPTION_BLOCKLIST: FrozenSet[str] = frozenset(
     PRONOUN_KATAKANA_BLOCKLIST
@@ -81,105 +102,6 @@ PRONOUNS_DESCRIPTION_BLOCKLIST: FrozenSet[str] = frozenset(
         "彼方",
     }
 )
-
-COMMON_KANA_VERBS = frozenset({
-    "はしる", "たべる", "あるく", "およぐ", "のむ", "あそぶ",
-    "みる", "きく", "ねる", "おきる", "たつ", "すわる",
-    "いう", "いく", "くる", "かう", "うる", "かく", "よむ",
-    "わらう", "なく", "おこる", "おどる", "うたう", "とぶ",
-    "はなす", "まつ", "もつ", "しぬ", "よぶ", "あらう",
-})
-
-COMMON_ABSTRACT_NOUNS = frozenset({
-    "禁止", "注意", "危険", "安全", "成功", "失敗", "平和", "関係", "状態",
-    "方法", "原因", "結果", "自由", "練習", "勉強", "努力", "希望", "夢",
-    "愛", "心", "気持ち", "思い出", "時間", "約束", "秘密", "ルール", "マナー",
-    "名前",
-})
-
-# Anti-archetype categories (callout typography, symbols, frames, decorative lines, templates)
-UNIVERSAL_ANTI_ARCHETYPE_CATEGORIES = {
-    "文字": -50.0,
-    "書体": -50.0,
-    "ペンキ書体": -50.0,
-    "白抜き書体": -50.0,
-    "マーク": -40.0,
-    "旗": -35.0,
-    "フレーム": -50.0,
-    "ライン": -50.0,
-    "パターン": -45.0,
-    "テンプレート": -40.0,
-    "飾り": -40.0,
-    "一筆箋": -40.0,
-    "伝言メモ": -40.0,
-    "メッセージカード": -40.0,
-    "POP": -35.0,
-}
-
-# Situational hazard noise categories (penalized unless query itself is a hazard/violation term)
-SITUATIONAL_HAZARD_CATEGORIES = {
-    "事故": -25.0,
-    "違反": -25.0,
-    "怪我": -25.0,
-    "災害": -25.0,
-    "トラブル": -25.0,
-}
-
-# Action / motion / pose archetype categories (boosted for verbs / actions)
-ACTION_ARCHETYPE_CATEGORIES = {
-    "ポーズ": 30.0,
-    "運動": 25.0,
-    "スポーツ": 20.0,
-    "表情": 20.0,
-    "感情": 20.0,
-    "食事": 20.0,
-    "掃除": 20.0,
-    "洗濯": 20.0,
-    "料理": 15.0,
-    "仕事": 15.0,
-    "職業": 15.0,
-    "ビジネス": 10.0,
-    "棒人間": 15.0,
-}
-
-# Concrete physical object / entity archetype categories (boosted for nouns)
-OBJECT_ARCHETYPE_CATEGORIES = {
-    "食べ物": 25.0,
-    "料理": 20.0,
-    "食材": 20.0,
-    "フルーツ": 20.0,
-    "野菜": 20.0,
-    "スイーツ": 20.0,
-    "パン": 20.0,
-    "動物": 25.0,
-    "鳥": 20.0,
-    "魚": 20.0,
-    "犬": 20.0,
-    "猫": 20.0,
-    "虫": 20.0,
-    "植物": 20.0,
-    "花": 20.0,
-    "乗り物": 20.0,
-    "車": 20.0,
-    "電車": 20.0,
-    "自転車": 20.0,
-    "道具": 20.0,
-    "文房具": 20.0,
-    "本": 20.0,
-    "家具": 15.0,
-    "家電": 15.0,
-    "おもちゃ": 15.0,
-    "楽器": 15.0,
-}
-
-# State / attribute / emotion archetype categories (boosted for adjectives)
-ADJECTIVE_ARCHETYPE_CATEGORIES = {
-    "感情": 30.0,
-    "表情": 30.0,
-    "ポーズ": 25.0,
-    "天気": 20.0,
-    "美容": 20.0,
-}
 
 
 def _is_canonical_mark_title(title: Optional[str], query: str) -> bool:
@@ -268,7 +190,7 @@ def calculate_category_score(
             ):
                 continue
             anti_penalty += penalty
-    score += max(anti_penalty, -70.0)
+    score += max(anti_penalty, ANTI_ARCHETYPE_PENALTY_CAP)
 
     # 2. Situational hazard penalty (skip if query itself is a hazard term)
     hazard_penalty = 0.0
@@ -287,7 +209,7 @@ def calculate_category_score(
     boost = 0.0
     if allow_boost:
         if clean_q in cat_set or q_cf in cat_set_cf:
-            boost += 25.0
+            boost += EXACT_CATEGORY_BOOST
 
         effective_pos = pos_type or infer_pos_type(clean_q)
         if effective_pos == "verb":
@@ -307,7 +229,7 @@ def calculate_category_score(
     if has_unrelated_hazard or hazard_penalty < 0.0:
         boost = 0.0
     else:
-        boost = min(boost, 35.0)
+        boost = min(boost, CATEGORY_BOOST_CAP)
 
     score += hazard_penalty + boost
     return score
@@ -429,7 +351,6 @@ def _is_non_particle_hiragana_prefix(text: str, idx: int) -> bool:
     if idx < 2:
         return True
     char_before = text[idx - 2]
-    CLOSING_BRACKETS = ("」", "』", "）", ")", "】", "］", "]", "〉", "》")
     if not (
         KANJI_CHAR_RE.match(char_before)
         or KATAKANA_CHAR_RE.match(char_before)
@@ -691,12 +612,6 @@ def _is_valid_boundary_match(img: IrasutoyaImage, text: str, query: str) -> bool
     return True
 
 
-COLLAGE_URL_RE = re.compile(
-    r"/(?:thumb(?:n?m?a?i?l?|nai)?_|banner_|.*_thumbnail\.)",
-    re.IGNORECASE,
-)
-
-
 def is_thumbnail_collage_asset(img: IrasutoyaImage) -> bool:
     """Return True if image URL matches known Blogger preview collage/thumbnail patterns in a multi-image post."""
     if getattr(img, "is_single_image_post", True):
@@ -847,34 +762,34 @@ def score_candidate_image(
     # 1. Exact canonical matches
     if relevant:
         if title == f"{clean_q}のイラスト" or (has_latin and t_cf == f"{q_cf}のイラスト"):
-            score += 100.0
+            score += CANONICAL_TITLE_BONUS
         elif _is_canonical_mark_title(title, clean_q) or (has_latin and _is_canonical_mark_title(t_cf, q_cf)):
-            score += 95.0
+            score += CANONICAL_MARK_BONUS
         elif title in (f"お{clean_q}のイラスト", f"ご{clean_q}のイラスト") or (
             has_latin and t_cf in (f"お{q_cf}のイラスト", f"ご{q_cf}のイラスト")
         ):
-            score += 95.0
+            score += POLITE_CANONICAL_TITLE_BONUS
         elif title == f"かわいい{clean_q}のイラスト" or (has_latin and t_cf == f"かわいい{q_cf}のイラスト"):
-            score += 90.0
+            score += CUTE_CANONICAL_TITLE_BONUS
         elif title == clean_q or (has_latin and t_cf == q_cf):
-            score += 85.0
+            score += EXACT_TITLE_BONUS
         elif (
             title.startswith(f"{clean_q}の")
             or (has_latin and t_cf.startswith(f"{q_cf}の"))
         ) and not _is_byproduct_modifier_title(title, clean_q):
-            score += 60.0
+            score += TITLE_PREFIX_BONUS
         elif (
             post_title == f"{clean_q}のイラスト"
             or (has_latin and pt_cf == f"{q_cf}のイラスト")
             or _is_canonical_mark_title(post_title, clean_q)
             or (has_latin and _is_canonical_mark_title(pt_cf, q_cf))
         ):
-            score += 50.0
+            score += CANONICAL_POST_TITLE_BONUS
         elif (
             post_title.startswith(f"{clean_q}の")
             or (has_latin and pt_cf.startswith(f"{q_cf}の"))
         ) and not _is_byproduct_modifier_title(post_title, clean_q):
-            score += 30.0
+            score += POST_TITLE_PREFIX_BONUS
 
     # Archetype collection boost (e.g. いろいろなネジのイラスト)
     if relevant and any(
@@ -893,7 +808,7 @@ def score_candidate_image(
         )
         for prefix in COLLECTION_PREFIXES
     ):
-        score += 15.0
+        score += COLLECTION_TITLE_BONUS
 
     # 2. Boundary, politeness, and focus bonuses
     if (
@@ -902,13 +817,13 @@ def score_candidate_image(
         or f"（{clean_q}）" in title
         or (has_latin and (f"「{q_cf}」" in t_cf or f"（{q_cf}）" in t_cf))
     ):
-        score += 55.0
+        score += QUOTED_BOUNDARY_BONUS
     elif qual_title == "polite_prefix":
-        score += 45.0
+        score += POLITE_BOUNDARY_BONUS
     elif qual_title == "standalone":
-        score += 35.0
+        score += STANDALONE_BOUNDARY_BONUS
     elif qual_title == "inflected":
-        score += 30.0
+        score += INFLECTED_BOUNDARY_BONUS
     elif qual_title == "compound":
         synonyms = COMPOUND_HEADWORD_SYNONYMS.get(clean_q, ())
         has_synonym = any(
@@ -916,38 +831,38 @@ def score_candidate_image(
             for syn in synonyms
         )
         if has_synonym:
-            score += 35.0
+            score += COMPOUND_SYNONYM_BONUS
         elif synonyms or not _is_valid_boundary_match(img, title, clean_q):
-            score -= 35.0
+            score -= INVALID_COMPOUND_PENALTY
         else:
-            score += 20.0
+            score += COMPOUND_BOUNDARY_BONUS
     elif relevant:
         # Matched via description or multi-image post_title
         if not getattr(img, "is_single_image_post", True) and post_title:
             qual_post = classify_match_boundary(post_title, clean_q)
             if qual_post == "exact_quoted":
-                score += 50.0
+                score += POST_QUOTED_BOUNDARY_BONUS
             elif qual_post == "polite_prefix":
-                score += 40.0
+                score += POST_POLITE_BOUNDARY_BONUS
             elif qual_post == "standalone":
-                score += 30.0
+                score += POST_STANDALONE_BOUNDARY_BONUS
             elif qual_post == "inflected":
-                score += 25.0
+                score += POST_INFLECTED_BOUNDARY_BONUS
             elif qual_post == "compound":
-                score += 20.0
+                score += POST_COMPOUND_BOUNDARY_BONUS
             else:
-                score += 15.0
+                score += POST_RELEVANCE_BONUS
         else:
-            score += 15.0
+            score += DESCRIPTION_RELEVANCE_BONUS
     else:
-        score -= 50.0  # Heavy penalty: image does not mention the query
+        score -= IRRELEVANT_IMAGE_PENALTY  # Heavy penalty: image does not mention the query
 
     # 3. Penalize length (shorter, direct titles are more archetypal)
-    score -= len(title) * 0.8
+    score -= len(title) * TITLE_LENGTH_PENALTY_PER_CHAR
 
     # Penalize thumbnail collages so individual illustrations always win
     if is_thumbnail_collage_asset(img):
-        score -= 80.0
+        score -= THUMBNAIL_COLLAGE_PENALTY
 
     # 4. Situational, hazard, and mark noise penalty
     is_canonical_mark = _is_canonical_mark_title(title, clean_q)
@@ -955,30 +870,30 @@ def score_candidate_image(
         if noise in title and noise not in clean_q:
             if noise == "マーク" and is_canonical_mark:
                 continue
-            score -= 25.0
+            score -= SITUATIONAL_NOISE_PENALTY
 
     # Attributive byproduct modifier penalty (e.g. 髪の毛のついたヘアブラシ, 髪の毛の入ったご飯)
     if _is_byproduct_modifier_title(title, clean_q) or _is_byproduct_modifier_title(post_title, clean_q):
-        score -= 20.0
+        score -= BYPRODUCT_MODIFIER_PENALTY
 
     # 5. Heavy penalty for text callouts (イラスト文字 / trailing 文字) so illustrations always win if available
     is_callout = is_callout_asset(img, clean_q)
     if is_callout:
-        score -= 65.0
+        score -= TEXT_CALLOUT_PENALTY
 
     # 6. Filter out non-illustration decorative assets (lines, borders, wallpaper, templates)
     for noise in DECORATIVE_NOISE_KEYWORDS:
         if noise in title and noise not in clean_q:
-            score -= 60.0
+            score -= DECORATIVE_ASSET_PENALTY
 
     if (
         ("背景素材" in title or "背景パターン" in title)
         and "イラスト" not in title
         and "背景" not in clean_q
     ):
-        score -= 60.0
+        score -= BACKGROUND_ASSET_PENALTY
     elif "背景" in title and "背景" not in clean_q:
-        score -= 35.0
+        score -= BACKGROUND_MENTION_PENALTY
 
     # 7. Category-aware archetype scoring (modulated by POS, gated by title presence)
     cats = getattr(img, "categories", ())
@@ -1063,14 +978,6 @@ def has_title_illustration_match(images: Sequence[IrasutoyaImage], query: str) -
         if is_title_match(img, clean_q):
             return True
     return False
-
-
-STANDALONE_MATCH_BOUNDARIES: Tuple[str, ...] = (
-    "exact_quoted",
-    "standalone",
-    "polite_prefix",
-    "inflected",
-)
 
 
 def is_standalone_title_match(img: IrasutoyaImage, query: str) -> bool:
