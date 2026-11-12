@@ -192,3 +192,6 @@ addon/user_files/
 addon/meta.json
 .catalog_cache/
 dist/
+
+# Local scratch artifacts
+/scratch/

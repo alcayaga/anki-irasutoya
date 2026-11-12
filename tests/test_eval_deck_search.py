@@ -1,6 +1,8 @@
 """Hermetic tests for scripts/eval_deck_search.py benchmarking logic."""
 import io
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from addon.feed import IrasutoyaImage
@@ -16,6 +18,23 @@ from scripts.eval_deck_search import (
 
 class TestEvalDeckSearch(unittest.TestCase):
     """Test suite for deck search evaluation CLI helper functions and report generation."""
+
+    def setUp(self) -> None:
+        """Keep every benchmark run artifact inside a temporary directory."""
+        self.logs = tempfile.TemporaryDirectory()
+        self.addCleanup(self.logs.cleanup)
+        # Redirect the default repository path without changing custom paths.
+        self.default_path = patch(
+            "scripts.eval_deck_search.__file__",
+            str(Path(self.logs.name) / "scripts" / "eval_deck_search.py"),
+        )
+        self.default_path.start()
+        self.addCleanup(self.default_path.stop)
+
+    def read_log(self, output: str) -> str:
+        """Read the UTF-8 artifact named by the console report."""
+        path = output.rsplit("Log file: ", 1)[1].splitlines()[0].strip()
+        return Path(path).read_text(encoding="utf-8")
 
     def test_legacy_clean_query(self) -> None:
         """Verify legacy query cleaning replicates previous add-on behavior."""
@@ -142,7 +161,7 @@ class TestEvalDeckSearch(unittest.TestCase):
         run_evaluation("Mining", query="flag:4")
         self.assertEqual(mock_fetch.call_args[1]["query"], "flag:4")
         output = mock_stdout.getvalue()
-        self.assertIn('Query:              deck:"Mining" (flag:4)', output)
+        self.assertIn('Query:              deck:"Mining" (flag:4)', self.read_log(output))
         self.assertIn("No notes available to evaluate in query 'flag:4'.", output)
 
         mock_stdout.truncate(0)
@@ -186,18 +205,25 @@ class TestEvalDeckSearch(unittest.TestCase):
                 backend="catalog",
                 track_stages=True,
                 show_bilingual_hits=True,
+                verbose=True,
             )
 
         output = mock_stdout.getvalue()
-        self.assertIn("IRASUTOYA SEARCH RECALL BENCHMARK", output)
+        self.assertNotIn("IRASUTOYA SEARCH RECALL BENCHMARK", output)
+        self.assertIn("IRASUTOYA SEARCH RECALL BENCHMARK", self.read_log(output))
+        self.assertIn("猫", self.read_log(output))
+        self.assertNotIn("[ 1/ 1]", output)
+        self.assertIn("↳ Matched:", self.read_log(output))
+        self.assertNotIn("↳ Matched:", output)
         self.assertIn("INCREMENTAL RECALL & STRATEGY PROGRESSION", output)
         self.assertIn("1. Legacy (Naive Direct Query)", output)
         self.assertIn("4. Bilingual Gloss (Definition Bridge)", output)
 
     @patch("scripts.eval_deck_search.anki_invoke")
     @patch("sys.stdout", new_callable=io.StringIO)
+    @patch("sys.stderr", new_callable=io.StringIO)
     def test_run_evaluation_stage_baseline_error_preserves_failure(
-        self, mock_stdout: io.StringIO, mock_invoke: MagicMock
+        self, mock_stderr: io.StringIO, mock_stdout: io.StringIO, mock_invoke: MagicMock
     ) -> None:
         """Verify errors during stage baseline calculation mark the note as failed and preserve failure status."""
         mock_invoke.side_effect = [
@@ -239,9 +265,85 @@ class TestEvalDeckSearch(unittest.TestCase):
                 self.assertEqual(cm.exception.code, 1)
 
         output = mock_stdout.getvalue()
-        self.assertIn("[WARNING] Stage baseline search failed", output)
-        self.assertIn("⚠", output)
-        self.assertIn("had failed search requests and were excluded from recall", output)
+        self.assertNotIn("[WARNING] Stage baseline search failed", output)
+        self.assertIn("[WARNING] Stage baseline search failed", self.read_log(output))
+        self.assertIn("⚠", self.read_log(output))
+        error = "had failed search requests and were excluded from recall"
+        self.assertNotIn(error, output)
+        self.assertIn(error, mock_stderr.getvalue())
+        self.assertIn(error, self.read_log(output))
+        self.assertIn("EVALUATION SUMMARY REPORT", output)
+        self.assertIn("Valid / Excluded Notes:   0 / 1", output)
+
+    @patch("scripts.eval_deck_search.fetch_deck_notes", return_value=[])
+    def test_custom_directory_unique_logs(self, mock_fetch: MagicMock) -> None:
+        """Create distinct complete logs for repeated runs in a new directory."""
+        directory = Path(self.logs.name) / "custom" / "nested"
+        for _ in range(2):
+            with patch("sys.stdout", new_callable=io.StringIO) as output:
+                run_evaluation("日本語", log_dir=str(directory))
+            self.assertIn("Log file: ", output.getvalue())
+        paths = list(directory.glob("*.log"))
+        self.assertEqual(len(paths), 2)
+        for path in paths:
+            content = path.read_text(encoding="utf-8")
+            self.assertEqual(content.count("IRASUTOYA SEARCH RECALL BENCHMARK"), 1)
+            self.assertIn("日本語", content)
+            self.assertIn("No notes available", content)
+        self.assertEqual(mock_fetch.call_count, 2)
+
+    @patch("scripts.eval_deck_search.fetch_deck_notes", return_value=[])
+    def test_log_directory_resolution(self, mock_fetch: MagicMock) -> None:
+        """Anchor default logs to the script and relative overrides to cwd."""
+        with patch("os.getcwd", return_value=self.logs.name):
+            with patch("sys.stdout", new_callable=io.StringIO) as output:
+                run_evaluation(log_dir="relative")
+        custom = Path(output.getvalue().rsplit("Log file: ", 1)[1].splitlines()[0].strip())
+        self.assertEqual(custom.parent.resolve(), Path(self.logs.name).resolve() / "relative")
+        with patch("sys.stdout", new_callable=io.StringIO) as output:
+            run_evaluation()
+        default = Path(output.getvalue().rsplit("Log file: ", 1)[1].splitlines()[0].strip())
+        self.assertEqual(default.parent, Path(self.logs.name).resolve() / "scratch" / "eval_deck_search")
+
+    @patch("scripts.eval_deck_search.fetch_deck_notes")
+    def test_log_initialization_failure(self, mock_fetch: MagicMock) -> None:
+        """Fail visibly before querying Anki if the log directory is unusable."""
+        with patch("scripts.eval_deck_search.Path.mkdir", side_effect=PermissionError("denied")):
+            with patch("sys.stderr", new_callable=io.StringIO) as errors:
+                with self.assertRaises(SystemExit) as result:
+                    run_evaluation(log_dir=self.logs.name)
+        self.assertEqual(result.exception.code, 1)
+        self.assertIn("Cannot initialize benchmark log", errors.getvalue())
+        mock_fetch.assert_not_called()
+
+    def test_log_path_visible_before_evaluation(self) -> None:
+        """Expose and flush the log location before querying Anki."""
+        output = io.StringIO()
+
+        def check_startup(*args: object, **kwargs: object) -> list:
+            """Inspect console output at the first benchmark operation."""
+            self.assertTrue(output.getvalue().startswith("Log file: "))
+            path = Path(output.getvalue().split("Log file: ", 1)[1].strip())
+            self.assertTrue(path.is_file())
+            flush.assert_called()
+            return []
+
+        with patch("sys.stdout", output), patch.object(output, "flush") as flush:
+            with patch("scripts.eval_deck_search.fetch_deck_notes", side_effect=check_startup):
+                run_evaluation()
+        self.assertEqual(output.getvalue().count("Log file: "), 1)
+
+    @patch("scripts.eval_deck_search.fetch_deck_notes", side_effect=RuntimeError("offline"))
+    def test_fatal_error_logged_and_visible(self, mock_fetch: MagicMock) -> None:
+        """Preserve startup failure status with a durable error and log path."""
+        with patch("sys.stdout", new_callable=io.StringIO) as output:
+            with patch("sys.stderr", new_callable=io.StringIO) as errors:
+                with self.assertRaises(SystemExit) as result:
+                    run_evaluation()
+        self.assertEqual(result.exception.code, 1)
+        self.assertIn("offline", errors.getvalue())
+        self.assertIn("offline", self.read_log(output.getvalue()))
+        self.assertNotIn("IRASUTOYA SEARCH", output.getvalue())
 
     @patch("scripts.eval_deck_search.run_evaluation")
     @patch("sys.argv", ["scripts/eval_deck_search.py", "--query", "flag:4", "--deck", "Mining"])
