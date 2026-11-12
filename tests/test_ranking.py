@@ -1534,6 +1534,18 @@ class TestRanking(unittest.TestCase):
         )
         self.assertFalse(is_image_relevant(hunchback_sub_img, "猫"))
 
+        # Coordinated title where one entity is a category-backed subtype ("盲導犬と猫のイラスト"):
+        # "猫のイラスト" (categories=("犬",)) must NOT match "犬"
+        guide_dog_cat_sub_img = IrasutoyaImage(
+            title="猫のイラスト",
+            image_url="https://blogger.googleusercontent.com/img/b/R29/s800/cat.png",
+            thumb_url="https://blogger.googleusercontent.com/img/b/R29/s120-c/cat.png",
+            post_title="盲導犬と猫のイラスト",
+            categories=("犬",),
+            is_single_image_post=False,
+        )
+        self.assertFalse(is_image_relevant(guide_dog_cat_sub_img, "犬"))
+
     def test_select_best_image_prefers_individual_illustrations_over_teaser_collage(self) -> None:
         """Verify select_best_image selects individual illustration instead of teaser collage for multi-image posts."""
         collage_img = IrasutoyaImage(

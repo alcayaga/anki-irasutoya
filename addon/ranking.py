@@ -705,7 +705,7 @@ def is_thumbnail_collage_asset(img: IrasutoyaImage) -> bool:
     return bool(COLLAGE_URL_RE.search(url))
 
 
-def _chunk_matches_term(chunk: str, term: str) -> bool:
+def _chunk_matches_term(chunk: str, term: str, img: Optional[IrasutoyaImage] = None) -> bool:
     """Return True if chunk represents term with boundary validity."""
     if not chunk or not term:
         return False
@@ -713,14 +713,19 @@ def _chunk_matches_term(chunk: str, term: str) -> bool:
     clean_term = term.strip()
     if clean_chunk == clean_term:
         return True
-    if clean_term in clean_chunk and _is_valid_boundary_match(None, clean_chunk, clean_term):
+    if clean_term in clean_chunk and _is_valid_boundary_match(img, clean_chunk, clean_term):
         return True
-    if clean_chunk in clean_term and _is_valid_boundary_match(None, clean_term, clean_chunk):
+    if clean_chunk in clean_term and _is_valid_boundary_match(img, clean_term, clean_chunk):
         return True
     return False
 
 
-def _has_contrasting_coordinating_entity(title: str, post_title: str, query: str) -> bool:
+def _has_contrasting_coordinating_entity(
+    title: str,
+    post_title: str,
+    query: str,
+    img: Optional[IrasutoyaImage] = None,
+) -> bool:
     """Return True if post_title coordinates multiple entities and title matches an entity other than query."""
     if not title or not post_title or not query:
         return False
@@ -750,14 +755,16 @@ def _has_contrasting_coordinating_entity(title: str, post_title: str, query: str
 
     matching_chunks = [
         c for c in clean_chunks
-        if _chunk_matches_term(c, query)
-        or any(_chunk_matches_term(c, t) for t in query.split() if len(t) >= 2)
+        if _chunk_matches_term(c, query, img=img)
+        or any(_chunk_matches_term(c, t, img=img) for t in query.split() if len(t) >= 2)
     ]
     non_matching_chunks = [c for c in clean_chunks if c not in matching_chunks]
 
     if matching_chunks and non_matching_chunks:
         for nmc in non_matching_chunks:
-            if _chunk_matches_term(title, nmc) and not any(_chunk_matches_term(title, mc) for mc in matching_chunks):
+            if _chunk_matches_term(title, nmc, img=img) and not any(
+                _chunk_matches_term(title, mc, img=img) for mc in matching_chunks
+            ):
                 return True
 
     return False
@@ -782,7 +789,7 @@ def is_image_relevant(img: IrasutoyaImage, query: str) -> bool:
     if not getattr(img, "is_single_image_post", True):
         post_title = getattr(img, "post_title", "").strip()
         if post_title and _is_valid_boundary_match(img, post_title, clean_q):
-            if not _has_contrasting_coordinating_entity(title, post_title, clean_q):
+            if not _has_contrasting_coordinating_entity(title, post_title, clean_q, img=img):
                 return True
 
     # 3. Single-image post caption/description match
@@ -806,7 +813,7 @@ def is_image_relevant(img: IrasutoyaImage, query: str) -> bool:
             post_title = getattr(img, "post_title", "").strip()
             if (
                 post_title
-                and not _has_contrasting_coordinating_entity(title, post_title, clean_q)
+                and not _has_contrasting_coordinating_entity(title, post_title, clean_q, img=img)
                 and all(
                     _is_valid_boundary_match(img, title, t)
                     or _is_valid_boundary_match(img, post_title, t)
