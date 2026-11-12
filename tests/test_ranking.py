@@ -16,6 +16,7 @@ from addon.ranking import (
     is_decorative_asset,
     is_image_relevant,
     is_standalone_title_match,
+    is_thumbnail_collage_asset,
     is_title_match,
     rank_relevant_images,
     score_candidate_image,
@@ -1355,6 +1356,243 @@ class TestRanking(unittest.TestCase):
         self.assertGreater(score_syn, 20.0)
         self.assertLess(score_non_syn, 0.0)
         self.assertGreater(score_syn - score_non_syn, 60.0)
+
+    def test_thumbnail_collage_asset_detection_and_score_penalty(self) -> None:
+        """Verify is_thumbnail_collage_asset detects collages in multi-image posts and applies score penalty."""
+        collage_multi = IrasutoyaImage(
+            title="教師と生徒のイラスト",
+            image_url="https://blogger.googleusercontent.com/img/b/R29/s800/thumbnail_school_juku.jpg",
+            thumb_url="https://blogger.googleusercontent.com/img/b/R29/s120-c/thumbnail_school_juku.jpg",
+            post_title="教師と生徒のイラスト",
+            is_single_image_post=False,
+        )
+        real_multi = IrasutoyaImage(
+            title="教師と生徒のイラスト（男性）",
+            image_url="https://blogger.googleusercontent.com/img/b/R29/s800/school_juku_man.png",
+            thumb_url="https://blogger.googleusercontent.com/img/b/R29/s120-c/school_juku_man.png",
+            post_title="教師と生徒のイラスト",
+            is_single_image_post=False,
+        )
+        single_with_thumb = IrasutoyaImage(
+            title="単一イラスト",
+            image_url="https://blogger.googleusercontent.com/img/b/R29/s800/thumbnail_single.jpg",
+            thumb_url="https://blogger.googleusercontent.com/img/b/R29/s120-c/thumbnail_single.jpg",
+            post_title="単一イラスト",
+            is_single_image_post=True,
+        )
+
+        self.assertTrue(is_thumbnail_collage_asset(collage_multi))
+        self.assertFalse(is_thumbnail_collage_asset(real_multi))
+        self.assertFalse(is_thumbnail_collage_asset(single_with_thumb))
+
+        score_collage = score_candidate_image(collage_multi, "教師と生徒")
+        score_real = score_candidate_image(real_multi, "教師と生徒")
+        # Collage receives -80.0 penalty, ensuring real PNG illustration outscores it
+        self.assertGreater(score_real, score_collage)
+        self.assertAlmostEqual(score_real - score_collage, 16.8)
+
+    def test_multi_image_post_parent_title_relevance(self) -> None:
+        """Verify that individual illustrations in multi-image posts are recognized as relevant via post_title."""
+        metro_sub_img = IrasutoyaImage(
+            title="浅草線",
+            image_url="https://blogger.googleusercontent.com/img/b/R29/s800/asakusa.png",
+            thumb_url="https://blogger.googleusercontent.com/img/b/R29/s120-c/asakusa.png",
+            post_title="東京メトロ・地下鉄の電車のイラスト",
+            is_single_image_post=False,
+        )
+        self.assertTrue(is_image_relevant(metro_sub_img, "東京メトロ"))
+        self.assertTrue(is_image_relevant(metro_sub_img, "地下鉄"))
+        self.assertFalse(is_image_relevant(metro_sub_img, "JR"))
+
+        bun_sub_img = IrasutoyaImage(
+            title="ハンバーガーの具材のイラスト（ゴマ付きクラウン（上部））",
+            image_url="https://blogger.googleusercontent.com/img/b/R29/s800/bun_top.png",
+            thumb_url="https://blogger.googleusercontent.com/img/b/R29/s120-c/bun_top.png",
+            post_title="ハンバーガーの具材のイラスト（バンズ）",
+            is_single_image_post=False,
+        )
+        self.assertTrue(is_image_relevant(bun_sub_img, "バンズ"))
+
+        rice_sub_img = IrasutoyaImage(
+            title="ご飯のイラスト（大盛り）",
+            image_url="https://blogger.googleusercontent.com/img/b/R29/s800/rice_large.png",
+            thumb_url="https://blogger.googleusercontent.com/img/b/R29/s120-c/rice_large.png",
+            post_title="いろいろな量のご飯のイラスト",
+            is_single_image_post=False,
+        )
+        self.assertTrue(is_image_relevant(rice_sub_img, "いろいろな量のご飯"))
+
+        # Preserves dog_in_cat_post: single image post with unrelated title/post_title must return False
+        dog_in_cat_post = IrasutoyaImage(
+            title="犬のイラスト",
+            image_url="https://example.com/d.png",
+            thumb_url="https://example.com/t.png",
+            post_title="猫のイラスト",
+            is_single_image_post=True,
+        )
+        self.assertFalse(is_image_relevant(dog_in_cat_post, "猫"))
+
+        # Multi-image post with contrasting coordinating entities ("猫と犬のイラスト"):
+        # "犬のイラスト" must NOT match "猫", but MUST match "犬"
+        dog_in_multi_post = IrasutoyaImage(
+            title="犬のイラスト",
+            image_url="https://blogger.googleusercontent.com/img/b/R29/s800/dog.png",
+            thumb_url="https://blogger.googleusercontent.com/img/b/R29/s120-c/dog.png",
+            post_title="猫と犬のイラスト",
+            is_single_image_post=False,
+        )
+        self.assertFalse(is_image_relevant(dog_in_multi_post, "猫"))
+        self.assertTrue(is_image_relevant(dog_in_multi_post, "犬"))
+
+        # Multi-image post with quoted expression variants:
+        # "白人の女の子の表情イラスト「疑問」" must NOT match "居眠り", but MUST match "疑問"
+        expression_img = IrasutoyaImage(
+            title="白人の女の子の表情イラスト「疑問」",
+            image_url="https://blogger.googleusercontent.com/img/b/R29/s800/girl_question.png",
+            thumb_url="https://blogger.googleusercontent.com/img/b/R29/s120-c/girl_question.png",
+            post_title="白人の女の子の表情イラスト「目がハート・疑問・居眠り・照れ」",
+            is_single_image_post=False,
+        )
+        self.assertFalse(is_image_relevant(expression_img, "居眠り"))
+        self.assertTrue(is_image_relevant(expression_img, "疑問"))
+
+        # Multi-word query cross-entity rejection:
+        # "白い犬のイラスト" under "猫と犬のイラスト" must NOT match "白い 猫", but MUST match "白い 犬"
+        white_dog_img = IrasutoyaImage(
+            title="白い犬のイラスト",
+            image_url="https://blogger.googleusercontent.com/img/b/R29/s800/white_dog.png",
+            thumb_url="https://blogger.googleusercontent.com/img/b/R29/s120-c/white_dog.png",
+            post_title="猫と犬のイラスト",
+            is_single_image_post=False,
+        )
+        self.assertFalse(is_image_relevant(white_dog_img, "白い 猫"))
+        self.assertTrue(is_image_relevant(white_dog_img, "白い 犬"))
+
+        # Multi-image post with compound subtype coordination ("黒犬と白猫のイラスト"):
+        # "白猫のイラスト" must NOT match "犬", but MUST match "猫"
+        white_cat_img = IrasutoyaImage(
+            title="白猫のイラスト",
+            image_url="https://blogger.googleusercontent.com/img/b/R29/s800/white_cat.png",
+            thumb_url="https://blogger.googleusercontent.com/img/b/R29/s120-c/white_cat.png",
+            post_title="黒犬と白猫のイラスト",
+            is_single_image_post=False,
+        )
+        self.assertFalse(is_image_relevant(white_cat_img, "犬"))
+        self.assertTrue(is_image_relevant(white_cat_img, "猫"))
+
+        # Multi-word query rejecting invalid compound in post_title (e.g. 猫背 is not a subtype of 猫):
+        hunchback_dog_img = IrasutoyaImage(
+            title="白い犬のイラスト",
+            image_url="https://blogger.googleusercontent.com/img/b/R29/s800/white_dog.png",
+            thumb_url="https://blogger.googleusercontent.com/img/b/R29/s120-c/white_dog.png",
+            post_title="猫背のイラスト",
+            is_single_image_post=False,
+        )
+        self.assertFalse(is_image_relevant(hunchback_dog_img, "白い 猫"))
+
+        # Multi-image post with synonym-slashed title and collection prefix:
+        # "玉・ボールのイラスト（赤）" under "いろいろな色の玉・ボールのイラスト" must match "いろいろな色の玉"
+        ball_sub_img = IrasutoyaImage(
+            title="玉・ボールのイラスト（赤）",
+            image_url="https://blogger.googleusercontent.com/img/b/R29/s800/ball_red.png",
+            thumb_url="https://blogger.googleusercontent.com/img/b/R29/s120-c/ball_red.png",
+            post_title="いろいろな色の玉・ボールのイラスト",
+            is_single_image_post=False,
+        )
+        self.assertTrue(is_image_relevant(ball_sub_img, "いろいろな色の玉"))
+
+        # Multi-image post with synonym-slashed title ("付箋・ポストイットのイラスト（四角）"):
+        # "四角い付箋のイラスト「青」" must match "ポストイット"
+        postit_sub_img = IrasutoyaImage(
+            title="四角い付箋のイラスト「青」",
+            image_url="https://blogger.googleusercontent.com/img/b/R29/s800/fusen_blue.png",
+            thumb_url="https://blogger.googleusercontent.com/img/b/R29/s120-c/fusen_blue.png",
+            post_title="付箋・ポストイットのイラスト（四角）",
+            is_single_image_post=False,
+        )
+        self.assertTrue(is_image_relevant(postit_sub_img, "ポストイット"))
+
+        # Multi-image post with parenthetical orthogonal attributes ("個人防護具のイラスト（女性・パーツ別）"):
+        # "個人防護具のイラスト（女性・エプロン）" must match "パーツ"
+        ppe_sub_img = IrasutoyaImage(
+            title="個人防護具のイラスト（女性・エプロン）",
+            image_url="https://blogger.googleusercontent.com/img/b/R29/s800/ppe_apron.png",
+            thumb_url="https://blogger.googleusercontent.com/img/b/R29/s120-c/ppe_apron.png",
+            post_title="個人防護具のイラスト（女性・パーツ別）",
+            is_single_image_post=False,
+        )
+        self.assertTrue(is_image_relevant(ppe_sub_img, "パーツ"))
+
+        # Coordinated title where one entity is a compound containing the query ("猫と猫背のイラスト"):
+        # "猫背のイラスト" must NOT match "猫"
+        hunchback_sub_img = IrasutoyaImage(
+            title="猫背のイラスト",
+            image_url="https://blogger.googleusercontent.com/img/b/R29/s800/cat_hunchback.png",
+            thumb_url="https://blogger.googleusercontent.com/img/b/R29/s120-c/cat_hunchback.png",
+            post_title="猫と猫背のイラスト",
+            is_single_image_post=False,
+        )
+        self.assertFalse(is_image_relevant(hunchback_sub_img, "猫"))
+
+        # Coordinated title where one entity is a category-backed subtype ("盲導犬と猫のイラスト"):
+        # "猫のイラスト" (categories=("犬",)) must NOT match "犬"
+        guide_dog_cat_sub_img = IrasutoyaImage(
+            title="猫のイラスト",
+            image_url="https://blogger.googleusercontent.com/img/b/R29/s800/cat.png",
+            thumb_url="https://blogger.googleusercontent.com/img/b/R29/s120-c/cat.png",
+            post_title="盲導犬と猫のイラスト",
+            categories=("犬",),
+            is_single_image_post=False,
+        )
+        self.assertFalse(is_image_relevant(guide_dog_cat_sub_img, "犬"))
+
+    def test_select_best_image_prefers_individual_illustrations_over_teaser_collage(self) -> None:
+        """Verify select_best_image selects individual illustration instead of teaser collage for multi-image posts."""
+        collage_img = IrasutoyaImage(
+            title="教師と生徒のイラスト",
+            image_url="https://blogger.googleusercontent.com/img/b/R29/s800/thumbnail_school_juku.jpg",
+            thumb_url="https://blogger.googleusercontent.com/img/b/R29/s120-c/thumbnail_school_juku.jpg",
+            post_title="教師と生徒のイラスト",
+            is_single_image_post=False,
+        )
+        man_img = IrasutoyaImage(
+            title="教師と生徒のイラスト（男性）",
+            image_url="https://blogger.googleusercontent.com/img/b/R29/s800/school_juku_man.png",
+            thumb_url="https://blogger.googleusercontent.com/img/b/R29/s120-c/school_juku_man.png",
+            post_title="教師と生徒のイラスト",
+            is_single_image_post=False,
+        )
+        woman_img = IrasutoyaImage(
+            title="教師と生徒のイラスト（女性）",
+            image_url="https://blogger.googleusercontent.com/img/b/R29/s800/school_juku_woman.png",
+            thumb_url="https://blogger.googleusercontent.com/img/b/R29/s120-c/school_juku_woman.png",
+            post_title="教師と生徒のイラスト",
+            is_single_image_post=False,
+        )
+
+        candidates = [collage_img, man_img, woman_img]
+        best = select_best_image(candidates, "教師と生徒")
+        self.assertIsNotNone(best)
+        self.assertEqual(best.image_url, man_img.image_url)
+        self.assertEqual(best.title, "教師と生徒のイラスト（男性）")
+
+        ranked = rank_relevant_images(candidates, "教師と生徒")
+        self.assertEqual(ranked[0].title, "教師と生徒のイラスト（男性）")
+        self.assertEqual(ranked[1].title, "教師と生徒のイラスト（女性）")
+        self.assertEqual(ranked[2].title, "教師と生徒のイラスト")
+
+        # When no individual illustration exists, collage is preferred over text callout
+        callout_img = IrasutoyaImage(
+            title="教師と生徒のイラスト文字",
+            image_url="https://blogger.googleusercontent.com/img/b/R29/s800/school_juku_text.png",
+            thumb_url="https://blogger.googleusercontent.com/img/b/R29/s120-c/school_juku_text.png",
+            post_title="教師と生徒のイラスト",
+            is_single_image_post=False,
+        )
+        callout_and_collage = [callout_img, collage_img]
+        best_no_individual = select_best_image(callout_and_collage, "教師と生徒")
+        self.assertIsNotNone(best_no_individual)
+        self.assertEqual(best_no_individual.title, "教師と生徒のイラスト")
 
 
 if __name__ == "__main__":
