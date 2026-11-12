@@ -118,6 +118,21 @@ Evaluate and measure real search recall improvements against your actual Anki de
 python3 scripts/eval_deck_search.py --deck "Mining" --sort "FreqSort" --limit 50 --verbose
 ```
 
+### Benchmark output and logs
+
+The deck benchmark prints aggregate recall, enabled stage progression, match-reason
+totals to the console. The absolute log path is printed and flushed at startup
+so you can follow the log while a long benchmark runs. Detailed per-note results,
+configuration, warnings, and audit tables are saved to a UTF-8 log under
+`scratch/eval_deck_search/` in the repository. Each run uses a UTC timestamp and
+a unique suffix, so previous and concurrent runs are preserved.
+
+Use `--log-dir PATH` to choose another directory (relative paths use the current
+working directory), and `--verbose` to include candidate traces in the log.
+Existing `--no-stages` and `--no-bilingual-hits` switches still apply.
+Fatal errors appear on stderr. Logs remain local and Git-ignored under
+`scratch/`; delete them manually when no longer needed.
+
 ### Declarative Local LLM & Embedding Models (`models.yml`)
 
 Manage local Ollama models used for visual concept compilation:

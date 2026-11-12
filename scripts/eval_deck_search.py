@@ -12,14 +12,18 @@ Usage:
 import argparse
 import html
 import json
+import logging
 import os
 import re
 import sys
+import tempfile
 import time
 import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 # Ensure parent directory is on sys.path so we can import client and text_utils
@@ -329,7 +333,6 @@ def fetch_deck_notes(
     search_query = build_search_query(deck_name, query)
     card_ids = anki_invoke("findCards", anki_url=anki_url, query=search_query)
     if not card_ids:
-        print(f"Warning: No cards found for query '{search_query}'.")
         return []
 
     cards_info = anki_invoke("cardsInfo", anki_url=anki_url, cards=card_ids)
@@ -380,8 +383,97 @@ def detect_source_field(fields_dict: Dict[str, Any], requested_field: Optional[s
             return cand
     return list(fields_dict.keys())[0] if fields_dict else None
 
+class EvaluationReport:
+    """Route benchmark diagnostics to a run log and summaries to stdout."""
+
+    def __init__(self, handler: logging.FileHandler) -> None:
+        """Create an isolated logger owning the supplied file handler."""
+        self.logger = logging.Logger("eval_deck_search", level=logging.INFO)
+        self.logger.addHandler(handler)
+
+    def detail(self, message: str) -> None:
+        """Persist one diagnostic line without console output."""
+        self.logger.info(message)
+
+    def summary(self, message: str) -> None:
+        """Persist and display one aggregate report line."""
+        self.detail(message)
+        print(message, flush=True)
+
+    def error(self, message: str) -> None:
+        """Persist a fatal error and display it on stderr."""
+        self.logger.error(message)
+        print(message, file=sys.stderr)
+
 
 def run_evaluation(
+    deck_name: str = "Mining",
+    sort_field: str = "FreqSort",
+    source_field_name: Optional[str] = None,
+    limit: int = 50,
+    delay: float = 0.25,
+    allow_tier2: bool = True,
+    allow_bilingual: bool = True,
+    backend: str = "both",
+    verbose: bool = False,
+    anki_url: str = "http://localhost:8765",
+    track_stages: bool = True,
+    show_bilingual_hits: bool = True,
+    query: Optional[str] = None,
+    log_dir: Optional[str] = None,
+) -> None:
+    """Run the benchmark with a unique UTF-8 log in the chosen directory.
+
+    Search parameters are forwarded unchanged to the evaluation engine.
+    Relative custom directories resolve from the working directory; the default
+    directory is anchored to the repository.
+    """
+    directory = (
+        Path(log_dir).expanduser() if log_dir is not None
+        else Path(__file__).resolve().parents[1] / "scratch" / "eval_deck_search"
+    )
+    try:
+        directory = directory.resolve()
+        directory.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+        with tempfile.NamedTemporaryFile(
+            dir=directory, prefix=f"eval-{stamp}-", suffix=".log", delete=False
+        ) as artifact:
+            log_path = Path(artifact.name)
+        handler = logging.FileHandler(log_path, encoding="utf-8")
+    except OSError as exc:
+        print(f"[ERROR] Cannot initialize benchmark log: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+    report = EvaluationReport(handler)
+    try:
+        report.summary(f"Log file: {log_path}")
+        _run_evaluation(
+            report,
+            deck_name=deck_name,
+            sort_field=sort_field,
+            source_field_name=source_field_name,
+            limit=limit,
+            delay=delay,
+            allow_tier2=allow_tier2,
+            allow_bilingual=allow_bilingual,
+            backend=backend,
+            verbose=verbose,
+            anki_url=anki_url,
+            track_stages=track_stages,
+            show_bilingual_hits=show_bilingual_hits,
+            query=query,
+        )
+    except Exception:
+        report.logger.exception("Benchmark failed")
+        print("[ERROR] Benchmark failed; see run log for details.", file=sys.stderr)
+        raise
+    finally:
+        handler.close()
+        report.logger.removeHandler(handler)
+
+
+def _run_evaluation(
+    report: "EvaluationReport",
     deck_name: str = "Mining",
     sort_field: str = "FreqSort",
     source_field_name: Optional[str] = None,
@@ -399,6 +491,7 @@ def run_evaluation(
     """Run comparative evaluation between legacy, live, and offline catalog search.
 
     Args:
+        report: Destination for diagnostic and aggregate output.
         deck_name: Target Anki deck name.
         sort_field: Note field used for sorting.
         source_field_name: Optional explicit source field name.
@@ -413,41 +506,41 @@ def run_evaluation(
         show_bilingual_hits: Whether to output the audit table of bilingual gloss hits.
         query: Optional custom Anki search query (e.g. 'flag:4'), combined with --deck unless it contains an explicit positive 'deck:' selector.
     """
-    print("=" * 72)
-    print("  IRASUTOYA SEARCH RECALL BENCHMARK (NON-DESTRUCTIVE DRY RUN)")
-    print("=" * 72)
+    report.detail("=" * 72)
+    report.detail("  IRASUTOYA SEARCH RECALL BENCHMARK (NON-DESTRUCTIVE DRY RUN)")
+    report.detail("=" * 72)
     effective_query: Optional[str] = build_search_query(deck_name, query) if query else None
 
     if effective_query:
-        print(f"Query:              {effective_query}")
+        report.detail(f"Query:              {effective_query}")
     else:
-        print(f"Deck:               {deck_name}")
-    print(f"Sort Field:         {sort_field}")
-    print(f"Sample Limit:       {'All Notes' if limit <= 0 else limit}")
-    print(f"Polite Delay:       {delay}s")
-    print(f"Backend Target:     {backend}")
-    print(f"Tier 2 Fallback:    {'Enabled' if allow_tier2 else 'Disabled'}")
-    print(f"Bilingual Fallback: {'Enabled' if allow_bilingual else 'Disabled'}")
-    print(f"Track Stages:       {'Enabled' if track_stages else 'Disabled'}")
-    print("-" * 72)
+        report.detail(f"Deck:               {deck_name}")
+    report.detail(f"Sort Field:         {sort_field}")
+    report.detail(f"Sample Limit:       {'All Notes' if limit <= 0 else limit}")
+    report.detail(f"Polite Delay:       {delay}s")
+    report.detail(f"Backend Target:     {backend}")
+    report.detail(f"Tier 2 Fallback:    {'Enabled' if allow_tier2 else 'Disabled'}")
+    report.detail(f"Bilingual Fallback: {'Enabled' if allow_bilingual else 'Disabled'}")
+    report.detail(f"Track Stages:       {'Enabled' if track_stages else 'Disabled'}")
+    report.detail("-" * 72)
 
     try:
         notes = fetch_deck_notes(deck_name, sort_field=sort_field, limit=limit, anki_url=anki_url, query=query)
     except Exception as e:
-        print(f"\n[ERROR] {e}\n")
+        report.error(f"\n[ERROR] {e}\n")
         sys.exit(1)
 
     if not notes:
         scope = f"query '{query}'" if query else f"deck '{deck_name}'"
-        print(f"No notes available to evaluate in {scope}.")
+        report.summary(f"No notes available to evaluate in {scope}.")
         return
 
-    print(f"Retrieved {len(notes)} notes. Starting search benchmark...\n")
+    report.detail(f"Retrieved {len(notes)} notes. Starting search benchmark...\n")
 
     cat_store = default_store()
     if backend in ("catalog", "both"):
         if cat_store.get_index() is None:
-            print("\n[ERROR] Offline catalog is missing or unreadable. Build it with scripts/build_catalog.py.\n")
+            report.error("\n[ERROR] Offline catalog is missing or unreadable. Build it with scripts/build_catalog.py.\n")
             sys.exit(1)
     else:
         cat_store.warm_async()
@@ -490,7 +583,7 @@ def run_evaluation(
                 try:
                     leg_results = live_client.search(leg_query, max_results=5, orderby=None)
                 except Exception as e:
-                    print(f"      [WARNING] Legacy live search request failed for '{leg_query}': {e}")
+                    report.detail(f"      [WARNING] Legacy live search request failed for '{leg_query}': {e}")
                     leg_error = True
                     leg_results = []
                 if delay > 0:
@@ -499,7 +592,7 @@ def run_evaluation(
                 try:
                     cat_leg_results = cat_client.search(leg_query, max_results=5)
                 except Exception as e:
-                    print(f"      [WARNING] Legacy catalog search failed for '{leg_query}': {e}")
+                    report.detail(f"      [WARNING] Legacy catalog search failed for '{leg_query}': {e}")
                     leg_error = True
                     cat_leg_results = []
 
@@ -540,7 +633,7 @@ def run_evaluation(
                 t2_res, _, _ = cat_client.search_with_fallbacks(cands_t2, max_results=1, pos_type=pos_type)
                 note_t2_hit = bool(t2_res)
             except Exception as e:
-                print(f"      [WARNING] Stage baseline search failed for '{raw_source}': {e}")
+                report.detail(f"      [WARNING] Stage baseline search failed for '{raw_source}': {e}")
                 eval_error = True
 
         live_res, live_cand, live_best = [], None, None
@@ -555,7 +648,7 @@ def run_evaluation(
                     pos_type=pos_type,
                 )
             except Exception as e:
-                print(f"      [WARNING] Live search request failed for '{raw_source}': {e}")
+                report.detail(f"      [WARNING] Live search request failed for '{raw_source}': {e}")
                 eval_error = True
 
         if backend in ("catalog", "both"):
@@ -566,7 +659,7 @@ def run_evaluation(
                     pos_type=pos_type,
                 )
             except Exception as e:
-                print(f"      [WARNING] Catalog search request failed for '{raw_source}': {e}")
+                report.detail(f"      [WARNING] Catalog search request failed for '{raw_source}': {e}")
                 eval_error = True
 
         # Choose primary comparison results depending on requested backend
@@ -715,7 +808,7 @@ def run_evaluation(
         results.append(res_entry)
 
         display_desc = f"New ({backend}): " + (f"YES ({matched_reason[:12]})" if new_found else "NO ")
-        print(
+        report.detail(
             f"[{idx:2d}/{len(notes):2d}] {status_marker} "
             f"[{str(sort_val):>5s}] {raw_source[:12]:<12s} -> "
             f"Legacy: {'ERR' if leg_error else ('YES' if leg_found else 'NO '):3s} | "
@@ -723,40 +816,41 @@ def run_evaluation(
         )
         if verbose:
             if new_found and matched_cand:
-                print(
+                report.detail(
                     f"      ↳ Matched: '{matched_cand[0]}' ({matched_cand[1]}, tier {matched_cand[2]}) -> "
                     f"'{best_img.title if best_img else ''}'"
                 )
             if leg_found:
-                print(f"      ↳ Legacy matched: '{leg_query}' -> '{valid_leg_results[0].title}'")
+                report.detail(f"      ↳ Legacy matched: '{leg_query}' -> '{valid_leg_results[0].title}'")
             if not leg_found and not new_found:
                 tried_terms = [c[0] for c in candidates]
-                print(f"      ↳ Tried candidates: {', '.join(repr(t) for t in tried_terms)}")
+                report.detail(f"      ↳ Tried candidates: {', '.join(repr(t) for t in tried_terms)}")
 
     # --- SUMMARY REPORT ---
     total = len(results)
     valid_results = [r for r in results if r["status"] != "REQUEST_ERROR"]
     valid_total = len(valid_results)
 
-    print("\n" + "=" * 72)
-    print("  EVALUATION SUMMARY REPORT")
-    print("=" * 72)
-    print(f"Total Notes Evaluated:    {total}")
+    report.summary("\n" + "=" * 72)
+    report.summary("  EVALUATION SUMMARY REPORT")
+    report.summary("=" * 72)
+    report.summary(f"Total Notes Evaluated:    {total}")
+    report.summary(f"Valid / Excluded Notes:   {valid_total} / {total - valid_total}")
     if backend in ("live", "both"):
         leg_pct = (legacy_hits / valid_total * 100) if valid_total else 0.0
         live_pct = (live_hits / valid_total * 100) if valid_total else 0.0
-        print(f"Legacy Search Recall:     {legacy_hits:3d} / {valid_total} ({leg_pct:.1f}%)")
-        print(f"Live Search Recall:       {live_hits:3d} / {valid_total} ({live_pct:.1f}%)")
+        report.summary(f"Legacy Search Recall:     {legacy_hits:3d} / {valid_total} ({leg_pct:.1f}%)")
+        report.summary(f"Live Search Recall:       {live_hits:3d} / {valid_total} ({live_pct:.1f}%)")
     if backend in ("catalog", "both"):
         cat_pct = (cat_hits / valid_total * 100) if valid_total else 0.0
         if backend == "catalog":
             leg_pct = (legacy_hits / valid_total * 100) if valid_total else 0.0
-            print(f"Legacy Search Recall:     {legacy_hits:3d} / {valid_total} ({leg_pct:.1f}%)")
-        print(f"Catalog Search Recall:    {cat_hits:3d} / {valid_total} ({cat_pct:.1f}%)")
+            report.summary(f"Legacy Search Recall:     {legacy_hits:3d} / {valid_total} ({leg_pct:.1f}%)")
+        report.summary(f"Catalog Search Recall:    {cat_hits:3d} / {valid_total} ({cat_pct:.1f}%)")
     if allow_bilingual:
         bi_hits = sum(1 for r in valid_results if r.get("matched_reason") == "bilingual_gloss")
         bi_pct = (bi_hits / valid_total * 100) if valid_total else 0.0
-        print(f"Bilingual Gloss Hits:     {bi_hits:3d} / {valid_total} ({bi_pct:.1f}%)")
+        report.summary(f"Bilingual Gloss Hits:     {bi_hits:3d} / {valid_total} ({bi_pct:.1f}%)")
 
     # --- INCREMENTAL STRATEGY PROGRESSION TABLE ---
     if track_stages and backend in ("catalog", "both") and valid_total:
@@ -771,67 +865,65 @@ def run_evaluation(
         delta_bi = full_pct - t2_pct
         net_delta = full_pct - leg_pct
 
-        print("\n" + "=" * 72)
-        print("  INCREMENTAL RECALL & STRATEGY PROGRESSION")
-        print("=" * 72)
-        print(f"{'Stage':<38s} | {'Hits / Total':<12s} | {'Recall %':<8s} | {'Incremental Gain'}")
-        print("-" * 72)
-        print(f"{'1. Legacy (Naive Direct Query)':<38s} | {cat_leg_baseline:4d} / {valid_total:<5d} | {leg_pct:6.2f}% | —")
-        print(f"{'2. Tier 1 (Syntactic & Script Norm)':<38s} | {t1_hits:4d} / {valid_total:<5d} | {t1_pct:6.2f}% | {delta_t1:+5.2f}% ({t1_hits - cat_leg_baseline:+d} cards)")
-        print(f"{'3. Tier 2 (Readings/Deinf/Concepts)':<38s} | {t2_no_bi_hits:4d} / {valid_total:<5d} | {t2_pct:6.2f}% | {delta_t2:+5.2f}% ({t2_no_bi_hits - t1_hits:+d} cards)")
-        print(f"{'4. Bilingual Gloss (Definition Bridge)':<38s} | {cat_hits:4d} / {valid_total:<5d} | {full_pct:6.2f}% | {delta_bi:+5.2f}% ({cat_hits - t2_no_bi_hits:+d} cards)")
-        print("-" * 72)
-        print(f"Net Improvement: {cat_hits - cat_leg_baseline:+d} cards ({net_delta:+5.2f}% recall gain over Legacy)")
+        report.summary("\n" + "=" * 72)
+        report.summary("  INCREMENTAL RECALL & STRATEGY PROGRESSION")
+        report.summary("=" * 72)
+        report.summary(f"{'Stage':<38s} | {'Hits / Total':<12s} | {'Recall %':<8s} | {'Incremental Gain'}")
+        report.summary("-" * 72)
+        report.summary(f"{'1. Legacy (Naive Direct Query)':<38s} | {cat_leg_baseline:4d} / {valid_total:<5d} | {leg_pct:6.2f}% | —")
+        report.summary(f"{'2. Tier 1 (Syntactic & Script Norm)':<38s} | {t1_hits:4d} / {valid_total:<5d} | {t1_pct:6.2f}% | {delta_t1:+5.2f}% ({t1_hits - cat_leg_baseline:+d} cards)")
+        report.summary(f"{'3. Tier 2 (Readings/Deinf/Concepts)':<38s} | {t2_no_bi_hits:4d} / {valid_total:<5d} | {t2_pct:6.2f}% | {delta_t2:+5.2f}% ({t2_no_bi_hits - t1_hits:+d} cards)")
+        report.summary(f"{'4. Bilingual Gloss (Definition Bridge)':<38s} | {cat_hits:4d} / {valid_total:<5d} | {full_pct:6.2f}% | {delta_bi:+5.2f}% ({cat_hits - t2_no_bi_hits:+d} cards)")
+        report.summary("-" * 72)
+        report.summary(f"Net Improvement: {cat_hits - cat_leg_baseline:+d} cards ({net_delta:+5.2f}% recall gain over Legacy)")
 
     # --- BILINGUAL GLOSS MATCH AUDIT TABLE ---
     if show_bilingual_hits and bilingual_matches:
-        print("\n" + "-" * 72)
-        print(f"  BILINGUAL GLOSS NEW HITS (TOTAL: {len(bilingual_matches)})")
-        print("-" * 72)
-        print(f"{'#':<4s} | {'Freq':<5s} | {'Expression':<12s} | {'Target':<10s} | {'Matched Image Title'}")
-        print("-" * 72)
+        report.detail("\n" + "-" * 72)
+        report.detail(f"  BILINGUAL GLOSS NEW HITS (TOTAL: {len(bilingual_matches)})")
+        report.detail("-" * 72)
+        report.detail(f"{'#':<4s} | {'Freq':<5s} | {'Expression':<12s} | {'Target':<10s} | {'Matched Image Title'}")
+        report.detail("-" * 72)
         for m in bilingual_matches:
-            print(
+            report.detail(
                 f"{m['index']:<4d} | {str(m['sort_val']):>5s} | {m['expr'][:12]:<12s} | "
                 f"{m['target'][:10]:<10s} | {m['title'][:32]}"
             )
 
     # --- HONORIFIC AFFIX MATCH AUDIT TABLE ---
     if affix_matches:
-        print("\n" + "-" * 72)
-        print(f"  HONORIFIC AFFIX NEW HITS (TOTAL: {len(affix_matches)})")
-        print("-" * 72)
-        print(f"{'#':<4s} | {'Freq':<5s} | {'Expression':<12s} | {'Target':<10s} | {'Matched Image Title'}")
-        print("-" * 72)
+        report.detail("\n" + "-" * 72)
+        report.detail(f"  HONORIFIC AFFIX NEW HITS (TOTAL: {len(affix_matches)})")
+        report.detail("-" * 72)
+        report.detail(f"{'#':<4s} | {'Freq':<5s} | {'Expression':<12s} | {'Target':<10s} | {'Matched Image Title'}")
+        report.detail("-" * 72)
         for m in affix_matches:
-            print(
+            report.detail(
                 f"{m['index']:<4d} | {str(m['sort_val']):>5s} | {m['expr'][:12]:<12s} | "
                 f"{m['target'][:10]:<10s} | {m['title'][:32]}"
             )
 
     # --- MATCH REASON DISTRIBUTION ---
     if reasons_count:
-        print("\n" + "-" * 72)
-        print("  MATCH REASON DISTRIBUTION")
-        print("-" * 72)
+        report.summary("\n" + "-" * 72)
+        report.summary("  MATCH REASON DISTRIBUTION")
+        report.summary("-" * 72)
         sorted_reasons = sorted(reasons_count.items(), key=lambda kv: kv[1], reverse=True)
         for r_name, count in sorted_reasons:
             pct = (count / valid_total * 100) if valid_total else 0.0
-            print(f"  • {r_name:<28s}: {count:4d} cards ({pct:5.2f}%)")
+            report.summary(f"  • {r_name:<28s}: {count:4d} cards ({pct:5.2f}%)")
 
     if backend == "both" and diff_table:
-        print("\n" + "-" * 72)
-        print("  BACKEND SELECTION DIFFERENCES (LIVE vs CATALOG)")
-        print("-" * 72)
-        print(f"{'Term':<14s} | {'Live Search Image Title':<26s} | {'Catalog Search Image Title'}")
-        print("-" * 72)
-        for term, l_title, c_title in diff_table[:15]:
-            print(f"{term[:14]:<14s} | {l_title[:26]:<26s} | {c_title[:26]}")
-        if len(diff_table) > 15:
-            print(f"... and {len(diff_table) - 15} more differences.")
-    print("=" * 72)
+        report.detail("\n" + "-" * 72)
+        report.detail("  BACKEND SELECTION DIFFERENCES (LIVE vs CATALOG)")
+        report.detail("-" * 72)
+        report.detail(f"{'Term':<14s} | {'Live Search Image Title':<26s} | {'Catalog Search Image Title'}")
+        report.detail("-" * 72)
+        for term, l_title, c_title in diff_table:
+            report.detail(f"{term[:14]:<14s} | {l_title[:26]:<26s} | {c_title[:26]}")
+    report.detail("=" * 72)
     if failed_requests:
-        print(f"\n[ERROR] {failed_requests} note(s) had failed search requests and were excluded from recall.\n")
+        report.error(f"\n[ERROR] {failed_requests} note(s) had failed search requests and were excluded from recall.\n")
         sys.exit(1)
 
 
@@ -856,8 +948,10 @@ def main() -> None:
     parser.add_argument("--disable-bilingual", action="store_true", help="Disable bilingual definition gloss fallbacks")
     parser.add_argument("--no-stages", action="store_true", help="Disable stage-by-stage incremental progression tracking")
     parser.add_argument("--no-bilingual-hits", action="store_true", help="Omit the audit table of bilingual gloss hits")
-    parser.add_argument("--verbose", "-v", action="store_true", help="Print detailed candidate resolution for each note")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Log detailed candidate resolution for each note")
     parser.add_argument("--anki-url", default="http://localhost:8765", help="AnkiConnect URL (default: http://localhost:8765)")
+
+    parser.add_argument("--log-dir", default=None, help="Run log directory (default: repository scratch/eval_deck_search/)")
 
     args = parser.parse_args()
 
@@ -865,6 +959,7 @@ def main() -> None:
     delay = args.delay if args.delay is not None else (0.0 if args.backend == "catalog" else 0.25)
 
     run_evaluation(
+        log_dir=args.log_dir,
         deck_name=args.deck,
         sort_field=args.sort,
         source_field_name=args.source_field,
