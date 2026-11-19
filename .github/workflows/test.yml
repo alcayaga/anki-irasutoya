@@ -31,7 +31,7 @@ jobs:
 
   hermetic-tests:
     name: Hermetic Tests (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
