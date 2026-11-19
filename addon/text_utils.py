@@ -4,6 +4,7 @@ import re
 import unicodedata
 from typing import Any, Callable, FrozenSet, List, Optional, Tuple
 
+from .fields import FURIGANA_FIELDS, READING_FIELDS, FieldSelection, metadata_fields
 from .synonyms import (
     lookup_bilingual_glosses,
     lookup_concept_map,
@@ -23,24 +24,9 @@ KANJI_NUMS = {
 }
 COUNTER_PATTERN = r"杯|人|本|頭|枚|羽|匹|台|個|つ|階|着|足|件|回|歳|才|点|度|組|名"
 
-# Common Japanese reading field names in popular note models (Lapis, Yomitan, Kaishi, Core, etc.)
-NOTE_READING_FIELDS = (
-    "ExpressionReading",
-    "Reading",
-    "Word Reading",
-    "WordReading",
-    "VocabReading",
-    "Kana",
-    "KanaReading",
-)
-
-NOTE_FURIGANA_FIELDS = (
-    "ExpressionFurigana",
-    "Word Furigana",
-    "WordFurigana",
-    "Furigana",
-    "VocabFurigana",
-)
+# Public aliases retained for existing callers.
+NOTE_READING_FIELDS = READING_FIELDS
+NOTE_FURIGANA_FIELDS = FURIGANA_FIELDS
 
 PRIMARY_COMPOUND_REASON: str = "primary_compound"
 
@@ -616,12 +602,12 @@ def conjugate_japanese_verb(text: str, verb_class: Optional[str] = None) -> List
     return out
 
 
-def _iter_note_readings(note: Any) -> List[Tuple[str, str, str]]:
+def _iter_note_readings(note: Any, field_selection: Optional[FieldSelection] = None) -> List[Tuple[str, str, str]]:
     """Extract (field_name, field_type, reading) from note reading and furigana fields."""
     if not note or not hasattr(note, "__getitem__"):
         return []
     results = []
-    for rf in NOTE_READING_FIELDS:
+    for rf in metadata_fields(note, "reading_fields", field_selection):
         if rf in note and note[rf]:
             val = str(note[rf]).strip()
             if val:
@@ -630,7 +616,7 @@ def _iter_note_readings(note: Any) -> List[Tuple[str, str, str]]:
                 cleaned_read = clean_search_query(reading_term)
                 if cleaned_read and not is_grammar_function_word(cleaned_read):
                     results.append((rf, "reading", cleaned_read))
-    for ff in NOTE_FURIGANA_FIELDS:
+    for ff in metadata_fields(note, "furigana_fields", field_selection):
         if ff in note and note[ff]:
             f_val = str(note[ff]).strip()
             if f_val:
@@ -642,9 +628,9 @@ def _iter_note_readings(note: Any) -> List[Tuple[str, str, str]]:
     return results
 
 
-def _find_note_reading(note: Any) -> Optional[str]:
+def _find_note_reading(note: Any, field_selection: Optional[FieldSelection] = None) -> Optional[str]:
     """Extract first valid authoritative reading from note fields."""
-    readings = _iter_note_readings(note)
+    readings = _iter_note_readings(note, field_selection)
     return readings[0][2] if readings else None
 
 
@@ -681,6 +667,7 @@ def generate_search_candidates(
     bilingual_lookup: Optional[Callable[[Any, Optional[Any]], List[str]]] = None,
     llm_tier2_lookup: Optional[Callable[[str], List[str]]] = None,
     allow_bilingual: bool = True,
+    field_selection: Optional[FieldSelection] = None,
 ) -> List[Tuple[str, str, int]]:
     """Generate prioritized search candidate queries with confidence tiers.
     
@@ -709,6 +696,7 @@ def generate_search_candidates(
         llm_lookup: Optional callable mapping a headword to a list of LLM-curated direct visual concept target strings (Tier 1).
         llm_tier2_lookup: Optional callable mapping a headword to a list of LLM Tier 2 visual exemplar target strings.
         bilingual_lookup: Optional callable mapping a note and optional Yomitan metadata to bilingual concept target strings.
+        field_selection: Optional resolved metadata-field overrides.
         allow_bilingual: Whether to include bilingual definition gloss bridge candidates in Group 4.
 
     Returns:
@@ -728,7 +716,7 @@ def generate_search_candidates(
             return True
         return False
 
-    yomitan_meta = extract_yomitan_metadata_from_note(note) if note is not None else None
+    yomitan_meta = extract_yomitan_metadata_from_note(note, field_selection=field_selection) if note is not None else None
 
     surface, same_field_reading = extract_furigana_terms(raw_source)
     cleaned_primary = clean_search_query(surface)
@@ -803,7 +791,7 @@ def generate_search_candidates(
     # Yomitan 'uk' (usually written using kana alone) orthography promotion
     # Headwords like 其の儘, 懸かる, ご免なさい are canonical in Kana in modern Japanese and on Irasutoya
     if yomitan_meta and yomitan_meta.is_uk:
-        uk_reading = same_field_reading or _find_note_reading(note)
+        uk_reading = same_field_reading or _find_note_reading(note, field_selection)
         if uk_reading:
             cleaned_uk = clean_search_query(uk_reading)
             if (
@@ -927,7 +915,7 @@ def generate_search_candidates(
             if bilingual_lookup:
                 b_targets = bilingual_lookup(note, yomitan_meta)
             else:
-                b_targets = lookup_bilingual_glosses(note, yomitan_meta=yomitan_meta, store=store)
+                b_targets = lookup_bilingual_glosses(note, yomitan_meta=yomitan_meta, store=store, field_selection=field_selection)
             for b_target in b_targets[:3]:
                 add(b_target, "bilingual_gloss", 2)
 
@@ -947,7 +935,7 @@ def generate_search_candidates(
                         break
 
         # Check dedicated reading and furigana fields on the note (authoritative dictionary readings)
-        for f_name, f_type, cleaned_read in _iter_note_readings(note):
+        for f_name, f_type, cleaned_read in _iter_note_readings(note, field_selection):
             prefix = f"note_{f_type}_{f_name}"
             add(cleaned_read, prefix, 2)
             if not _should_suppress_katakana_conversion(cleaned_read, yomitan_meta):

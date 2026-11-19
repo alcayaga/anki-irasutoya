@@ -6,16 +6,9 @@ from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Any, List, Optional, Sequence, Set, Tuple
 
-# Common Yomitan definition/glossary field names in popular note models (Lapis, Senren, Jlab, etc.)
-NOTE_DEFINITION_FIELDS = (
-    "MainDefinition",
-    "Glossary",
-    "Definition",
-    "Definitions",
-    "Meanings",
-    "Meaning",
-    "Word Meaning",
-)
+from .fields import DEFINITION_FIELDS, FieldSelection, gloss_fields, metadata_fields
+
+NOTE_DEFINITION_FIELDS = DEFINITION_FIELDS
 
 GRAMMAR_POS_TAGS = frozenset({
     "prt", "conj", "aux", "aux-v", "aux-adj", "cop", "suf", "pref"
@@ -642,7 +635,7 @@ def _merge_metadata(target: YomitanMetadata, source: YomitanMetadata) -> None:
         target.english_glosses.extend(source.english_glosses)
 
 
-def extract_yomitan_metadata_from_note(note: Any) -> Optional[YomitanMetadata]:
+def extract_yomitan_metadata_from_note(note: Any, field_selection: Optional[FieldSelection] = None) -> Optional[YomitanMetadata]:
     """Inspect definition fields of an Anki note to extract Yomitan metadata.
 
     Merges metadata across definition fields if an earlier field contains only
@@ -661,7 +654,8 @@ def extract_yomitan_metadata_from_note(note: Any) -> Optional[YomitanMetadata]:
     combined_meta: Optional[YomitanMetadata] = None
 
     # Check prioritized definition fields first
-    for f in NOTE_DEFINITION_FIELDS:
+    definition_fields = metadata_fields(note, "definition_fields", field_selection)
+    for f in definition_fields:
         if f in note and note[f]:
             val = str(note[f]).strip()
             meta = parse_yomitan_html(val)
@@ -676,11 +670,14 @@ def extract_yomitan_metadata_from_note(note: Any) -> Optional[YomitanMetadata]:
     if combined_meta and _has_structured_data(combined_meta):
         return combined_meta
 
+    if field_selection is not None and field_selection.definition_fields is not None:
+        return combined_meta if (combined_meta and _has_data(combined_meta)) else None
+
     # Fallback: scan any note field containing Yomitan markers
     try:
         keys = note.keys() if hasattr(note, "keys") else []
         for k in keys:
-            if k in NOTE_DEFINITION_FIELDS:
+            if k in definition_fields:
                 continue
             val = str(note[k]).strip()
             if "data-sc-content" in val or "formsTable" in val or "JMdict" in val or "yomitan" in val:
@@ -809,6 +806,7 @@ def strip_html_excluded_containers(html_text: str) -> str:
 def extract_english_glosses_from_note(
     note: Any,
     yomitan_meta: Optional[YomitanMetadata] = None,
+    field_selection: Optional[FieldSelection] = None,
 ) -> List[str]:
     """Extract and normalize English gloss candidates from an Anki note.
 
@@ -827,7 +825,7 @@ def extract_english_glosses_from_note(
     if not note or not hasattr(note, "__getitem__"):
         return []
 
-    fields_to_check = NOTE_DEFINITION_FIELDS + ("English", "SelectionText")
+    fields_to_check = gloss_fields(note, field_selection)
     glosses: List[str] = []
     seen: Set[str] = set()
 
@@ -868,7 +866,7 @@ def extract_english_glosses_from_note(
                 return glosses
 
     # Pass 2: Fallback to scanning any remaining fields (e.g. Sentence Meaning) only if no vocabulary gloss found
-    meta = extract_yomitan_metadata_from_note(note)
+    meta = extract_yomitan_metadata_from_note(note, field_selection=field_selection)
     if meta and meta.english_glosses:
         return list(dict.fromkeys(meta.english_glosses))
 

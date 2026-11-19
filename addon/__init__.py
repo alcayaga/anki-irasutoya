@@ -22,7 +22,13 @@ def on_add_irasutoya_images(browser) -> None:
         showInfo("Please select at least one card in the browser list.", parent=browser)
         return
 
-    dialog = IrasutoyaDialog(parent=browser, browser=browser, note_ids=selected_nids)
+    from .fields import FieldConfigurationError
+
+    try:
+        dialog = IrasutoyaDialog(parent=browser, browser=browser, note_ids=selected_nids)
+    except FieldConfigurationError as exc:
+        showInfo(str(exc), parent=browser)
+        return
     dialog.exec()
 
 

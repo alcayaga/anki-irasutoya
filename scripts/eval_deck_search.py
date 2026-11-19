@@ -33,6 +33,7 @@ from addon.batch import safe_extract_note_pos_type
 from addon.catalog import default_store
 from addon.client import IrasutoyaClient
 from addon.feed import IrasutoyaImage, parse_entries
+from addon.fields import resolve_fields
 from addon.ranking import (
     has_standalone_title_match,
     has_title_illustration_match,
@@ -378,9 +379,9 @@ def detect_source_field(fields_dict: Dict[str, Any], requested_field: Optional[s
     if requested_field and requested_field in fields_dict:
         return requested_field
     candidates = ["Expression", "Word", "Term", "Vocabulary", "Kanji", "Front"]
-    for cand in candidates:
-        if cand in fields_dict:
-            return cand
+    matches = resolve_fields(fields_dict, candidates)
+    if matches:
+        return matches[0]
     return list(fields_dict.keys())[0] if fields_dict else None
 
 class EvaluationReport:

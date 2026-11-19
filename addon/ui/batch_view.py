@@ -166,7 +166,10 @@ class _BatchModeMixin:
 
                     raw_src = note[source_field]
                     store = getattr(self.client, "catalog", None)
-                    candidates = generate_search_candidates(raw_src, note=note, allow_tier2=True, store=store)
+                    candidates = generate_search_candidates(
+                        raw_src, note=note, allow_tier2=True, store=store,
+                        field_selection=self._metadata_selection(note),
+                    )
                     has_target = bool(note[target_field].strip())
                     query = candidates[0][0] if candidates else (clean_search_query(raw_src) or "(Empty)")
                     target_status = "Has Content" if has_target else "Empty"

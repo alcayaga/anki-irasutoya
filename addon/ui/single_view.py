@@ -79,7 +79,8 @@ class _SingleNoteModeMixin:
             if raw_val:
                 store = getattr(self.client, "catalog", None)
                 self._card_candidates = generate_search_candidates(
-                    raw_val, note=self.first_note, allow_tier2=True, store=store
+                    raw_val, note=self.first_note, allow_tier2=True, store=store,
+                    field_selection=self._metadata_selection(self.first_note),
                 )
 
         self.query_input = QLineEdit(initial_query, self)
@@ -231,7 +232,10 @@ class _SingleNoteModeMixin:
             self._card_source_term = new_query
             store = getattr(self.client, "catalog", None)
             self._card_candidates = (
-                generate_search_candidates(raw_val, note=self.first_note, allow_tier2=True, store=store)
+                generate_search_candidates(
+                    raw_val, note=self.first_note, allow_tier2=True, store=store,
+                    field_selection=self._metadata_selection(self.first_note),
+                )
                 if raw_val
                 else []
             )
@@ -276,6 +280,7 @@ class _SingleNoteModeMixin:
             card_candidates=card_candidates,
             first_note=self.first_note,
             direct=direct,
+            field_selection=self._metadata_selection(self.first_note) if self.first_note is not None else None,
         )
 
         def background_search() -> None:
