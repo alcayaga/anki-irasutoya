@@ -815,11 +815,13 @@ def extract_english_glosses_from_note(
     Args:
         note: Anki note or mapping containing flashcard fields.
         yomitan_meta: Optional pre-parsed YomitanMetadata.
+        field_selection: Explicit field order takes priority over pre-parsed glosses.
 
     Returns:
         List of deduplicated canonical English glosses.
     """
-    if yomitan_meta and yomitan_meta.english_glosses:
+    explicit_definitions = field_selection is not None and field_selection.definition_fields is not None
+    if not explicit_definitions and yomitan_meta and yomitan_meta.english_glosses:
         return list(dict.fromkeys(yomitan_meta.english_glosses))
 
     if not note or not hasattr(note, "__getitem__"):
@@ -864,6 +866,9 @@ def extract_english_glosses_from_note(
                     glosses.append(norm)
             if glosses:
                 return glosses
+
+    if explicit_definitions:
+        return []
 
     # Pass 2: Fallback to scanning any remaining fields (e.g. Sentence Meaning) only if no vocabulary gloss found
     meta = extract_yomitan_metadata_from_note(note, field_selection=field_selection)

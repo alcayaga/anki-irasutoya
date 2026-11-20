@@ -132,6 +132,49 @@ class TestMetadataCompatibility(unittest.TestCase):
         self.assertIsNone(extract_yomitan_metadata_from_note(note, field_selection=disabled))
         self.assertEqual(extract_yomitan_metadata_from_note({"Unknown": STRUCTURED}).english_glosses, ["cat"])
 
+    def test_explicit_gloss_priority_in_candidate_pipeline(self) -> None:
+        """Earlier plain glosses win while later structured POS and forms survive."""
+        note = {
+            "word": "未知語",
+            "Custom": "dog",
+            "Glossary": '<i>(1, n, JMdict)</i>' + STRUCTURED
+            + '<table data-sc-content="formsTable"><tr><th></th><th>犬</th></tr>'
+            + '<tr><th>いぬ</th><td>★</td></tr></table>',
+        }
+        selection = FieldSelection(definition_fields=("Custom", "Glossary"))
+        metadata = extract_yomitan_metadata_from_note(note, field_selection=selection)
+        self.assertIn("n", metadata.pos_tags)
+        self.assertIn("犬", metadata.forms_star)
+        self.assertEqual(extract_english_glosses_from_note(
+            note, yomitan_meta=metadata, field_selection=selection,
+        ), ["dog"])
+
+        def synonym_targets(term: str, **kwargs: Any) -> list:
+            """Provide hermetic bilingual concepts without a catalog or network."""
+            return {"dog": ["犬"], "cat": ["猫"]}.get(term, [])
+
+        with patch("addon.synonyms.lookup_synonyms", side_effect=synonym_targets), \
+             patch("addon.text_utils.lookup_concept_map", return_value=[]), \
+             patch("addon.text_utils.lookup_kaishi_concept", return_value=[]), \
+             patch("addon.text_utils.lookup_llm_concept", return_value=[]), \
+             patch("addon.text_utils.lookup_llm_concept_tier2", return_value=[]), \
+             patch("addon.text_utils.lookup_sudachi_synonyms", return_value=[]):
+            # Remove forms for this assertion so the same target is not deduplicated
+            # before the bilingual stage; structured POS remains in the pipeline.
+            pipeline_note = dict(note, Glossary='<i>(1, n, JMdict)</i>' + STRUCTURED)
+            candidates = generate_search_candidates(
+                note["word"], note=pipeline_note, field_selection=selection,
+            )
+        self.assertEqual([c for c in candidates if c[1] == "bilingual_gloss"],
+                         [("犬", "bilingual_gloss", 2)])
+        self.assertEqual(extract_english_glosses_from_note(
+            dict(note, Custom=""), yomitan_meta=metadata, field_selection=selection,
+        ), ["cat"])
+        self.assertEqual(extract_english_glosses_from_note(
+            note, yomitan_meta=metadata, field_selection=FieldSelection(definition_fields=()),
+        ), [])
+        self.assertEqual(extract_english_glosses_from_note(note, yomitan_meta=metadata), ["cat"])
+
     def test_custom_structured_metadata_and_pos(self) -> None:
         """Custom fields feed both structured extraction and ranking POS inference."""
         note = {"Custom": '<i>(1, v1, vt, JMdict [2025-11-01])</i>', "Glossary": STRUCTURED}
