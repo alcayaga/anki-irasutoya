@@ -1,6 +1,9 @@
 """Configuration manager for the Anki Irasutoya add-on."""
 from typing import Any, Dict
 
+from .fields import FieldSelection, select_fields
+
+CONFIG_KEY_FIELD_OVERRIDES = "note_type_field_overrides"
 CONFIG_KEY_SOURCE = "last_source_field"
 CONFIG_KEY_TARGET = "last_target_field"
 CONFIG_KEY_OVERWRITE = "last_overwrite_mode"
@@ -9,6 +12,7 @@ CONFIG_KEY_FULL_DELAY = "full_image_delay_ms"
 CONFIG_KEY_IMAGE_SIZE = "image_size"
 
 DEFAULT_CONFIG: Dict[str, Any] = {
+    CONFIG_KEY_FIELD_OVERRIDES: {},
     CONFIG_KEY_SOURCE: "Expression",
     CONFIG_KEY_TARGET: "DefinitionPicture",
     CONFIG_KEY_OVERWRITE: "skip",  # "skip" or "overwrite"
@@ -67,3 +71,10 @@ def update_user_preferences(
     cfg[CONFIG_KEY_TARGET] = target_field
     cfg[CONFIG_KEY_OVERWRITE] = overwrite_mode
     save_config(cfg)
+
+
+def note_field_selection(note: Any, config: Dict[str, Any]) -> FieldSelection:
+    """Resolve model-specific metadata at the Anki boundary, before background searches."""
+    model = note.note_type() if callable(getattr(note, "note_type", None)) else None
+    name = model.get("name", "") if isinstance(model, dict) else ""
+    return select_fields(note.keys(), name, config.get(CONFIG_KEY_FIELD_OVERRIDES, {}))

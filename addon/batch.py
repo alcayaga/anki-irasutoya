@@ -9,10 +9,13 @@ from typing import Any, Callable, List, NamedTuple, Optional, Sequence, Tuple
 from .catalog import default_store
 from .client import IrasutoyaClient
 from .config import (
+    CONFIG_KEY_FIELD_OVERRIDES,
     CONFIG_KEY_FULL_DELAY,
     CONFIG_KEY_IMAGE_SIZE,
     get_config,
+    note_field_selection,
 )
+from .fields import FieldConfigurationError, FieldSelection, validate_overrides
 from .ranking import (
     infer_note_pos_type,
     infer_pos_type,
@@ -122,10 +125,10 @@ def classify_batch_outcome(
     return "fill_direct"
 
 
-def safe_extract_note_pos_type(note: Any) -> Optional[str]:
+def safe_extract_note_pos_type(note: Any, field_selection: Optional[FieldSelection] = None) -> Optional[str]:
     """Safely extract Yomitan metadata and infer POS type, returning None on failure."""
     try:
-        yomitan_meta = extract_yomitan_metadata_from_note(note)
+        yomitan_meta = extract_yomitan_metadata_from_note(note, field_selection=field_selection)
         return infer_note_pos_type(yomitan_meta)
     except Exception as exc:
         logger.debug("Failed to extract Yomitan metadata/POS from note: %s", exc)
@@ -265,7 +268,8 @@ def process_note_record(
     client: IrasutoyaClient,
     write_media_func: Callable[[str, bytes], str],
     image_size: str = "s800",
-    allow_tier2: bool = True
+    allow_tier2: bool = True,
+    field_selection: Optional[FieldSelection] = None,
 ) -> Tuple[str, Optional[any]]:
     """Process a single note: check condition, search Irasutoya with fallbacks, download and set image.
     
@@ -288,6 +292,10 @@ def process_note_record(
     if existing_target and overwrite_mode == "skip":
         return "skipped_not_empty", None
 
+    if field_selection is None:
+        field_selection = note_field_selection(note, get_config())
+    for warning in field_selection.warnings:
+        logger.warning(warning)
     raw_source = note[source_field]
     store = getattr(client, "catalog", None)
     candidates = generate_search_candidates(
@@ -296,6 +304,7 @@ def process_note_record(
         allow_tier2=allow_tier2,
         allow_deinflection=True,
         store=store,
+        field_selection=field_selection,
     )
     if not candidates:
         return "skipped_empty_query", None
@@ -306,7 +315,7 @@ def process_note_record(
         return "non_visual", note
 
     try:
-        pos_type = safe_extract_note_pos_type(note)
+        pos_type = safe_extract_note_pos_type(note, field_selection=field_selection)
         if hasattr(client, "search_with_fallbacks"):
             images, matched_cand, best_img = client.search_with_fallbacks(
                 candidates, max_results=12, image_size=image_size, pos_type=pos_type
@@ -371,7 +380,7 @@ def run_batch_fill(
     import aqt.operations.note
     from aqt import mw
     from aqt.operations import QueryOp
-    from aqt.utils import tooltip
+    from aqt.utils import showWarning, tooltip
 
     unique_nids = list(dict.fromkeys(note_ids))
     total = len(unique_nids)
@@ -379,6 +388,13 @@ def run_batch_fill(
         return
 
     config = get_config()
+    try:
+        validate_overrides(config.get(CONFIG_KEY_FIELD_OVERRIDES, {}))
+    except FieldConfigurationError as exc:
+        showWarning(str(exc), parent=parent_window)
+        return
+    field_selections = {}
+    field_warnings = set()
     try:
         delay_ms = float(config.get(CONFIG_KEY_FULL_DELAY, 300))
     except (TypeError, ValueError):
@@ -400,6 +416,9 @@ def run_batch_fill(
                 if target_field not in note or source_field not in note:
                     missing_field_skips += 1
                     continue
+                selection = note_field_selection(note, config)
+                field_selections[id(note)] = selection
+                field_warnings.update(selection.warnings)
                 raw_val = note[source_field]
                 candidates = generate_search_candidates(
                     raw_val,
@@ -407,12 +426,16 @@ def run_batch_fill(
                     allow_tier2=True,
                     allow_deinflection=True,
                     store=store,
+                    field_selection=selection,
                 )
                 has_target = bool(note[target_field].strip())
                 items.append((note, candidates, has_target))
             except Exception as e:
                 logger.exception("Failed to load note %s: %s", nid, e)
                 load_errors += 1
+        if field_warnings:
+            message = "\n".join(sorted(field_warnings))
+            mw.taskman.run_on_main(lambda: showWarning(message, parent=parent_window))
         return items, load_errors, missing_field_skips
 
     def fetch_images_worker(
@@ -485,7 +508,7 @@ def run_batch_fill(
                 continue
 
             try:
-                pos_type = safe_extract_note_pos_type(note)
+                pos_type = safe_extract_note_pos_type(note, field_selection=field_selections.get(id(note)))
                 images, matched_cand, best_img = client.search_with_fallbacks(
                     candidates,
                     max_results=12,

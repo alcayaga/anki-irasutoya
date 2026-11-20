@@ -7,6 +7,7 @@ from .catalog import (
     CatalogStore,
     default_store,
 )
+from .fields import FieldSelection, gloss_fields, metadata_fields
 from .synonym_constants import (
     BILINGUAL_ACTION_TARGETS,
     ENGLISH_NOUN_ONLY_COLLISIONS,
@@ -202,7 +203,7 @@ def _is_verbal_gloss_phrase(gloss: str) -> bool:
     return False
 
 
-def _is_noun_note(yomitan_meta: Optional[Any], note: Any = None) -> bool:
+def _is_noun_note(yomitan_meta: Optional[Any], note: Any = None, field_selection: Optional[FieldSelection] = None) -> bool:
     """Determine whether the note represents a noun from Yomitan metadata or note definition fields.
 
     Args:
@@ -222,10 +223,10 @@ def _is_noun_note(yomitan_meta: Optional[Any], note: Any = None) -> bool:
             return True
         if tags:
             return False
-    return not _is_verb_note(yomitan_meta, note)
+    return not _is_verb_note(yomitan_meta, note, field_selection)
 
 
-def _is_verb_note(yomitan_meta: Optional[Any], note: Any = None) -> bool:
+def _is_verb_note(yomitan_meta: Optional[Any], note: Any = None, field_selection: Optional[FieldSelection] = None) -> bool:
     """Determine whether the note represents a verb from Yomitan metadata or note definition fields.
 
     Args:
@@ -254,14 +255,14 @@ def _is_verb_note(yomitan_meta: Optional[Any], note: Any = None) -> bool:
         if "n" in tags:
             return False
     if note and hasattr(note, "__getitem__"):
-        from .yomitan_parser import NOTE_DEFINITION_FIELDS, strip_html_excluded_containers
+        from .yomitan_parser import strip_html_excluded_containers
 
-        for f in NOTE_DEFINITION_FIELDS + ("English", "SelectionText"):
+        for f in gloss_fields(note, field_selection):
             if f in note and note[f]:
                 val = strip_html_excluded_containers(str(note[f]))
                 pattern = (
                     r"(?i)(?:^|[;\n,(])\s*(?:to\s+[a-z]+|\(v(?:erb|[15ktsz])?\))"
-                    if f in NOTE_DEFINITION_FIELDS
+                    if f in metadata_fields(note, "definition_fields", field_selection)
                     else r"(?i)^[\s;]*to\s+[a-z]+"
                 )
                 if re.search(pattern, val):
@@ -291,6 +292,7 @@ def lookup_bilingual_glosses(
     note: Any,
     yomitan_meta: Optional[Any] = None,
     store: Optional[CatalogStore] = None,
+    field_selection: Optional[FieldSelection] = None,
 ) -> List[str]:
     """Look up visual concept target queries bridged from English definition glosses on a note.
 
@@ -306,13 +308,13 @@ def lookup_bilingual_glosses(
         return []
     from .yomitan_parser import extract_english_glosses_from_note
 
-    glosses = extract_english_glosses_from_note(note, yomitan_meta=yomitan_meta)
+    glosses = extract_english_glosses_from_note(note, yomitan_meta=yomitan_meta, field_selection=field_selection)
     if not glosses:
         return []
 
     targets: List[str] = []
     seen: Set[str] = set()
-    is_verb = _is_verb_note(yomitan_meta, note)
+    is_verb = _is_verb_note(yomitan_meta, note, field_selection)
     pos_tags = getattr(yomitan_meta, "pos_tags", set()) if yomitan_meta is not None else set()
     is_transitive_only = ("vt" in pos_tags) and ("vi" not in pos_tags)
     is_suru_transitive = bool(
@@ -340,7 +342,7 @@ def lookup_bilingual_glosses(
 
     # Pass 2: headword and constituent words from multi-word glosses
     # Restricted to noun notes to prevent verb/expression constituent splitting collisions
-    if not is_verb and _is_noun_note(yomitan_meta, note):
+    if not is_verb and _is_noun_note(yomitan_meta, note, field_selection):
         for gloss in glosses:
             if (is_suru_transitive or is_transitive_only) and _is_verbal_gloss_phrase(gloss):
                 continue

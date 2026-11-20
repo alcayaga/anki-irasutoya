@@ -25,13 +25,16 @@ from aqt.qt import (
 from ..catalog import default_store
 from ..client import IrasutoyaClient
 from ..config import (
+    CONFIG_KEY_FIELD_OVERRIDES,
     CONFIG_KEY_OVERWRITE,
     CONFIG_KEY_SOURCE,
     CONFIG_KEY_TARGET,
     get_config,
+    note_field_selection,
     update_user_preferences,
 )
 from ..feed import IrasutoyaImage
+from ..fields import FieldSelection, resolve_fields, validate_overrides
 from .batch_view import _BatchModeMixin
 from .helpers import _get_mw
 from .single_view import _SingleNoteModeMixin
@@ -53,6 +56,8 @@ class IrasutoyaDialog(_SingleNoteModeMixin, _BatchModeMixin, QDialog):
         self.browser = browser
         self.note_ids: List[int] = list(dict.fromkeys(note_ids))
         self.config: Dict[str, Any] = get_config()
+        validate_overrides(self.config.get(CONFIG_KEY_FIELD_OVERRIDES, {}))
+        self._field_warnings: Set[str] = set()
         self.store = default_store()
         self.store.warm_async()
         self.client = IrasutoyaClient(catalog=self.store)
@@ -286,22 +291,14 @@ class IrasutoyaDialog(_SingleNoteModeMixin, _BatchModeMixin, QDialog):
 
         # Set default selections based on config or heuristics
         last_src = self.config.get(CONFIG_KEY_SOURCE, "Expression")
-        if last_src in avail_fields:
-            self.combo_source.setCurrentText(last_src)
-        else:
-            for cand in ["Expression", "Vocab", "Word", "Front", "Kanji"]:
-                if cand in avail_fields:
-                    self.combo_source.setCurrentText(cand)
-                    break
+        source_matches = resolve_fields(avail_fields, [last_src, "Expression", "Vocab", "Word", "Front", "Kanji"])
+        if source_matches:
+            self.combo_source.setCurrentText(source_matches[0])
 
         last_tgt = self.config.get(CONFIG_KEY_TARGET, "DefinitionPicture")
-        if last_tgt in avail_fields:
-            self.combo_target.setCurrentText(last_tgt)
-        else:
-            for cand in ["DefinitionPicture", "Picture", "Image", "Illustration"]:
-                if cand in avail_fields:
-                    self.combo_target.setCurrentText(cand)
-                    break
+        target_matches = resolve_fields(avail_fields, [last_tgt, "DefinitionPicture", "Picture", "Image", "Illustration"])
+        if target_matches:
+            self.combo_target.setCurrentText(target_matches[0])
 
         combo_layout.addWidget(lbl_src, 0, 0)
         combo_layout.addWidget(self.combo_source, 0, 1)
@@ -336,6 +333,11 @@ class IrasutoyaDialog(_SingleNoteModeMixin, _BatchModeMixin, QDialog):
 
         main_layout.addWidget(fields_frame)
 
+        self.field_warning_label = QLabel(self)
+        self.field_warning_label.setWordWrap(True)
+        self.field_warning_label.hide()
+        main_layout.addWidget(self.field_warning_label)
+
         # Switch UI based on single note vs multiple notes
         if len(self.note_ids) == 1:
             self._init_single_note_picker(main_layout)
@@ -343,6 +345,15 @@ class IrasutoyaDialog(_SingleNoteModeMixin, _BatchModeMixin, QDialog):
             self.combo_target.currentTextChanged.connect(self._check_target_media_status)
         else:
             self._init_batch_view(main_layout)
+
+    def _metadata_selection(self, note: Any) -> FieldSelection:
+        """Resolve this note's fields and surface configuration warnings in the dialog."""
+        selection = note_field_selection(note, self.config)
+        self._field_warnings.update(selection.warnings)
+        if self._field_warnings:
+            self.field_warning_label.setText("\n".join(sorted(self._field_warnings)))
+            self.field_warning_label.show()
+        return selection
 
     def _save_preferences(self) -> None:
         """Persist user's field and overwrite selections."""

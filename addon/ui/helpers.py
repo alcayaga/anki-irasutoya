@@ -6,6 +6,7 @@ import sys
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from ..feed import IrasutoyaImage
+from ..fields import FieldSelection
 from ..ranking import (
     is_decorative_asset,
     is_image_relevant,
@@ -155,6 +156,7 @@ def resolve_search_plan(
     card_candidates: Sequence[Tuple[str, str, int]],
     first_note: Optional[Any] = None,
     direct: bool = False,
+    field_selection: Optional[FieldSelection] = None,
 ) -> Tuple[List[Tuple[str, str, int]], List[Tuple[str, str, int]], Optional[str]]:
     """Determine display chips, search candidates, and restore term for a single-note query.
 
@@ -180,7 +182,7 @@ def resolve_search_plan(
         elif query == card_source_term:
             search_candidates = list(card_candidates)
         else:
-            search_candidates = generate_search_candidates(query, note=first_note, allow_tier2=True)
+            search_candidates = generate_search_candidates(query, note=first_note, allow_tier2=True, field_selection=field_selection)
     else:
         candidates = generate_search_candidates(query, note=None, allow_tier2=True)
         display_chips = candidates
