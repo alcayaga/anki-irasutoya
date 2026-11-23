@@ -363,6 +363,20 @@ class TestIrasutoyaClient(unittest.TestCase):
         self.assertEqual(batch[0], leader)
         self.assertEqual(best, gallery[0])
 
+    def test_live_benchmark_promotes_standalone_winner(self) -> None:
+        """Keep live benchmark selection aligned with runtime standalone promotion."""
+        from scripts.eval_deck_search import _LiveBloggerSearchClient
+
+        client = _LiveBloggerSearchClient()
+        compound = IrasutoyaImage("子猫のイラスト", "https://example.com/c.png", "t", "子猫")
+        standalone = IrasutoyaImage("猫のイラスト", "https://example.com/s.png", "t", "猫")
+        with patch.object(client, "search", return_value=[compound, standalone]), patch(
+            "scripts.eval_deck_search.rank_relevant_images", return_value=[compound, standalone]
+        ):
+            images, _, best = client.search_with_fallbacks([("猫", "primary", 1)], max_results=1)
+        self.assertEqual(images, [standalone])
+        self.assertEqual(best, standalone)
+
     def test_standalone_winner_precedes_result_limit(self) -> None:
         """Promote standalone matches even when their initial rank exceeds the Batch cutoff."""
         compound = IrasutoyaImage("子猫のイラスト", "https://example.com/c.png", "t", "子猫")

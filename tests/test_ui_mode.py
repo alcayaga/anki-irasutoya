@@ -244,19 +244,20 @@ class TestUIHelpers(unittest.TestCase):
         ]
 
         # Case 1: Primary card query without direct flag
-        chips, cands, restore = resolve_search_plan(
+        chips, cands, restore, uses_note_pos = resolve_search_plan(
             query="食べる",
             card_source_term="食べる",
             card_candidates=card_candidates,
             first_note=None,
             direct=False,
         )
+        self.assertTrue(uses_note_pos)
         self.assertEqual(chips, card_candidates)
         self.assertEqual(cands, card_candidates)
         self.assertIsNone(restore)
 
         # Case 2: Card candidate with direct flag (e.g. chip click)
-        chips_dir, cands_dir, restore_dir = resolve_search_plan(
+        chips_dir, cands_dir, restore_dir, uses_note_pos = resolve_search_plan(
             query="たべる",
             card_source_term="食べる",
             card_candidates=card_candidates,
@@ -268,7 +269,7 @@ class TestUIHelpers(unittest.TestCase):
         self.assertIsNone(restore_dir)
 
         # Case 3: Secondary candidate without direct flag (deinflects/generates)
-        chips_sec, cands_sec, restore_sec = resolve_search_plan(
+        chips_sec, cands_sec, restore_sec, uses_note_pos = resolve_search_plan(
             query="たべる",
             card_source_term="食べる",
             card_candidates=card_candidates,
@@ -281,19 +282,20 @@ class TestUIHelpers(unittest.TestCase):
         self.assertIsNone(restore_sec)
 
         # Case 4: External / custom query with restore term
-        chips_ext, cands_ext, restore_ext = resolve_search_plan(
+        chips_ext, cands_ext, restore_ext, uses_note_pos = resolve_search_plan(
             query="りんご",
             card_source_term="食べる",
             card_candidates=card_candidates,
             first_note=None,
             direct=False,
         )
+        self.assertFalse(uses_note_pos)
         self.assertEqual(restore_ext, "食べる")
         self.assertTrue(any(c[0] == "りんご" for c in chips_ext))
         self.assertTrue(any(c[0] == "りんご" for c in cands_ext))
 
         # Case 5: External query with direct flag
-        chips_ext_dir, cands_ext_dir, restore_ext_dir = resolve_search_plan(
+        chips_ext_dir, cands_ext_dir, restore_ext_dir, uses_note_pos = resolve_search_plan(
             query="りんご",
             card_source_term="食べる",
             card_candidates=card_candidates,
@@ -303,6 +305,27 @@ class TestUIHelpers(unittest.TestCase):
         self.assertEqual(restore_ext_dir, "食べる")
         self.assertEqual(len(cands_ext_dir), 1)
         self.assertEqual(cands_ext_dir[0][0], "りんご")
+
+    def test_repeated_mapped_search_retains_reason(self) -> None:
+        """Preserve 率いる suggestion provenance on both chip and repeated searches."""
+        candidates = [("率いる", "primary", 1), ("リーダーのイラスト", "llm_concept_tier2", 2)]
+        for direct in (True, False):
+            with self.subTest(direct=direct):
+                _, searched, _, uses_note_pos = resolve_search_plan(
+                    "リーダーのイラスト", "率いる", candidates, direct=direct
+                )
+                self.assertIn(candidates[1], searched)
+                self.assertNotIn(("リーダーのイラスト", "primary", 1), searched)
+                self.assertTrue(uses_note_pos)
+
+    def test_manual_query_with_empty_source_excludes_note_pos(self) -> None:
+        """Keep unrelated manual searches independent of an empty source field."""
+        _, searched, restore, uses_note_pos = resolve_search_plan(
+            "猫", "", [], first_note={"Definition": "verb"}
+        )
+        self.assertTrue(searched)
+        self.assertIsNone(restore)
+        self.assertFalse(uses_note_pos)
 
     def test_execute_search_and_probe(self) -> None:
         """Verify execute_search_and_probe runs client searches, updates caches, and respects cancellation."""

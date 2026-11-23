@@ -157,7 +157,7 @@ def resolve_search_plan(
     first_note: Optional[Any] = None,
     direct: bool = False,
     field_selection: Optional[FieldSelection] = None,
-) -> Tuple[List[Tuple[str, str, int]], List[Tuple[str, str, int]], Optional[str]]:
+) -> Tuple[List[Tuple[str, str, int]], List[Tuple[str, str, int]], Optional[str], bool]:
     """Determine display chips, search candidates, and restore term for a single-note query.
 
     Args:
@@ -168,7 +168,7 @@ def resolve_search_plan(
         direct: If True, execute a direct query without traversing alternative fallbacks.
 
     Returns:
-        Tuple of (display_chips, search_candidates, restore_term).
+        Tuple of (display_chips, search_candidates, restore_term, uses_note_pos).
     """
     card_terms = [c[0] for c in card_candidates]
     is_card_term = bool(card_source_term and (query == card_source_term or query in card_terms))
@@ -183,6 +183,12 @@ def resolve_search_plan(
             search_candidates = list(card_candidates)
         else:
             search_candidates = generate_search_candidates(query, note=first_note, allow_tier2=True, field_selection=field_selection)
+            # Repeated searches retain the suggestion's provenance for POS inference.
+            matching_cand = next(c for c in card_candidates if c[0] == query)
+            search_candidates = [
+                matching_cand if candidate[0] == query else candidate
+                for candidate in search_candidates
+            ]
     else:
         candidates = generate_search_candidates(query, note=None, allow_tier2=True)
         display_chips = candidates
@@ -194,7 +200,7 @@ def resolve_search_plan(
             else None
         )
 
-    return display_chips, search_candidates, restore_term
+    return display_chips, search_candidates, restore_term, is_card_term
 
 
 def execute_search_and_probe(

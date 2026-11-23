@@ -274,7 +274,7 @@ class _SingleNoteModeMixin:
 
         image_size = self.config.get(CONFIG_KEY_IMAGE_SIZE, "s800")
         card_candidates = getattr(self, "_card_candidates", [])
-        display_chips, search_candidates, restore_term = resolve_search_plan(
+        display_chips, search_candidates, restore_term, uses_note_pos = resolve_search_plan(
             query=query,
             card_source_term=self._card_source_term,
             card_candidates=card_candidates,
@@ -284,7 +284,7 @@ class _SingleNoteModeMixin:
         )
 
         pos_type = None
-        if self.first_note is not None and restore_term is None:
+        if self.first_note is not None and uses_note_pos:
             pos_type = safe_extract_note_pos_type(
                 self.first_note, field_selection=self._metadata_selection(self.first_note)
             )
