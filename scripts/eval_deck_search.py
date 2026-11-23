@@ -154,7 +154,7 @@ class _LiveBloggerSearchClient:
             ]
             if not valid_imgs:
                 continue
-            cand_pos = pos_type or infer_pos_type(term, cand_reason=_reason)
+            cand_pos = infer_pos_type(term, cand_reason=_reason, source_pos=pos_type)
             ranked = rank_relevant_images(valid_imgs, term, pos_type=cand_pos)
             if ranked:
                 best = ranked[0]

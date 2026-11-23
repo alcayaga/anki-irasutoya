@@ -330,8 +330,10 @@ class TestUIHelpers(unittest.TestCase):
             restore_term=None,
             count_cache=count_cache,
             desc_cache=desc_cache,
+            pos_type="noun",
             is_cancelled=lambda: False,
         )
+        self.assertEqual(mock_client.search_with_fallbacks.call_args.kwargs["pos_type"], "noun")
         self.assertEqual(len(images), 1)
         self.assertEqual(matched_cand, ("猫", "primary", 1))
         self.assertIsNotNone(probed_counts)

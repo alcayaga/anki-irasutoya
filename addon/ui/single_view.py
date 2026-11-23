@@ -18,7 +18,7 @@ from aqt.qt import (
 )
 from aqt.utils import showWarning, tooltip
 
-from ..batch import apply_status_tag, make_safe_media_filename
+from ..batch import apply_status_tag, make_safe_media_filename, safe_extract_note_pos_type
 from ..config import (
     CONFIG_KEY_IMAGE_SIZE,
     CONFIG_KEY_THUMB_DELAY,
@@ -283,6 +283,12 @@ class _SingleNoteModeMixin:
             field_selection=self._metadata_selection(self.first_note) if self.first_note is not None else None,
         )
 
+        pos_type = None
+        if self.first_note is not None and restore_term is None:
+            pos_type = safe_extract_note_pos_type(
+                self.first_note, field_selection=self._metadata_selection(self.first_note)
+            )
+
         def background_search() -> None:
             """Fetch search results on a background thread using fallback queries."""
             count_cache = self._catalog_count_cache.setdefault(image_size, {})
@@ -297,6 +303,7 @@ class _SingleNoteModeMixin:
                 restore_term=restore_term,
                 count_cache=count_cache,
                 desc_cache=desc_cache,
+                pos_type=pos_type,
                 is_cancelled=lambda: current_gen != self._search_generation,
             )
 

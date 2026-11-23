@@ -255,9 +255,12 @@ def infer_pos_type(
     query: str,
     cand_reason: Optional[str] = None,
     yomitan_meta: Optional[Any] = None,
+    source_pos: Optional[str] = None,
 ) -> Optional[str]:
     """Infer the part of speech profile ('verb', 'adjective', 'noun', or None) for category scoring."""
-    note_pos = infer_note_pos_type(yomitan_meta)
+    # Curated targets can have a different part of speech from the source note.
+    mapped_concept = cand_reason in ("concept_map", "kaishi_concept", "llm_concept", "llm_concept_tier2")
+    note_pos = None if mapped_concept else (source_pos or infer_note_pos_type(yomitan_meta))
     if note_pos:
         return note_pos
 

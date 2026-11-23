@@ -207,6 +207,7 @@ def execute_search_and_probe(
     count_cache: Dict[str, int],
     desc_cache: Dict[str, bool],
     is_cancelled: Optional[Callable[[], bool]] = None,
+    pos_type: Optional[str] = None,
 ) -> Tuple[List[IrasutoyaImage], Optional[Tuple[str, str, int]], Optional[Dict[str, int]], Optional[Set[str]]]:
     """Execute candidate search with fallbacks and probe catalog counts.
 
@@ -232,6 +233,7 @@ def execute_search_and_probe(
             search_candidates,
             max_results=None,
             image_size=image_size,
+            pos_type=pos_type,
             is_cancelled=is_cancelled,
         )
     except Exception as e:
