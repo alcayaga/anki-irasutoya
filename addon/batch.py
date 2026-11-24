@@ -332,7 +332,7 @@ def process_note_record(
                 ]
                 if valid_imgs:
                     matched_cand = cand
-                    cand_pos = pos_type or infer_pos_type(cand[0], cand_reason=cand[1])
+                    cand_pos = infer_pos_type(cand[0], cand_reason=cand[1], source_pos=pos_type)
                     best_img = select_best_image(valid_imgs, cand[0], pos_type=cand_pos) or valid_imgs[0]
                     images = valid_imgs
                     break

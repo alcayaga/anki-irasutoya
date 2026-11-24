@@ -344,6 +344,52 @@ class TestIrasutoyaClient(unittest.TestCase):
         self.assertIsNotNone(best_img)
         self.assertEqual(best_img.title, "現在のイラスト")
 
+    def test_leader_mapping_preserves_gallery_batch_parity(self) -> None:
+        """Select the leader for 率いる even when its note has verb metadata."""
+        leader = IrasutoyaImage(
+            "リーダーのイラスト（女性）", "https://example.com/leader.png", "t",
+            "リーダーのイラスト（女性）",
+            categories=("リクエスト", "職業", "ビジネス", "集合", "会社"),
+        )
+        cheerleader = IrasutoyaImage(
+            "チアリーダーのイラスト（棒人間）", "https://example.com/cheer.png", "t",
+            "チアリーダーのイラスト（棒人間）", categories=("スポーツ", "棒人間"),
+        )
+        candidates = [("率いる", "primary", 1), ("リーダーのイラスト", "llm_concept_tier2", 2)]
+        with patch.object(self.client, "search", side_effect=[[], [cheerleader, leader]] * 2):
+            gallery, _, _ = self.client.search_with_fallbacks(candidates, max_results=None)
+            batch, _, best = self.client.search_with_fallbacks(candidates, pos_type="verb")
+        self.assertEqual(gallery[0], leader)
+        self.assertEqual(batch[0], leader)
+        self.assertEqual(best, gallery[0])
+
+    def test_live_benchmark_promotes_standalone_winner(self) -> None:
+        """Keep live benchmark selection aligned with runtime standalone promotion."""
+        from scripts.eval_deck_search import _LiveBloggerSearchClient
+
+        client = _LiveBloggerSearchClient()
+        compound = IrasutoyaImage("子猫のイラスト", "https://example.com/c.png", "t", "子猫")
+        standalone = IrasutoyaImage("猫のイラスト", "https://example.com/s.png", "t", "猫")
+        with patch.object(client, "search", return_value=[compound, standalone]), patch(
+            "scripts.eval_deck_search.rank_relevant_images", return_value=[compound, standalone]
+        ):
+            images, _, best = client.search_with_fallbacks([("猫", "primary", 1)], max_results=1)
+        self.assertEqual(images, [standalone])
+        self.assertEqual(best, standalone)
+
+    def test_standalone_winner_precedes_result_limit(self) -> None:
+        """Promote standalone matches even when their initial rank exceeds the Batch cutoff."""
+        compound = IrasutoyaImage("子猫のイラスト", "https://example.com/c.png", "t", "子猫")
+        standalone = IrasutoyaImage("猫のイラスト", "https://example.com/s.png", "t", "猫")
+        with patch.object(self.client, "search", return_value=[compound, standalone]), patch(
+            "addon.client.rank_relevant_images", return_value=[compound] * 12 + [standalone]
+        ):
+            gallery, _, _ = self.client.search_with_fallbacks([("猫", "primary", 1)], max_results=None)
+            batch, _, best = self.client.search_with_fallbacks([("猫", "primary", 1)], max_results=12)
+        self.assertEqual(best, standalone)
+        self.assertEqual(batch[0], gallery[0])
+        self.assertEqual(len(batch), 12)
+
     def test_search_with_fallbacks_pos_type_handling(self):
         """Verify search_with_fallbacks preserves fallback candidate POS hints when pos_type=None."""
         client = IrasutoyaClient()

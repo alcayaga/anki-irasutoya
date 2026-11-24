@@ -40,6 +40,7 @@ from addon.ranking import (
     infer_pos_type,
     is_decorative_asset,
     is_image_relevant,
+    is_standalone_title_match,
     rank_relevant_images,
 )
 from addon.synonyms import (
@@ -154,9 +155,13 @@ class _LiveBloggerSearchClient:
             ]
             if not valid_imgs:
                 continue
-            cand_pos = pos_type or infer_pos_type(term, cand_reason=_reason)
+            cand_pos = infer_pos_type(term, cand_reason=_reason, source_pos=pos_type)
             ranked = rank_relevant_images(valid_imgs, term, pos_type=cand_pos)
             if ranked:
+                if _reason == "primary":
+                    standalone = next((img for img in ranked if is_standalone_title_match(img, term)), None)
+                    if standalone is not None:
+                        ranked = [standalone] + [img for img in ranked if img is not standalone]
                 best = ranked[0]
                 has_title_match = has_title_illustration_match(valid_imgs, term)
                 if _reason == "primary" and has_title_match and not has_standalone_title_match(valid_imgs, term):

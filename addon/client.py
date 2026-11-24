@@ -389,22 +389,24 @@ class IrasutoyaClient:
             ]
             if illustration_candidates:
                 has_title_match = has_title_illustration_match(illustration_candidates, term)
-                cand_pos = pos_type or infer_pos_type(term, cand_reason=reason)
+                cand_pos = infer_pos_type(term, cand_reason=reason, source_pos=pos_type)
                 ranked = rank_relevant_images(illustration_candidates, term, pos_type=cand_pos)
-                if max_results and max_results > 0:
-                    ranked = ranked[:max_results]
 
                 # Standalone title guard for primary: if primary matches ONLY as a compound title,
                 # defer it as (term, PRIMARY_COMPOUND_REASON, 2) and continue evaluating Group 2-3 candidates.
                 if reason == "primary" and has_title_match:
                     if not has_standalone_title_match(illustration_candidates, term):
                         if deferred_primary_compound is None:
-                            deferred_primary_compound = (ranked, (term, PRIMARY_COMPOUND_REASON, 2), ranked[0])
+                            limited = ranked[:max_results] if max_results and max_results > 0 else ranked
+                            deferred_primary_compound = (limited, (term, PRIMARY_COMPOUND_REASON, 2), ranked[0])
                         continue
                     # Prefer the standalone image as top result when direct primary wins
                     standalone_img = next((img for img in ranked if is_standalone_title_match(img, term)), None)
                     if standalone_img and standalone_img is not ranked[0]:
                         ranked = [standalone_img] + [img for img in ranked if img is not standalone_img]
+
+                if max_results and max_results > 0:
+                    ranked = ranked[:max_results]
 
                 wins_now = (
                     not reason.startswith(PHONETIC_REASON_PREFIXES)
