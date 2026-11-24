@@ -30,9 +30,15 @@ class DeckTermsTests(unittest.TestCase):
     def test_flags(self) -> None:
         """Reject incomplete deck input and conflicting sources before connecting."""
         for args in (["--deck", "Mining"], ["--missing-frequency"],
+                     ["--deck", ""], ["--deck", "", "--missing-frequency"],
+                     ["--deck", "   ", "--missing-frequency"],
                      ["--deck", "Mining", "--missing-frequency", "--terms", "猫"]):
-            with self.subTest(args=args), self.assertRaises(SystemExit):
-                main(args)
+            with self.subTest(args=args), patch("scripts.agent_synonyms.load_deck_terms") as load_mock, \
+                    patch("scripts.agent_synonyms.run_ollama_compile") as compile_mock:
+                with self.assertRaises(SystemExit):
+                    main(args)
+                load_mock.assert_not_called()
+                compile_mock.assert_not_called()
 
     def test_empty_and_failure(self) -> None:
         """Avoid compilation for empty results and report connection failures."""

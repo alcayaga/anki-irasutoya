@@ -180,8 +180,10 @@ def main(argv: Sequence[str]) -> int:
     parser.add_argument("--anki-url", default="http://localhost:8765",
                         help="AnkiConnect endpoint (default: http://localhost:8765)")
     args = parser.parse_args(argv)
-    if bool(args.deck) != args.missing_frequency:
+    if (args.deck is not None) != args.missing_frequency:
         parser.error("--deck and --missing-frequency must be supplied together")
+    if args.deck is not None and not args.deck.strip():
+        parser.error("--deck requires a non-empty deck name")
     if args.deck and (args.terms is not None or args.jpdb is not None):
         parser.error("--deck conflicts with --terms and --jpdb")
     terms = args.terms
