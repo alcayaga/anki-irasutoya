@@ -330,9 +330,10 @@ def run_ollama_agent_batch(
             user_content_lines = [
                 f"Japanese term: {term}",
                 f"Reading: {reading}",
-                f"Frequency Rank: {freq}",
                 f"English Glosses: {glosses}",
             ]
+            if freq != "":
+                user_content_lines.insert(2, f"Frequency Rank: {freq}")
             if context_block:
                 user_content_lines.append(f"\n{context_block}")
             user_content_lines.append(
@@ -643,6 +644,7 @@ def run_ollama_compile(
     recheck_rejected: bool = False,
     no_embed: bool = False,
     build_vector_index: bool = False,
+    include_frequency: bool = True,
 ) -> bool:
     """Run the complete build-time JPDB + Yomitan + Ollama visual concept compilation pipeline.
 
@@ -662,6 +664,7 @@ def run_ollama_compile(
         recheck_rejected: If True, re-evaluates terms previously marked as rejected.
         no_embed: If True, disables vector pre-search and runs pure lexical pre-search.
         build_vector_index: If True, computes catalog vector index from scratch if missing.
+        include_frequency: Include positional frequency ranks for explicit terms.
 
     Returns:
         True if concepts were compiled and saved successfully, False otherwise.
@@ -714,7 +717,7 @@ def run_ollama_compile(
             candidates.append({
                 "term": term,
                 "reading": reading,
-                "frequency": idx + 1,
+                **({"frequency": idx + 1} if include_frequency else {}),
                 "pos_tags": sorted(meta.pos_tags) if meta else [],
                 "english_glosses": meta.english_glosses if meta else [],
                 "is_uk": meta.is_uk if meta else False,

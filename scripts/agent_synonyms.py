@@ -65,6 +65,27 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("agent_synonyms")
 
 
+def load_deck_terms(deck: str, anki_url: str) -> Sequence[str]:
+    """Read unique headwords from notes with an existing empty Frequency field."""
+    from addon.text_utils import clean_search_query
+    from scripts.eval_deck_search import anki_invoke, build_search_query, detect_source_field
+
+    note_ids = sorted(anki_invoke("findNotes", anki_url=anki_url,
+                                 query=build_search_query(deck)))
+    terms = {}
+    for offset in range(0, len(note_ids), 500):
+        notes = anki_invoke("notesInfo", anki_url=anki_url, notes=note_ids[offset:offset + 500])
+        for note in sorted(notes, key=lambda item: item["noteId"]):
+            fields = note["fields"]
+            if "Frequency" not in fields or fields["Frequency"]["value"].strip():
+                continue
+            source = detect_source_field(fields)
+            term = clean_search_query(fields[source]["value"]) if source else ""
+            if term:
+                terms[term] = None
+    return list(terms)
+
+
 def main(argv: Sequence[str]) -> int:
     """Main CLI entrypoint for local Ollama visual concept compilation."""
     parser = argparse.ArgumentParser(
@@ -153,7 +174,28 @@ def main(argv: Sequence[str]) -> int:
         help="Clear/discard local cached Yomitan term lookups and re-fetch from API",
     )
 
+    parser.add_argument("--deck", help="Anki deck to read (requires --missing-frequency)")
+    parser.add_argument("--missing-frequency", action="store_true",
+                        help="Select only notes whose Frequency field exists and is empty. Ignore FreqSort.")
+    parser.add_argument("--anki-url", default="http://localhost:8765",
+                        help="AnkiConnect endpoint (default: http://localhost:8765)")
     args = parser.parse_args(argv)
+    if (args.deck is not None) != args.missing_frequency:
+        parser.error("--deck and --missing-frequency must be supplied together")
+    if args.deck is not None and not args.deck.strip():
+        parser.error("--deck requires a non-empty deck name")
+    if args.deck and (args.terms is not None or args.jpdb is not None):
+        parser.error("--deck conflicts with --terms and --jpdb")
+    terms = args.terms
+    if args.deck:
+        try:
+            terms = load_deck_terms(args.deck, args.anki_url)
+        except (ConnectionError, RuntimeError, ValueError, KeyError, TypeError) as exc:
+            logger.error("Failed to read deck from AnkiConnect: %s", exc)
+            return 1
+        if not terms:
+            logger.info("No eligible terms found in deck %s", args.deck)
+            return 0
 
     if args.pull_models:
         from scripts.pull_models import pull_declared_models
@@ -181,7 +223,8 @@ def main(argv: Sequence[str]) -> int:
         embed_model=args.embed_model,
         llm_out_path=args.out,
         cache_dir=args.cache_dir,
-        terms=args.terms,
+        terms=terms,
+        include_frequency=not bool(args.deck),
         clear_yomitan_cache=args.clear_yomitan_cache,
         recheck_rejected=args.recheck_rejected,
         no_embed=args.no_embed,
